@@ -9,12 +9,17 @@ class DocsPrdAlignmentTests(unittest.TestCase):
     def test_readme_and_release_checklist_do_not_advertise_removed_pet_main_path_features(self):
         combined = "\n".join(
             [
+                (ROOT / "AGENTS.md").read_text(),
                 (ROOT / "README.md").read_text(),
+                (ROOT / "README.en.md").read_text(),
                 (ROOT / "docs" / "release-checklist.md").read_text(),
+                (ROOT / "docs" / "promo" / "index.html").read_text(),
             ]
         )
 
         forbidden_phrases = [
+            "not currently initialized as a Git repository",
+            "no existing commit convention is available",
             "临时暂隐宠物",
             "暂隐",
             "会话重命名/恢复默认名",
@@ -26,6 +31,9 @@ class DocsPrdAlignmentTests(unittest.TestCase):
             "Web Companion 展开面板中点击“诊断”",
             "Yes/No 回写链路",
             "端到端回写",
+            "目前仅支持 macOS",
+            "当前仅支持 macOS",
+            "Windows 版本敬请期待",
         ]
         for phrase in forbidden_phrases:
             self.assertNotIn(phrase, combined)

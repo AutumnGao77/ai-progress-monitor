@@ -61,7 +61,9 @@ Use `unittest`. Add tests before production logic for classifiers, stores, sourc
 
 ## Commit & Pull Request Guidelines
 
-This directory is not currently initialized as a Git repository, so no existing commit convention is available. Use short, action-oriented commit messages, for example `Add session classifier` or `Fix action safety check`.
+This repository uses `main` as the primary branch. Use short, action-oriented commit messages, for example `Add session classifier` or `Fix action safety check`.
+
+For public commits, use author name `AutumnGao` and the GitHub noreply email configured for this machine. Before `commit`, `amend`, or `push`, explain the operation and risk in plain Chinese, then verify `git config user.name`, `git config user.email`, `git var GIT_AUTHOR_IDENT`, and `git var GIT_COMMITTER_IDENT` so shell environment variables do not override the intended public identity.
 
 Pull requests should include a brief summary, testing notes, linked issue or task reference when available, and screenshots for visible UI changes.
 
