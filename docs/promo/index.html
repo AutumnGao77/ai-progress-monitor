@@ -1,0 +1,888 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>树懒守望</title>
+  <meta name="description" content="树懒守望是一款 macOS 桌面悬浮助手。它把 Claude Code 与 Codex 的多个会话进度收在桌边，用树懒桌宠、状态角标和气泡列表提醒你谁还在跑、谁在等你回来。">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='18' fill='%23247452'/%3E%3Ctext x='32' y='41' text-anchor='middle' font-family='Arial,sans-serif' font-size='24' font-weight='800' fill='white'%3EAI%3C/text%3E%3C/svg%3E">
+  <style>
+    :root {
+      --bg: #f7faf4;
+      --bg-strong: #edf5ea;
+      --ink: #17231d;
+      --muted: #5f6c62;
+      --line: #dbe7dc;
+      --green: #247452;
+      --green-dark: #154f38;
+      --mint: #dcefd6;
+      --blue: #3f75a8;
+      --red: #df4b48;
+      --gold: #e5b866;
+      --paper: #ffffff;
+      --shadow: 0 22px 70px rgba(26, 47, 36, .12);
+      color-scheme: light;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      letter-spacing: 0;
+      overflow-x: hidden;
+    }
+
+    a {
+      color: inherit;
+      text-decoration: none;
+    }
+
+    .site-header {
+      position: fixed;
+      z-index: 20;
+      top: 0;
+      left: 0;
+      right: 0;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 24px;
+      padding: 18px clamp(20px, 5vw, 72px);
+      background: rgba(247, 250, 244, .84);
+      border-bottom: 1px solid rgba(219, 231, 220, .72);
+      backdrop-filter: blur(16px);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-weight: 780;
+      white-space: nowrap;
+    }
+
+    .brand-mark {
+      width: 34px;
+      height: 34px;
+      border-radius: 10px;
+      background: var(--green);
+      display: grid;
+      place-items: center;
+      color: #fff;
+      font-size: 18px;
+      font-weight: 900;
+      box-shadow: 0 8px 22px rgba(36, 116, 82, .22);
+    }
+
+    .nav {
+      display: flex;
+      align-items: center;
+      gap: 24px;
+      color: var(--muted);
+      font-size: 14px;
+      font-weight: 650;
+    }
+
+    .nav a:hover {
+      color: var(--green-dark);
+    }
+
+    .nav-cta,
+    .hero-cta {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 42px;
+      padding: 0 18px;
+      border-radius: 8px;
+      background: var(--green);
+      color: white;
+      font-weight: 760;
+      box-shadow: 0 12px 28px rgba(36, 116, 82, .2);
+    }
+
+    .hero {
+      min-height: 92vh;
+      display: grid;
+      align-items: center;
+      position: relative;
+      overflow: hidden;
+      padding: 116px clamp(20px, 6vw, 86px) 72px;
+      background:
+        linear-gradient(90deg, rgba(247, 250, 244, 1) 0%, rgba(247, 250, 244, .94) 40%, rgba(237, 245, 234, .22) 100%),
+        url("assets/sloth-mascot-transparent.png") right clamp(-120px, -6vw, -20px) bottom -82px / min(56vw, 660px) auto no-repeat;
+    }
+
+    .hero::after {
+      content: "";
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      height: 108px;
+      background: linear-gradient(180deg, rgba(247, 250, 244, 0), var(--bg));
+      pointer-events: none;
+    }
+
+    .hero-content {
+      position: relative;
+      z-index: 2;
+      width: min(720px, 100%);
+      max-width: 720px;
+      min-width: 0;
+    }
+
+    h1 {
+      margin: 0;
+      max-width: 690px;
+      font-size: clamp(44px, 7vw, 86px);
+      line-height: .96;
+      letter-spacing: 0;
+      font-weight: 850;
+    }
+
+    h1 .line {
+      display: block;
+    }
+
+    .hero-copy {
+      margin: 26px 0 0;
+      max-width: 600px;
+      color: var(--muted);
+      font-size: clamp(18px, 2vw, 22px);
+      line-height: 1.55;
+      overflow-wrap: anywhere;
+    }
+
+    .hero-actions {
+      margin-top: 34px;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      flex-wrap: wrap;
+    }
+
+    .soon-link {
+      display: inline-flex;
+      align-items: center;
+      min-height: 42px;
+      padding: 0 14px;
+      color: var(--muted);
+      font-weight: 760;
+      cursor: default;
+    }
+
+    .soon-cta {
+      cursor: default;
+      pointer-events: none;
+    }
+
+    .status-float {
+      position: absolute;
+      z-index: 3;
+      right: clamp(180px, 18vw, 300px);
+      bottom: 12vh;
+      display: grid;
+      gap: 12px;
+      width: 286px;
+    }
+
+    .session-count {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      width: max-content;
+      max-width: 100%;
+      min-height: 40px;
+      padding: 0 14px;
+      background: rgba(255, 255, 255, .86);
+      border: 1px solid rgba(219, 231, 220, .92);
+      border-radius: 999px;
+      box-shadow: 0 14px 34px rgba(26, 47, 36, .09);
+      color: var(--green-dark);
+      font-size: 13px;
+      font-weight: 820;
+      backdrop-filter: blur(14px);
+    }
+
+    .count-dot {
+      display: grid;
+      place-items: center;
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      background: var(--red);
+      color: white;
+      font-size: 13px;
+      line-height: 1;
+      font-weight: 900;
+    }
+
+    .bubble {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      min-height: 52px;
+      padding: 12px 14px 12px 18px;
+      background: rgba(255, 255, 255, .88);
+      border: 1px solid rgba(219, 231, 220, .92);
+      border-radius: 14px;
+      box-shadow: 0 16px 42px rgba(26, 47, 36, .11);
+      backdrop-filter: blur(14px);
+      font-size: 14px;
+      font-weight: 760;
+    }
+
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      flex: none;
+    }
+
+    .dot.red { background: var(--red); }
+    .dot.green { background: var(--green); }
+    .dot.blue { background: var(--blue); }
+
+    main {
+      position: relative;
+      z-index: 4;
+    }
+
+    section {
+      padding: 86px clamp(20px, 6vw, 86px);
+    }
+
+    .section-inner {
+      max-width: 1180px;
+      margin: 0 auto;
+    }
+
+    .section-title {
+      margin: 0;
+      font-size: clamp(30px, 4vw, 52px);
+      line-height: 1.08;
+      letter-spacing: 0;
+      font-weight: 830;
+    }
+
+    .section-copy {
+      margin: 16px 0 0;
+      max-width: 720px;
+      color: var(--muted);
+      font-size: 18px;
+      line-height: 1.65;
+    }
+
+    .pain-grid,
+    .feature-grid,
+    .trust-grid {
+      display: grid;
+      gap: 18px;
+      margin-top: 38px;
+    }
+
+    .pain-grid {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    .feature-grid {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+
+    .trust-grid {
+      grid-template-columns: 1.05fr .95fr;
+      align-items: stretch;
+    }
+
+    .card,
+    .panel {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: 0 16px 42px rgba(26, 47, 36, .07);
+    }
+
+    .card {
+      padding: 24px;
+      min-height: 178px;
+    }
+
+    .card h3,
+    .panel h3 {
+      margin: 0;
+      font-size: 20px;
+      line-height: 1.25;
+      letter-spacing: 0;
+    }
+
+    .card p,
+    .panel p {
+      margin: 12px 0 0;
+      color: var(--muted);
+      line-height: 1.66;
+      font-size: 15px;
+    }
+
+    .card-number {
+      display: inline-grid;
+      place-items: center;
+      width: 34px;
+      height: 34px;
+      margin-bottom: 18px;
+      border-radius: 9px;
+      background: var(--mint);
+      color: var(--green-dark);
+      font-weight: 880;
+    }
+
+    .product-band {
+      background: #ffffff;
+      border-top: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+    }
+
+    .state-showcase {
+      background: #fbfdf9;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .state-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 18px;
+      margin-top: 38px;
+    }
+
+    .state-card {
+      overflow: hidden;
+      min-height: 100%;
+    }
+
+    .state-image {
+      display: flex;
+      align-items: end;
+      justify-content: center;
+      min-height: 260px;
+      padding: 24px 24px 0;
+      background: linear-gradient(180deg, #ffffff 0%, #f2f7f1 100%);
+      border-bottom: 1px solid var(--line);
+    }
+
+    .state-image img {
+      display: block;
+      width: min(238px, 100%);
+      height: auto;
+    }
+
+    .state-body {
+      padding: 22px 24px 24px;
+    }
+
+    .state-body h3 {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .state-body p {
+      min-height: 50px;
+    }
+
+    .demo-shell {
+      margin-top: 40px;
+      display: grid;
+      grid-template-columns: .82fr 1.18fr;
+      min-height: 450px;
+      background: #f9fbf8;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: var(--shadow);
+    }
+
+    .demo-left {
+      position: relative;
+      padding: 30px;
+      background: #edf5ea;
+      display: flex;
+      align-items: end;
+      justify-content: center;
+      overflow: hidden;
+    }
+
+    .demo-left img {
+      width: min(360px, 86%);
+      filter: drop-shadow(0 22px 28px rgba(48, 59, 47, .16));
+    }
+
+    .demo-badge {
+      position: absolute;
+      left: 28px;
+      top: 28px;
+      min-height: 36px;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0 12px;
+      background: var(--red);
+      color: white;
+      border-radius: 999px;
+      border: 3px solid #fff;
+      font-size: 13px;
+      font-weight: 850;
+      box-shadow: 0 12px 28px rgba(223, 75, 72, .18);
+    }
+
+    .demo-right {
+      padding: 36px;
+      display: grid;
+      align-content: center;
+      gap: 14px;
+    }
+
+    .session-row {
+      display: grid;
+      grid-template-columns: 12px 1fr auto;
+      align-items: center;
+      gap: 14px;
+      min-height: 58px;
+      padding: 0 18px;
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      font-weight: 760;
+    }
+
+    .session-row span:last-child {
+      color: var(--muted);
+      font-size: 14px;
+      font-weight: 740;
+    }
+
+    .feature-card {
+      min-height: 210px;
+    }
+
+    .feature-icon {
+      width: 42px;
+      height: 42px;
+      display: grid;
+      place-items: center;
+      margin-bottom: 18px;
+      border-radius: 8px;
+      background: #eef5f0;
+      color: var(--green-dark);
+    }
+
+    .feature-icon svg {
+      width: 23px;
+      height: 23px;
+      stroke-width: 2.2;
+    }
+
+    .trust-panel {
+      padding: 32px;
+      min-height: 330px;
+    }
+
+    .trust-list {
+      display: grid;
+      gap: 16px;
+      margin: 24px 0 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .trust-list li {
+      display: grid;
+      grid-template-columns: 26px 1fr;
+      gap: 12px;
+      align-items: start;
+      color: var(--muted);
+      line-height: 1.55;
+    }
+
+    .check {
+      width: 24px;
+      height: 24px;
+      display: grid;
+      place-items: center;
+      border-radius: 8px;
+      background: var(--mint);
+      color: var(--green-dark);
+      font-size: 14px;
+      font-weight: 900;
+    }
+
+    .launch {
+      background: var(--green-dark);
+      color: #fff;
+    }
+
+    .launch .section-copy {
+      color: rgba(255, 255, 255, .72);
+    }
+
+    .launch-links {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      flex-wrap: wrap;
+      margin-top: 30px;
+    }
+
+    .footer {
+      padding: 34px clamp(20px, 6vw, 86px);
+      color: var(--muted);
+      font-size: 14px;
+      border-top: 1px solid rgba(219, 231, 220, .86);
+    }
+
+    .footer-inner {
+      max-width: 1180px;
+      margin: 0 auto;
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+
+    @media (max-width: 980px) {
+      .nav a {
+        display: none;
+      }
+
+      .hero {
+        min-height: 94vh;
+        background:
+          linear-gradient(180deg, rgba(247, 250, 244, .97) 0%, rgba(247, 250, 244, .92) 54%, rgba(237, 245, 234, .76) 100%),
+          url("assets/sloth-mascot-transparent.png") center bottom -90px / min(94vw, 520px) auto no-repeat;
+        align-items: start;
+      }
+
+      .hero-content {
+        width: 100%;
+        max-width: 620px;
+      }
+
+      .status-float {
+        right: 24px;
+        bottom: 20vh;
+        min-width: 210px;
+      }
+
+      .pain-grid,
+      .feature-grid,
+      .state-grid,
+      .trust-grid,
+      .demo-shell {
+        grid-template-columns: 1fr;
+      }
+
+      .demo-left {
+        min-height: 360px;
+      }
+    }
+
+    @media (max-width: 640px) {
+      .site-header {
+        gap: 10px;
+        padding: 14px 18px;
+      }
+
+      .brand span:last-child {
+        max-width: 170px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .nav {
+        gap: 0;
+      }
+
+      .nav-cta {
+        max-width: 140px;
+        min-height: 38px;
+        padding: 0 10px;
+        font-size: 12px;
+        line-height: 1.15;
+        text-align: center;
+        white-space: normal;
+      }
+
+      .hero {
+        padding: 94px 20px 54px;
+      }
+
+      h1 {
+        font-size: clamp(36px, 11.6vw, 48px);
+      }
+
+      .hero-copy {
+        font-size: 17px;
+        max-width: 330px;
+      }
+
+      .status-float {
+        position: relative;
+        right: auto;
+        bottom: auto;
+        margin-top: 36px;
+        max-width: 280px;
+      }
+
+      section {
+        padding: 64px 20px;
+      }
+
+      .card,
+      .state-body,
+      .trust-panel,
+      .demo-right {
+        padding: 22px;
+      }
+
+      .state-image {
+        min-height: 250px;
+      }
+
+      .demo-left {
+        min-height: 300px;
+      }
+
+      .demo-left img {
+        width: min(310px, 92%);
+      }
+
+      .session-row {
+        grid-template-columns: 12px 1fr;
+        padding: 12px 14px;
+      }
+
+      .session-row span:last-child {
+        grid-column: 2;
+      }
+    }
+
+    @media (max-width: 380px) {
+      .brand span:last-child {
+        display: none;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header class="site-header" aria-label="页面导航">
+    <a class="brand" href="#top" aria-label="树懒守望首页">
+      <span class="brand-mark">AI</span>
+      <span>树懒守望</span>
+    </a>
+    <nav class="nav" aria-label="主要导航">
+      <a href="#story">痛点</a>
+      <a href="#features">功能</a>
+      <a href="#product">说明</a>
+      <a href="#privacy">隐私</a>
+      <span class="nav-cta soon-cta">GitHub 链接敬请期待</span>
+    </nav>
+  </header>
+
+  <section class="hero" id="top">
+    <div class="hero-content">
+      <h1><span class="line">AI 在跑，</span><span class="line">树懒在桌边守着。</span></h1>
+      <p class="hero-copy">树懒守望是一款 macOS 桌面悬浮助手。它把 Claude Code 与 Codex 的多个会话进度收在桌边，用树懒桌宠、数字角标和气泡列表提醒你：谁还在跑，谁在等你回来。</p>
+      <div class="hero-actions">
+        <a class="hero-cta" href="#product">看它怎么工作</a>
+        <span class="soon-link">GitHub 链接敬请期待</span>
+      </div>
+    </div>
+
+    <div class="status-float" aria-label="会话状态示例">
+      <div class="session-count"><span class="count-dot">3</span><span>3 个会话，1 个待处理</span></div>
+      <div class="bubble"><span>prd-polish · Codex #1</span><span class="dot red" aria-label="待处理"></span></div>
+      <div class="bubble"><span>checkout-flow · Claude #1</span><span class="dot green" aria-label="进行中"></span></div>
+      <div class="bubble"><span>release-note · 空闲</span><span class="dot blue" aria-label="空闲"></span></div>
+    </div>
+  </section>
+
+  <main>
+    <section id="story">
+      <div class="section-inner">
+        <h2 class="section-title">多个 AI 同时跑，最容易漏掉等你处理的那一个。</h2>
+        <p class="section-copy">Claude Code 和 Codex 常常分散在不同窗口。你转去写文档、查资料或开会时，最难发现的不是进度慢，而是某个会话已经停在确认、选择或查看结果的位置。</p>
+        <div class="pain-grid">
+          <article class="card">
+            <span class="card-number">1</span>
+            <h3>进度分散，难以及时掌握</h3>
+            <p>终端、编辑器、对话窗口同时打开时，很难快速判断哪些任务还在跑，哪些已经停下。</p>
+          </article>
+          <article class="card">
+            <span class="card-number">2</span>
+            <h3>AI 等你回来时，不容易被发现</h3>
+            <p>会话可能已经停在确认、选择或查看结果的位置，但你正在处理别的事，不一定能及时注意到。</p>
+          </article>
+          <article class="card">
+            <span class="card-number">3</span>
+            <h3>不想把内容一直摊开</h3>
+            <p>为了看进度而长期露出终端、对话和输出，会占屏幕，也不适合共享屏幕或开放办公场景。</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="features">
+      <div class="section-inner">
+        <h2 class="section-title">树懒守望只提醒状态，不打断你的工作节奏。</h2>
+        <p class="section-copy">目前仅支持 macOS 悬浮 `.app`；Windows 版本敬请期待。它不替你做决定，也不展示对话正文，只把多个会话的状态放在桌面边角。</p>
+
+        <div class="feature-grid">
+          <article class="card feature-card">
+            <div class="feature-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 5v14M5 12h14"/></svg>
+            </div>
+            <h3>桌面边角轻提示</h3>
+            <p>树懒默认停在桌面边角，用颜色和角标轻轻提示状态变化，不把大块信息压到当前工作上。</p>
+          </article>
+          <article class="card feature-card">
+            <div class="feature-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M8 7h9M8 12h7M8 17h5"/><path d="M4 5v14"/></svg>
+            </div>
+            <h3>状态气泡与数量角标</h3>
+            <p>待处理、进行中、空闲三种状态配合数量角标，让你快速判断有没有需要回看的会话。</p>
+          </article>
+          <article class="card feature-card">
+            <div class="feature-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M14 4h6v6"/><path d="M10 14 20 4"/><path d="M20 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h5"/></svg>
+            </div>
+            <h3>点击气泡尝试回窗口</h3>
+            <p>点击某条会话气泡后，会尝试回到对应 Claude Code 或 Codex 窗口；能否成功取决于系统权限和窗口信息。</p>
+          </article>
+          <article class="card feature-card">
+            <div class="feature-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4 7h16M7 7v10h10V7"/><path d="M9 17v3h6v-3"/></svg>
+            </div>
+            <h3>macOS 悬浮 App</h3>
+            <p>当前提供 macOS 悬浮 `.app`；Windows 版本敬请期待，GitHub 链接敬请期待。</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="product-band" id="product">
+      <div class="section-inner">
+        <h2 class="section-title">平时是一只树懒，需要时才展开气泡。</h2>
+        <p class="section-copy">你能看到状态、数量和对应会话，也可以尝试点气泡回到原窗口；右键只保留隐藏和退出。它不是任务看板，也不会把对话内容搬到桌面上。</p>
+
+        <div class="demo-shell" aria-label="产品界面示意">
+          <div class="demo-left">
+            <img src="assets/sloth-mascot-transparent.png" alt="原创树懒桌宠形象">
+            <div class="demo-badge">4 个会话 · 1 个待处理</div>
+          </div>
+          <div class="demo-right">
+            <div class="session-row">
+              <span class="dot red"></span>
+              <strong>docs-prd · Codex #2</strong>
+              <span>待处理</span>
+            </div>
+            <div class="session-row">
+              <span class="dot green"></span>
+              <strong>ai-monitor · Claude #1</strong>
+              <span>进行中</span>
+            </div>
+            <div class="session-row">
+              <span class="dot green"></span>
+              <strong>release-pack · Codex #1</strong>
+              <span>进行中</span>
+            </div>
+            <div class="session-row">
+              <span class="dot blue"></span>
+              <strong>web-demo · 空闲</strong>
+              <span>空闲</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="state-showcase" id="states">
+      <div class="section-inner">
+        <h2 class="section-title">三种状态，看一眼就明白。</h2>
+        <p class="section-copy">树懒守望只保留待处理、进行中、空闲三种提示。你不用读日志，也不用展开对话正文。</p>
+
+        <div class="state-grid">
+          <article class="card state-card">
+            <div class="state-image">
+              <img src="assets/sloth-state-needs-action.png" alt="待处理状态的树懒提示，带红色数量角标">
+            </div>
+            <div class="state-body">
+              <h3><span class="dot red"></span>待处理</h3>
+              <p>有会话可能需要你确认、继续或查看结果，红色提示优先出现。</p>
+            </div>
+          </article>
+          <article class="card state-card">
+            <div class="state-image">
+              <img src="assets/sloth-state-running.png" alt="进行中状态的树懒提示，带绿色数量角标">
+            </div>
+            <div class="state-body">
+              <h3><span class="dot green"></span>进行中</h3>
+              <p>会话仍在执行、生成或等待工具结果，绿色提示表示可以先让它继续跑。</p>
+            </div>
+          </article>
+          <article class="card state-card">
+            <div class="state-image">
+              <img src="assets/sloth-state-idle.png" alt="空闲状态的树懒提示，带蓝色数量角标">
+            </div>
+            <div class="state-body">
+              <h3><span class="dot blue"></span>空闲</h3>
+              <p>当前会话暂时没有明显动作，可能已经完成、已查看，或暂时不需要处理。</p>
+            </div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="privacy">
+      <div class="section-inner">
+        <div class="trust-grid">
+          <div>
+            <h2 class="section-title">能常驻桌面，前提是足够克制。</h2>
+            <p class="section-copy">树懒守望只提醒你“什么时候该回来看”，不接管 AI 工作，也不复制完整对话或命令输出。</p>
+          </div>
+          <article class="panel trust-panel">
+            <h3>隐私与边界</h3>
+            <ul class="trust-list">
+              <li><span class="check">✓</span><span>默认在本机运行，监听 127.0.0.1。</span></li>
+              <li><span class="check">✓</span><span>主界面不展示完整 summary、命令输出、用户输入或对话正文。</span></li>
+              <li><span class="check">✓</span><span>需要判断和输入时，仍回到原来的 Claude Code 或 Codex 窗口。</span></li>
+              <li><span class="check">✓</span><span>右键只保留隐藏树懒和退出程序，日常使用尽量少打扰。</span></li>
+            </ul>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="launch" id="launch">
+      <div class="section-inner">
+        <h2 class="section-title">先从 macOS 桌面开始。</h2>
+        <p class="section-copy">树懒守望当前仅支持 macOS 悬浮 `.app`；Windows 版本敬请期待，GitHub 链接敬请期待。</p>
+        <div class="launch-links">
+          <span class="hero-cta soon-cta">GitHub 链接敬请期待</span>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="footer-inner">
+      <span>树懒守望</span>
+      <span>为 Claude Code 与 Codex 并行工作流设计的桌面状态提醒</span>
+    </div>
+  </footer>
+</body>
+</html>

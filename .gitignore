@@ -1,0 +1,62 @@
+# Claude Code
+.claude/
+
+# Codex / local agent config
+.codex/
+.agents/
+
+# Local work snapshots and agent scratch space
+.superpowers/
+backups/
+chats/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Build & release artifacts
+build/
+dist/
+*.pyz
+*.dmg
+*.pkg
+*.xcarchive/
+DerivedData/
+
+# Environment & Secrets
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# Logs & local runtime state
+*.log
+logs/
+.ai-progress-monitor/
+
+# Temporary
+tmp/
+*.tmp
+*.bak
