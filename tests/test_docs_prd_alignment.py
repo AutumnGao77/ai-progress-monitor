@@ -34,9 +34,29 @@ class DocsPrdAlignmentTests(unittest.TestCase):
             "目前仅支持 macOS",
             "当前仅支持 macOS",
             "Windows 版本敬请期待",
+            "Windows 原生悬浮 Companion | 已支持",
+            "Windows floating companion | Supported",
+            "桌面宠物体验推荐 macOS / Windows 原生悬浮入口",
+            "macOS / Windows 均可在 Python 3.9+ 下运行",
         ]
         for phrase in forbidden_phrases:
             self.assertNotIn(phrase, combined)
+
+    def test_public_docs_mark_windows_floating_entry_as_preview_not_stable(self):
+        combined = "\n".join(
+            [
+                (ROOT / "README.md").read_text(),
+                (ROOT / "README.en.md").read_text(),
+                (ROOT / "docs" / "release-checklist.md").read_text(),
+                (ROOT / "docs" / "promo" / "index.html").read_text(),
+            ]
+        )
+
+        self.assertIn("macOS 原生悬浮窗口", combined)
+        self.assertIn("Windows 保留轻量预览入口", combined)
+        self.assertIn("Windows lightweight floating companion", combined)
+        self.assertIn("Windows 轻量入口保留为预览路径", combined)
+        self.assertIn("Windows 稳定交付仍需单独人工验收", combined)
 
     def test_readme_dev_helper_points_to_native_floating_log_and_session_counts(self):
         readme = (ROOT / "README.md").read_text()

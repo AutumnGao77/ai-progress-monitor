@@ -4,7 +4,7 @@ English | [Chinese](README.md)
 
 AI Progress Monitor is a local-first, low-interruption desktop companion for tracking AI coding sessions. It watches Claude Code, Codex, and other configured AI tools across terminal and desktop workflows, then shows a small Pet companion when a session is running, idle, or waiting for user action.
 
-The project currently includes a local Web Companion, a macOS floating companion app, and a Windows floating companion entry.
+The current stable delivery focus is the local Web Companion plus the validated macOS floating companion app. A lightweight Windows floating entry is kept as a preview path, but it has not been accepted as a stable delivery target yet.
 
 ## Features
 
@@ -12,7 +12,7 @@ The project currently includes a local Web Companion, a macOS floating companion
 |---|---|
 | Local Web Companion | Supported |
 | macOS floating companion | Supported, with a menu bar avatar icon for restore/quit |
-| Windows floating companion | Supported, with tray restore/quit |
+| Windows lightweight floating companion | Preview entry, with a WinForms/PowerShell tray path kept in the package; not yet accepted as a stable delivery target |
 | Three-state Pet UI | Idle, running, and needs-action images |
 | Numeric badge | Shows the total number of visible session bubbles |
 | Bubble list | Shows session/tool labels and status without exposing content |
@@ -27,7 +27,8 @@ The project currently includes a local Web Companion, a macOS floating companion
 
 - Python 3.9+
 - No third-party runtime dependencies
-- macOS or Windows for the native floating companion entries
+- macOS for the validated native floating companion app
+- Windows can run the Web Companion and the lightweight preview scripts, but it is not the current stable delivery focus
 
 ## Quick Start
 
@@ -61,8 +62,8 @@ For a more desktop-pet-like experience, use the packaged floating companion entr
 
 | Platform | Entry | Behavior |
 |---|---|---|
-| macOS | `AI Progress Monitor Floating.app` | Always-on-top floating Pet; closing hides it; restore/quit from the menu bar avatar icon |
-| Windows | `scripts\start_floating_monitor.bat` | Always-on-top floating Pet; closing hides it; restore/quit from the tray icon |
+| macOS | `AI Progress Monitor Floating.app` | Validated desktop Pet entry; always-on-top floating Pet; closing hides it; restore/quit from the menu bar avatar icon |
+| Windows | `scripts\start_floating_monitor.bat` | Lightweight preview entry; WinForms/PowerShell always-on-top Pet; closing hides it; restore/quit from the tray icon; requires a separate Windows acceptance pass |
 
 During development on macOS, you can build and launch a local dev app without creating a release package:
 
@@ -188,7 +189,7 @@ Generated artifacts:
 | Artifact | Purpose |
 |---|---|
 | `dist/ai-progress-monitor.pyz` | Single-file Web Companion runtime package |
-| `dist/ai-progress-monitor-release.zip` | Recommended distribution bundle with scripts and native companion entries |
+| `dist/ai-progress-monitor-release.zip` | Recommended distribution bundle with scripts, macOS app bundles, and Windows preview scripts |
 
 For public GitHub releases, upload `dist/ai-progress-monitor-release.zip` as a Release artifact instead of committing it to the source repository.
 
@@ -218,7 +219,7 @@ Header: x-monitor-token: <startup-token>
 |---|---|
 | Window detection depends on OS permissions | The app prefers window IDs and process metadata, then falls back to titles |
 | Direct `claude` / `codex` sessions are conservative | Wrapper scripts or JSON events are more reliable for fine-grained status |
-| Windows native companion is lightweight | It currently uses a simple WinForms shell |
+| Windows floating entry is not yet a stable delivery target | The current path is a lightweight WinForms/PowerShell preview and still needs a dedicated Windows acceptance pass |
 | Linux is not the first release target | The architecture leaves room for later support |
 
 ## License and Visual Assets

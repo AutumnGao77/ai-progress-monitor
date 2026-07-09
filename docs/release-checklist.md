@@ -34,7 +34,7 @@ python3 scripts/validate_release.py
 | 响应目录 | `python3 dist/ai-progress-monitor.pyz --help` | 参数包含 `--response-dir` |
 | 环境诊断 | `python3 scripts/doctor.py` | 输出 Python、平台、目录、通知、窗口适配检查 |
 | 进程探测边界 | `PYTHONPATH=src python3 -m unittest tests.test_sources tests.test_service tests.test_web_ui` | 直接 CLI 标记为 `process_only`；Claude 终端回复完成后显示待处理，点击气泡成功回到系统终端或 IDE 内置终端后转空闲；Codex CLI 按进程活跃度保守判断；桌面端具体对话已查看后转空闲并保留 15 分钟后移出；不展示终端内容 |
-| 原生浮窗 | `PYTHONPATH=src python3 -m unittest tests.test_macos_native_companion tests.test_windows_native_companion` | macOS / Windows 浮窗置顶、收起、恢复、进程级检测边界被覆盖 |
+| 原生浮窗 | `PYTHONPATH=src python3 -m unittest tests.test_macos_native_companion tests.test_windows_native_companion` | macOS 已验收路径和 Windows 轻量预览入口的代码级边界被覆盖；Windows 稳定交付仍需单独人工验收 |
 | 端到端冒烟 | `python3 scripts/e2e_smoke.py --artifact dist/ai-progress-monitor.pyz` | 临时启动 Web 服务和 Claude/Codex wrapper，验证服务、事件接入和状态更新链路；新版 Pet 主界面不展示直接回复按钮 |
 
 ## 人工验收
@@ -44,7 +44,7 @@ python3 scripts/validate_release.py
 | Demo 模式启动 | 浏览器访问 `http://127.0.0.1:8765` 能看到 3 个会话 |
 | macOS 双击启动 | 双击 `AI Progress Monitor.app` | 自动启动服务并打开浏览器 |
 | macOS 悬浮入口 | 双击 `AI Progress Monitor Floating.app` | 小窗置顶；关闭只隐藏；菜单栏头像图标可恢复/退出 |
-| Windows 悬浮入口 | 双击 `scripts\start_floating_monitor.bat` | 小窗置顶；关闭只隐藏；托盘可恢复/退出 |
+| Windows 轻量预览入口 | 双击 `scripts\start_floating_monitor.bat` | 小窗置顶；关闭只隐藏；托盘可恢复/退出；作为预览路径记录，稳定交付需单独验收 |
 | API 令牌 | 页面能读取启动令牌并请求会话 API |
 | 系统通知 | needs_action 触发通知，重复刷新不反复弹 |
 | 需要处理状态 | 页面右下角宠物显示“待处理” |
@@ -65,11 +65,11 @@ python3 scripts/validate_release.py
 
 | 项 | 说明 |
 |---|---|
-| 默认界面 | 本地 Web Companion；桌面宠物体验推荐 macOS / Windows 原生悬浮入口 |
+| 默认界面 | 本地 Web Companion；桌面宠物体验当前推荐已验收的 macOS 原生悬浮入口，Windows 轻量入口保留为预览路径 |
 | 实验界面 | Tkinter 悬浮窗，受系统 Tk 版本影响，暂不作为默认交付入口 |
 | 数据接入 | 推荐终端桥接脚本或 JSON 事件源；直接 Claude CLI 可用本地会话状态识别回复后待处理，Codex CLI 仍保守判断活跃/空闲 |
 | GitHub 公开发布 | `dist/` 产物不提交源码仓库；release zip 作为 GitHub Release 附件上传；当前 macOS `.app` 未 notarized |
 | 隐私策略 | 本地运行，不上传会话内容 |
-| 当前发布包 | `ai-progress-monitor-release.zip`，macOS / Windows 均可在 Python 3.9+ 下运行 |
+| 当前发布包 | `ai-progress-monitor-release.zip`，包含 Python 3.9+ Web Companion、macOS 已验收 `.app`、Windows 轻量预览脚本 |
 | 诊断工具 | `scripts/doctor.py` 可用于定位权限、目录和平台适配问题 |
 | Pet 外观配置 | `~/.ai-progress-monitor/preferences.json` 支持 `pet_assets.idle`、`pet_assets.running`、`pet_assets.needs_action`、`pet_assets.app_avatar` 本地路径；无效路径自动回退内置资源 |

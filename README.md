@@ -2,7 +2,7 @@
 
 [English](README.en.md) | 中文
 
-结论：这是一个本地优先、低侵入的 AI 工作进度监控助手，用来聚合主流 AI 工具在终端/桌面端中的状态，并在需要用户处理时提醒。当前提供本地 Web Companion、macOS 原生悬浮窗口和 Windows 原生悬浮窗口入口。
+结论：这是一个本地优先、低侵入的 AI 工作进度监控助手，用来聚合主流 AI 工具在终端/桌面端中的状态，并在需要用户处理时提醒。当前稳定交付重点是本地 Web Companion 和已验收的 macOS 原生悬浮窗口；Windows 保留轻量预览入口，尚未作为稳定交付版本验收。
 
 产品规则：打开这个 App 之后，才开始监控所有 AI 对话的进度并按状态反馈；打开前已经沉淀在历史文件里的桌面/JSON 会话不纳入本轮气泡列表。当前仍存活的 CLI 和桌面 App 属于现场，可显示为空闲入口或当前状态，后续活动继续更新；有具体会话时，具体会话优先于通用存活入口。桌面端具体对话被用户点击查看并转为空闲后，在气泡列表保留 15 分钟；15 分钟后自动移出，如果该桌面 App 仍存活，则保留 App 空闲入口。
 
@@ -12,7 +12,7 @@
 |---|---|
 | 低侵入 Web Companion | 已支持 |
 | macOS 原生悬浮 Companion | 已支持，发布包内提供置顶窗口与状态栏恢复入口 |
-| Windows 原生悬浮 Companion | 已支持，发布包内提供置顶窗口与托盘恢复入口 |
+| Windows 轻量悬浮 Companion | 预览入口，发布包内保留 WinForms/PowerShell 启动脚本，尚未作为稳定交付版本验收 |
 | 左键展开/收起气泡列表 | 已支持 |
 | 拖动宠物位置并记忆 | 已支持 |
 | 右键隐藏 Pet | 已支持，程序继续运行，可从菜单栏/托盘恢复 |
@@ -34,7 +34,8 @@
 
 - Python 3.9+
 - 无第三方运行依赖
-- macOS 或 Windows
+- macOS 是当前已验收的原生悬浮入口平台
+- Windows 可运行 Web Companion 和轻量预览脚本，但不是当前稳定交付重点
 
 ## 快速启动
 
@@ -78,8 +79,8 @@ macOS 用户也可以双击发布包内的 `AI Progress Monitor.app` 启动。
 
 | 系统 | 启动方式 | 行为 |
 |---|---|---|
-| macOS | 双击 `AI Progress Monitor Floating.app` | 原生置顶窗口；点击关闭只隐藏，可从菜单栏头像图标恢复或退出 |
-| Windows | 双击 `scripts\start_floating_monitor.bat` | 原生置顶窗口；点击关闭只隐藏，可从托盘图标恢复或退出 |
+| macOS | 双击 `AI Progress Monitor Floating.app` | 当前已验收的桌面 Pet 入口；原生置顶窗口；点击关闭只隐藏，可从菜单栏头像图标恢复或退出 |
+| Windows | 双击 `scripts\start_floating_monitor.bat` | 轻量预览入口；WinForms/PowerShell 置顶窗口；点击关闭只隐藏，可从托盘图标恢复或退出；后续需单独验收 |
 
 开发阶段不需要先打发布包，可以在 macOS 上生成临时试用版：
 
@@ -300,7 +301,7 @@ Header: x-monitor-token: <启动时生成的令牌>
 | 窗口激活仍依赖系统权限 | 当前优先用窗口 ID / 进程 ID，失败时按标题兜底 | 后续加入更完整的原生桌面壳 |
 | Pet 不直接回复终端问题 | 避免误操作和焦点抢占 | 点击气泡回到原窗口处理 |
 | Windows 通知依赖系统能力 | 当前优先使用 BurntToast 命令能力，缺失时静默降级 | 后续加入原生通知壳 |
-| Windows 原生悬浮窗是轻量 WinForms 版本 | 便于无依赖运行，视觉和动效仍较基础 | 后续可升级为 WinUI/.NET 桌面壳 |
+| Windows 轻量悬浮入口尚未作为稳定交付验收 | 当前是 WinForms/PowerShell 预览版本，便于无依赖运行，视觉、动效和真实用户路径仍需单独验证 | 后续单独开 Windows 迭代，可升级为 WinUI/.NET 桌面壳 |
 | Linux 不是首发重点 | PRD 优先 macOS / Windows | 架构已预留 |
 
 ## 打包建议
@@ -318,7 +319,7 @@ python3 scripts/e2e_smoke.py --artifact dist/ai-progress-monitor.pyz
 | 产物 | 用途 |
 |---|---|
 | `dist/ai-progress-monitor.pyz` | 单文件 Web Companion 运行包 |
-| `dist/ai-progress-monitor-release.zip` | 推荐分发包，包含运行包、macOS `.app`、桥接脚本、一键启动脚本和说明 |
+| `dist/ai-progress-monitor-release.zip` | 推荐分发包，包含运行包、macOS `.app`、桥接脚本、一键启动脚本、Windows 预览脚本和说明 |
 
 公开发布到 GitHub 时，建议把 `dist/ai-progress-monitor-release.zip` 作为 Release 附件上传，不提交到源码仓库。当前 macOS `.app` 是本地构建产物，未做 Apple notarization；下载用户可能需要在系统设置中允许打开。
 
@@ -337,7 +338,7 @@ python3 scripts/doctor.py
 | macOS | `~/Library/Logs/AI Progress Monitor/monitor.log` |
 | Windows | `%LOCALAPPDATA%\AI Progress Monitor\monitor.log` |
 
-当前默认界面是本地 Web Companion，适合先验证核心体验和接入链路。发布包已包含 macOS 原生悬浮 `.app` 和 Windows WinForms 悬浮入口；后续上线可继续升级为更完整的 Electron、Tauri、WinUI 或平台原生壳。
+当前默认界面是本地 Web Companion，适合先验证核心体验和接入链路。发布包已包含已验收的 macOS 原生悬浮 `.app`，并保留 Windows WinForms 轻量预览入口；后续上线可继续升级为更完整的 Electron、Tauri、WinUI 或平台原生壳。
 
 当前系统自带 Tkinter 在部分 macOS 环境可能无法启动真实窗口，因此 Tkinter 悬浮窗只作为实验入口保留，不作为默认交付入口。
 
