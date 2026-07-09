@@ -44,6 +44,9 @@ dist/
 *.xcarchive/
 DerivedData/
 
+# Source image candidates
+src/ai_progress_monitor/assets/sloth-candidates/
+
 # Environment & Secrets
 .env
 .env.local
