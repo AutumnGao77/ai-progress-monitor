@@ -2,6 +2,8 @@
 
 English | [Chinese](README.md)
 
+[![Validate](https://github.com/AutumnGao77/ai-progress-monitor/actions/workflows/validate.yml/badge.svg)](https://github.com/AutumnGao77/ai-progress-monitor/actions/workflows/validate.yml)
+
 AI Progress Monitor is a local-first, low-interruption desktop companion for tracking AI coding sessions. It watches Claude Code, Codex, and other configured AI tools across terminal and desktop workflows, then shows a small Pet companion when a session is running, idle, or waiting for user action.
 
 The current stable delivery focus is the local Web Companion plus the validated macOS floating companion app. A lightweight Windows floating entry is kept as a preview path, but it has not been accepted as a stable delivery target yet.

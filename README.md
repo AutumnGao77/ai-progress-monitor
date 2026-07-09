@@ -2,6 +2,8 @@
 
 [English](README.en.md) | 中文
 
+[![Validate](https://github.com/AutumnGao77/ai-progress-monitor/actions/workflows/validate.yml/badge.svg)](https://github.com/AutumnGao77/ai-progress-monitor/actions/workflows/validate.yml)
+
 结论：这是一个本地优先、低侵入的 AI 工作进度监控助手，用来聚合主流 AI 工具在终端/桌面端中的状态，并在需要用户处理时提醒。当前稳定交付重点是本地 Web Companion 和已验收的 macOS 原生悬浮窗口；Windows 保留轻量预览入口，尚未作为稳定交付版本验收。
 
 产品规则：打开这个 App 之后，才开始监控所有 AI 对话的进度并按状态反馈；打开前已经沉淀在历史文件里的桌面/JSON 会话不纳入本轮气泡列表。当前仍存活的 CLI 和桌面 App 属于现场，可显示为空闲入口或当前状态，后续活动继续更新；有具体会话时，具体会话优先于通用存活入口。桌面端具体对话被用户点击查看并转为空闲后，在气泡列表保留 15 分钟；15 分钟后自动移出，如果该桌面 App 仍存活，则保留 App 空闲入口。

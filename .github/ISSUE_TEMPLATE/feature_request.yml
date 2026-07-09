@@ -1,0 +1,41 @@
+name: Feature request
+description: Suggest an improvement or new integration.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What user problem should this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What should the product do?
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - AI tool monitoring
+        - macOS companion
+        - Windows preview path
+        - Web Companion
+        - Packaging or release
+        - Documentation
+        - Other
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: How would we know this is done?
+      placeholder: |
+        - Given ...
+        - When ...
+        - Then ...

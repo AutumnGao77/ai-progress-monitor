@@ -1,0 +1,51 @@
+name: Bug report
+description: Report a reproducible problem in AI Progress Monitor.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. Please avoid posting secrets, private prompts, command output, or personal data.
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: Release tag, commit hash, or branch.
+      placeholder: v0.1.0 or main@abc1234
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - macOS
+        - Windows preview path
+        - Web Companion only
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: Describe the visible problem and expected behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: List the smallest safe reproduction steps.
+      placeholder: |
+        1. Run ...
+        2. Click ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: validation
+    attributes:
+      label: Checks already run
+      description: Include safe command results only. Do not paste secrets or private prompt content.
+      placeholder: python3 scripts/validate_release.py
