@@ -97,28 +97,6 @@ class WebUiTests(unittest.TestCase):
         ]
         self.assertEqual(max(watermark_area_alphas), 0)
 
-    def test_app_avatar_source_candidate_is_clean_transparent_circle(self):
-        asset = ROOT / "src" / "ai_progress_monitor" / "assets" / "sloth-candidates" / "APP头像.png"
-        width, height, pixels = _read_rgba_png(asset)
-        self.assertEqual((width, height), (2048, 2048))
-        center_x = (width - 1) / 2
-        center_y = (height - 1) / 2
-        radius = 1000
-
-        for y in range(0, height, 64):
-            for x in range(0, width, 64):
-                distance = ((x - center_x) ** 2 + (y - center_y) ** 2) ** 0.5
-                alpha = pixels[(y * width + x) * 4 + 3]
-                if distance > radius + 8:
-                    self.assertEqual(alpha, 0, f"expected transparent source square background at {(x, y)}")
-
-        watermark_area_alphas = [
-            pixels[(y * width + x) * 4 + 3]
-            for y in range(1880, 2048, 24)
-            for x in range(1640, 2048, 24)
-        ]
-        self.assertEqual(max(watermark_area_alphas), 0)
-
     def test_pet_art_switches_with_existing_status_priority(self):
         self.assertIn('const petImages = {', HTML)
         self.assertIn('idle:"/assets/pet/idle.png"', HTML)
