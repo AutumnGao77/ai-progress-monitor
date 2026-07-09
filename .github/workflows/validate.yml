@@ -29,7 +29,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "24"
 
       - name: Run sensitive text scan
         run: |
@@ -38,26 +38,38 @@ jobs:
           validate_release.check_sensitive_text()
           PY
 
-      - name: Run core unit tests
+      - name: Run docs and release tests
+        run: |
+          PYTHONPATH=src python3 -m unittest \
+            tests.test_docs_prd_alignment \
+            tests.test_doctor \
+            tests.test_e2e_smoke \
+            tests.test_release_bundle
+
+      - name: Run domain and source tests
         run: |
           PYTHONPATH=src python3 -m unittest \
             tests.test_actions \
             tests.test_classifier \
             tests.test_cleanup \
-            tests.test_docs_prd_alignment \
-            tests.test_doctor \
-            tests.test_e2e_smoke \
             tests.test_notifier \
             tests.test_preferences \
-            tests.test_release_bundle \
             tests.test_service \
             tests.test_sources \
-            tests.test_store \
+            tests.test_store
+
+      - name: Run web tests
+        run: |
+          PYTHONPATH=src python3 -m unittest \
             tests.test_web_doctor_api \
             tests.test_web_launch \
             tests.test_web_security \
             tests.test_web_ui \
-            tests.test_web_ui_behavior \
+            tests.test_web_ui_behavior
+
+      - name: Run native command tests
+        run: |
+          PYTHONPATH=src python3 -m unittest \
             tests.test_window_focus \
             tests.test_windows_native_companion
 
