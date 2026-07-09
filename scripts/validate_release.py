@@ -11,6 +11,37 @@ from typing import Dict, List
 
 
 ROOT = Path(__file__).resolve().parents[1]
+COMPANY_TOKEN = "s" + "to"
+LEGACY_SENSITIVE_PARTS = [
+    "strong" + "gao",
+    "gao" + "jian",
+    "outlook" + ".com",
+    "s" + "todeMacBook",
+    "/Users/" + COMPANY_TOKEN,
+    "Autumn " + "<",
+]
+
+TEXT_SUFFIXES = {
+    ".bat",
+    ".css",
+    ".html",
+    ".js",
+    ".json",
+    ".md",
+    ".ps1",
+    ".py",
+    ".sh",
+    ".swift",
+    ".toml",
+    ".txt",
+    ".yaml",
+    ".yml",
+}
+TEXT_FILENAMES = {
+    ".claudeignore",
+    ".gitignore",
+    "LICENSE",
+}
 
 
 def main() -> int:
@@ -78,17 +109,61 @@ for (const item of html.matchAll(new RegExp('<script>([\\\\s\\\\S]*?)<\\\\/scrip
 
 
 def check_sensitive_text() -> None:
-    banned_exact = re.compile(r"\bsto\b", re.IGNORECASE)
-    paths = []
-    for pattern in ("*.md", "docs/**/*.md", "src/**/*.py", "tests/**/*.py", "scripts/*", "pyproject.toml"):
-        paths.extend(ROOT.glob(pattern))
-    for path in paths:
+    company_token_pattern = re.compile(
+        rf"(^|[^A-Za-z0-9_]){COMPANY_TOKEN}([^A-Za-z0-9_]|$)|@{COMPANY_TOKEN}|{COMPANY_TOKEN}\.cn",
+        re.IGNORECASE,
+    )
+    legacy_sensitive_pattern = re.compile(
+        "|".join(re.escape(part) for part in LEGACY_SENSITIVE_PARTS),
+        re.IGNORECASE,
+    )
+    for path in iter_public_text_paths():
         if not path.is_file():
             continue
         text = path.read_text(encoding="utf-8", errors="ignore")
-        if banned_exact.search(text):
-            raise SystemExit(f"[FAIL] sensitive text: {path}")
+        if company_token_pattern.search(text):
+            raise SystemExit(f"[FAIL] sensitive company token: {path}")
+        if legacy_sensitive_pattern.search(text):
+            raise SystemExit(f"[FAIL] sensitive legacy identity: {path}")
     print("[OK] sensitive text")
+
+
+def iter_public_text_paths() -> List[Path]:
+    completed = subprocess.run(
+        ["git", "ls-files", "-z"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode == 0 and completed.stdout:
+        paths = [
+            ROOT / name
+            for name in completed.stdout.split("\0")
+            if name and should_scan_text_path(Path(name))
+        ]
+        return paths
+
+    paths: List[Path] = []
+    for pattern in (
+        "*.md",
+        ".*ignore",
+        ".github/**/*.yml",
+        ".github/**/*.yaml",
+        "docs/**/*.md",
+        "docs/**/*.html",
+        "native/**/*",
+        "scripts/*",
+        "src/**/*.py",
+        "tests/**/*.py",
+        "pyproject.toml",
+        "LICENSE",
+    ):
+        paths.extend(path for path in ROOT.glob(pattern) if should_scan_text_path(path.relative_to(ROOT)))
+    return paths
+
+
+def should_scan_text_path(path: Path) -> bool:
+    return path.name in TEXT_FILENAMES or path.suffix.lower() in TEXT_SUFFIXES
 
 
 def check_help_contains_notifications(env: Dict[str, str]) -> None:

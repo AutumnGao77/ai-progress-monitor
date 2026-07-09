@@ -16,6 +16,30 @@ class ReleaseBundleTests(unittest.TestCase):
 
         validate_release.check_js_syntax(env)
 
+    def test_sensitive_scan_includes_github_workflows(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            workflow_dir = root / ".github" / "workflows"
+            workflow_dir.mkdir(parents=True)
+            (workflow_dir / "validate.yml").write_text("owner: " + ("s" "to"), encoding="utf-8")
+
+            with mock.patch.object(validate_release, "ROOT", root):
+                with self.assertRaises(SystemExit):
+                    validate_release.check_sensitive_text()
+
+    def test_sensitive_scan_allows_common_words_containing_token(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            scripts_dir = root / "scripts"
+            scripts_dir.mkdir()
+            (scripts_dir / "sample.py").write_text(
+                "restore = store = custom = stop = 'ordinary words'\n",
+                encoding="utf-8",
+            )
+
+            with mock.patch.object(validate_release, "ROOT", root):
+                validate_release.check_sensitive_text()
+
     def test_release_readme_mentions_direct_cli_and_wrapper_boundary(self):
         source = (Path(__file__).resolve().parents[1] / "scripts" / "build_release.py").read_text()
 
