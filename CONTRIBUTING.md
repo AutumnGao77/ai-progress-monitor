@@ -29,7 +29,7 @@ python3 scripts/validate_release.py
 - Keep changes focused and avoid unrelated refactors.
 - Run `python3 scripts/validate_release.py` before opening a PR.
 - Include screenshots or short notes for visible UI changes.
-- Do not commit secrets, local credentials, build artifacts, or generated release packages.
+- Do not commit secrets, local credentials, company-related identifiers, local machine paths, build artifacts, or generated release packages.
 - Keep Windows wording clear: the current Windows floating entry is a preview path until a dedicated Windows acceptance pass is completed.
 
 ## Visual Assets

@@ -323,7 +323,7 @@ python3 scripts/e2e_smoke.py --artifact dist/ai-progress-monitor.pyz
 | `dist/ai-progress-monitor.pyz` | 单文件 Web Companion 运行包 |
 | `dist/ai-progress-monitor-release.zip` | 推荐分发包，包含运行包、macOS `.app`、桥接脚本、一键启动脚本、Windows 预览脚本和说明 |
 
-公开发布到 GitHub 时，建议把 `dist/ai-progress-monitor-release.zip` 作为 Release 附件上传，不提交到源码仓库。当前 macOS `.app` 是本地构建产物，未做 Apple notarization；下载用户可能需要在系统设置中允许打开。
+公开发布到 GitHub 时，建议把 `dist/ai-progress-monitor-release.zip` 作为 Release 附件上传，不提交到源码仓库。已发布的版本 tag 应保持不可变；如果发布后只修 CI、文档或测试边界，保留原 tag 不动，后续用户可见变更再发新的补丁版本，例如 `v0.1.1`。当前 macOS `.app` 是本地构建产物，未做 Apple notarization；下载用户可能需要在系统设置中允许打开。
 
 如果用户反馈“打不开、没有提醒、无法回到窗口”，优先让用户运行：
 
@@ -349,6 +349,6 @@ python3 scripts/doctor.py
 | 内容 | 说明 |
 |---|---|
 | 代码协议 | MIT License，见 `LICENSE` |
-| 视觉素材 | Pet 图片、APP 头像、宣传页图片和候选素材按 `ASSET_LICENSE.md` 说明授权 |
+| 视觉素材 | 公开分发的 Pet 图片、APP 头像和宣传页图片按 `ASSET_LICENSE.md` 说明授权；本地候选素材默认不提交、不打包 |
 | 图片来源 | 基于原创提示词使用豆包 AI 辅助生成，并经人工筛选和透明背景、尺寸、图标适配处理 |
 | 公开仓库 | 提交并推送到公开仓库的源码、文档和素材可被互联网用户访问、下载和 fork；`build/`、`dist/`、`backups/`、`chats/` 等本地目录不提交 |

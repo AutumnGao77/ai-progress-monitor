@@ -17,10 +17,10 @@ python3 scripts/validate_release.py
 | 入口帮助 | `PYTHONPATH=src python3 -m ai_progress_monitor --help` | 正常显示参数 |
 | 事件脚本 | `python3 scripts/emit_event.py --help` | 正常显示参数 |
 | 前端脚本语法 | `python3 scripts/validate_release.py` 内置检查 | 无 JS 语法错误 |
-| 敏感信息扫描 | `python3 scripts/validate_release.py` 内置检查 | 无本机真实姓名精确命中 |
+| 敏感信息扫描 | `python3 scripts/validate_release.py` 内置检查 | 无本机真实姓名、公司相关账号标识、本机路径、旧邮箱片段或机器名命中 |
 | Web API 冒烟 | 启动服务后用页面令牌请求 `/api/sessions` | 返回会话 JSON |
 | API 安全冒烟 | 不带令牌请求 `/api/sessions` | 返回 403 |
-| 三态 Pet 资源 | `PYTHONPATH=src python3 -m unittest tests.test_web_ui tests.test_web_launch tests.test_web_ui_behavior tests.test_preferences` | 三态图片路由、APP 头像、可配置资源、透明角和状态切图均通过；APP 头像源图和运行图为透明圆形，无水印和圆外方框背景 |
+| 三态 Pet 资源 | `PYTHONPATH=src python3 -m unittest tests.test_web_ui tests.test_web_launch tests.test_web_ui_behavior tests.test_preferences` | 三态图片路由、APP 头像、可配置资源、透明角和状态切图均通过；运行时 APP 头像为透明圆形，无水印和圆外方框背景 |
 | 原生透明背景 | `PYTHONPATH=src python3 -m unittest tests.test_web_ui` | `.pet` 不添加 `drop-shadow`；WebView 背景保持透明 |
 | 发布包构建 | `python3 scripts/build_release.py` | 生成 `dist/ai-progress-monitor.pyz` 和 `dist/ai-progress-monitor-release.zip` |
 | macOS App 外壳 | 解压 release zip | 包含 `AI Progress Monitor.app` 和 `AI Progress Monitor Floating.app` |
@@ -69,6 +69,7 @@ python3 scripts/validate_release.py
 | 实验界面 | Tkinter 悬浮窗，受系统 Tk 版本影响，暂不作为默认交付入口 |
 | 数据接入 | 推荐终端桥接脚本或 JSON 事件源；直接 Claude CLI 可用本地会话状态识别回复后待处理，Codex CLI 仍保守判断活跃/空闲 |
 | GitHub 公开发布 | `dist/` 产物不提交源码仓库；release zip 作为 GitHub Release 附件上传；当前 macOS `.app` 未 notarized |
+| 版本 tag 策略 | 已发布 tag 不移动；发布后 CI、测试边界或文档修复留在 `main`，下一次用户可见改动再发新的补丁版本 |
 | 隐私策略 | 本地运行，不上传会话内容 |
 | 当前发布包 | `ai-progress-monitor-release.zip`，包含 Python 3.9+ Web Companion、macOS 已验收 `.app`、Windows 轻量预览脚本 |
 | 诊断工具 | `scripts/doctor.py` 可用于定位权限、目录和平台适配问题 |

@@ -205,10 +205,28 @@ class DocsPrdAlignmentTests(unittest.TestCase):
         ]
         for phrase in forbidden_phrases:
             self.assertNotIn(phrase, qa)
-        self.assertIn("296 tests OK", qa)
+        self.assertIn("298 tests OK", qa)
         self.assertIn("dist/ai-progress-monitor-release.zip", qa)
         self.assertIn("2.74 MiB", qa)
         self.assertIn("12.26 MiB", qa)
+
+    def test_release_docs_define_sensitive_company_scan_and_immutable_tags(self):
+        combined = "\n".join(
+            [
+                (ROOT / "AGENTS.md").read_text(),
+                (ROOT / "README.md").read_text(),
+                (ROOT / "README.en.md").read_text(),
+                (ROOT / "docs" / "release-checklist.md").read_text(),
+                (ROOT / "docs" / "qa" / "2026-07-02-macos-sloth-pet-monitor-acceptance.md").read_text(),
+            ]
+        )
+
+        self.assertIn("公司相关", combined)
+        self.assertIn("本机路径", combined)
+        self.assertIn("机器名", combined)
+        self.assertIn("已发布 tag 不移动", combined)
+        self.assertIn("Published version tags should remain immutable", combined)
+        self.assertIn("本地候选素材默认不提交、不打包", combined)
 
     def test_docs_define_three_state_pet_assets_and_configurable_overrides(self):
         combined = "\n".join(

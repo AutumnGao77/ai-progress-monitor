@@ -193,7 +193,7 @@ Generated artifacts:
 | `dist/ai-progress-monitor.pyz` | Single-file Web Companion runtime package |
 | `dist/ai-progress-monitor-release.zip` | Recommended distribution bundle with scripts, macOS app bundles, and Windows preview scripts |
 
-For public GitHub releases, upload `dist/ai-progress-monitor-release.zip` as a Release artifact instead of committing it to the source repository.
+For public GitHub releases, upload `dist/ai-progress-monitor-release.zip` as a Release artifact instead of committing it to the source repository. Published version tags should remain immutable: keep an already published tag in place, and use the next patch version such as `v0.1.1` for later user-visible changes.
 
 The current macOS app bundles are locally built and ad-hoc signed. They are not Apple-notarized yet, so users may need to allow the app in macOS system settings.
 
@@ -231,4 +231,4 @@ Header: x-monitor-token: <startup-token>
 | Code | MIT License, see `LICENSE` |
 | Visual assets | See `ASSET_LICENSE.md` |
 
-The visual assets were generated with Doubao AI from original prompts and then manually selected and processed for transparent backgrounds, sizing, state variants, and icon use. They are intended to be usable with this public project under the asset license notes.
+The published visual assets were generated with Doubao AI from original prompts and then manually selected and processed for transparent backgrounds, sizing, state variants, and icon use. Local candidate/source images are not committed or packaged by default. Published assets are intended to be usable with this public project under the asset license notes.

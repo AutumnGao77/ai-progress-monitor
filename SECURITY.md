@@ -11,7 +11,7 @@ AI Progress Monitor is a local-first desktop companion. It should not upload ses
 
 ## Reporting a Vulnerability
 
-Please do not post sensitive exploit details, private tokens, or personal data in a public issue.
+Please do not post sensitive exploit details, private tokens, personal data, company-related identifiers, or local machine paths in a public issue.
 
 Preferred reporting path:
 
@@ -28,5 +28,5 @@ Useful information to include:
 ## Security Expectations
 
 - Local API routes require a startup token.
-- Logs and UI should avoid exposing prompt text, command output, credentials, or raw session identifiers.
+- Logs and UI should avoid exposing prompt text, command output, credentials, company-related identifiers, local machine paths, or raw session identifiers.
 - Release artifacts should be generated from source and attached to GitHub Releases, not committed to the repository.

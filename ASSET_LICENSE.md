@@ -1,14 +1,14 @@
 # Visual Asset License
 
-结论：本项目随仓库发布的 Pet 图片、APP 头像、宣传页图片和候选素材，在法律允许范围内按项目根目录 `LICENSE` 中的 MIT License 授权使用。
+结论：本项目随仓库或发布包公开分发的 Pet 图片、APP 头像和宣传页图片，在法律允许范围内按项目根目录 `LICENSE` 中的 MIT License 授权使用。本地候选源素材若存在，来源和使用意图相同，但默认不提交到公开仓库，也不进入发布包。
 
 ## 适用范围
 
-| 资源 | 路径 |
+| 资源 | 路径 | 发布状态 |
 |---|---|
-| 运行时 Pet 和 APP 头像 | `src/ai_progress_monitor/assets/*.png` |
-| Pet / 头像候选源素材 | `src/ai_progress_monitor/assets/sloth-candidates/*.png` |
-| 宣传页视觉素材 | `docs/promo/assets/*.png` |
+| 运行时 Pet 和 APP 头像 | `src/ai_progress_monitor/assets/*.png` | 随源码和发布包分发 |
+| 宣传页视觉素材 | `docs/promo/assets/*.png` | 随源码分发 |
+| Pet / 头像候选源素材 | `src/ai_progress_monitor/assets/sloth-candidates/*.png` | 本地参考素材，默认不提交、不打包 |
 
 ## 来源说明
 
@@ -18,7 +18,7 @@
 
 ## 授权说明
 
-在项目方依法可授权的范围内，上述视觉素材可随本项目一起使用、复制、修改、分发、再授权和用于公开发布，授权条件与项目根目录 `LICENSE` 保持一致。
+在项目方依法可授权的范围内，随仓库或发布包公开分发的上述视觉素材可随本项目一起使用、复制、修改、分发、再授权和用于公开发布，授权条件与项目根目录 `LICENSE` 保持一致。
 
 如果某些纯 AI 生成部分在适用法律下不构成可版权保护内容，本文件也表达项目方的公开使用意图：项目方不对这些随仓库发布的视觉素材设置额外的项目内使用限制。
 

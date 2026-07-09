@@ -29,13 +29,13 @@ The desktop Pet uses local raster assets under `src/ai_progress_monitor/assets/`
 
 Keep the Pet image background transparent. The WebView container must stay transparent and must not add a CSS `drop-shadow` on `.pet`; if a visual shadow is needed, bake it into the image intentionally and verify it still satisfies the transparent-window experience.
 
-The app avatar source `src/ai_progress_monitor/assets/sloth-candidates/APP头像.png` and runtime `app-avatar.png` must stay clean transparent circular icons: no watermark, no outer square/yellow background, and transparent pixels should be `(0,0,0,0)` to avoid dirty edges in menu bar and bundle icons.
+Runtime `app-avatar.png` must stay a clean transparent circular icon: no watermark, no outer square/yellow background, and transparent pixels should be `(0,0,0,0)` to avoid dirty edges in menu bar and bundle icons. If local candidate/source files exist, apply the same visual standard to them before deriving runtime assets.
 
 Visual replacements should preserve the current shape contract: three Pet state PNG files at 768 x 768, one app avatar PNG at 1024 x 1024, and the legacy `sloth-pet.png` fallback kept in sync with the idle state. User-configurable overrides are read from `~/.ai-progress-monitor/preferences.json` via `pet_assets.idle`, `pet_assets.running`, `pet_assets.needs_action`, and `pet_assets.app_avatar`.
 
 macOS bundles must copy `app-avatar.png` into `Contents/Resources/`, generate `AppIcon.icns`, declare `CFBundleIconFile=AppIcon`, and use the avatar image for the menu bar status item instead of the literal `AI` text.
 
-Candidate/source images can stay under `src/ai_progress_monitor/assets/sloth-candidates/` for local reference, but release packaging must exclude that directory and `.DS_Store` files. Shipping packages should contain only the final runtime assets.
+Candidate/source images can stay under `src/ai_progress_monitor/assets/sloth-candidates/` for local reference, but they are gitignored by default and release packaging must exclude that directory and `.DS_Store` files. CI and public tests must validate the final runtime assets instead of requiring local candidate files.
 
 ## Build, Test, and Development Commands
 
@@ -69,8 +69,10 @@ Pull requests should include a brief summary, testing notes, linked issue or tas
 
 ## Security & Configuration Tips
 
-Do not commit secrets, private keys, local credentials, or personal data. Use example environment files such as `.env.example` and keep real `.env` files out of version control.
+Do not commit secrets, private keys, local credentials, company-related identifiers, or personal data. Use example environment files such as `.env.example` and keep real `.env` files out of version control.
 
 When documents need a person placeholder, use `Gao` instead of any real local name.
+
+Treat the local login username, machine names, real local paths, old personal/company email fragments, and any company workspace identifiers as sensitive. Public code, docs, tests, release notes, GitHub issues, and release artifacts must not expose them; use `Gao`, placeholder paths, or GitHub noreply identity where needed.
 
 Keep `build/`, `dist/`, local agent folders, logs, and generated packages out of source control. For GitHub releases, upload `dist/ai-progress-monitor-release.zip` as a Release artifact instead of committing it. Current macOS app bundles are locally built and not Apple-notarized unless a future release process explicitly adds notarization.
