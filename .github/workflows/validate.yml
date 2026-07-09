@@ -14,7 +14,7 @@ permissions:
 jobs:
   core-validation:
     name: Core validation
-    runs-on: macos-latest
+    runs-on: macos-15
     timeout-minutes: 15
 
     steps:
@@ -58,13 +58,17 @@ jobs:
             tests.test_sources \
             tests.test_store
 
-      - name: Run web tests
+      - name: Run web Python tests
         run: |
           PYTHONPATH=src python3 -m unittest \
             tests.test_web_doctor_api \
             tests.test_web_launch \
             tests.test_web_security \
-            tests.test_web_ui \
+            tests.test_web_ui
+
+      - name: Run web behavior tests
+        run: |
+          PYTHONPATH=src python3 -m unittest \
             tests.test_web_ui_behavior
 
       - name: Run native command tests
