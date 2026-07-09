@@ -12,8 +12,8 @@ permissions:
   contents: read
 
 jobs:
-  release-validation:
-    name: Release validation
+  core-validation:
+    name: Core validation
     runs-on: macos-latest
     timeout-minutes: 15
 
@@ -31,5 +31,54 @@ jobs:
         with:
           node-version: "20"
 
-      - name: Run release validation
-        run: python3 scripts/validate_release.py
+      - name: Run sensitive text scan
+        run: |
+          python3 - <<'PY'
+          from scripts import validate_release
+          validate_release.check_sensitive_text()
+          PY
+
+      - name: Run core unit tests
+        run: |
+          PYTHONPATH=src python3 -m unittest \
+            tests.test_actions \
+            tests.test_classifier \
+            tests.test_cleanup \
+            tests.test_docs_prd_alignment \
+            tests.test_doctor \
+            tests.test_e2e_smoke \
+            tests.test_notifier \
+            tests.test_preferences \
+            tests.test_release_bundle \
+            tests.test_service \
+            tests.test_sources \
+            tests.test_store \
+            tests.test_web_doctor_api \
+            tests.test_web_launch \
+            tests.test_web_security \
+            tests.test_web_ui \
+            tests.test_web_ui_behavior \
+            tests.test_window_focus \
+            tests.test_windows_native_companion
+
+      - name: Compile Python sources
+        run: PYTHONPYCACHEPREFIX="$RUNNER_TEMP/ai-progress-pycache" PYTHONPATH=src python3 -m compileall -q src scripts
+
+      - name: Check CLI entry points
+        run: |
+          PYTHONPATH=src python3 -m ai_progress_monitor --help
+          python3 scripts/emit_event.py --help
+          python3 scripts/e2e_smoke.py --help
+          python3 scripts/monitor_command.py --help
+          python3 scripts/doctor.py --help
+
+      - name: Check rendered JavaScript syntax
+        run: |
+          python3 - <<'PY'
+          import os
+          from scripts import validate_release
+          env = os.environ.copy()
+          env["PYTHONPATH"] = "src"
+          validate_release.check_js_syntax(env)
+          validate_release.check_help_contains_notifications(env)
+          PY
