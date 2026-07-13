@@ -98,7 +98,7 @@ scripts/run_macos_floating_dev.sh
 scripts/check_macos_floating_dev.sh
 ```
 
-它只读取进程和 `~/Library/Logs/AI Progress Monitor/native-monitor.log`，用于确认 dev Pet 是否启动、服务 URL 是否出现、本轮是否收到隐藏/恢复/退出等 host 消息。输出中的本地访问令牌会脱敏；如果服务已被 Pet 轮询，还会显示类似 `total=4 running=1 idle=3 process_only=4` 的脱敏会话计数，用来确认终端和桌面 Claude/Codex 是否已被识别。
+它读取进程和 `~/Library/Logs/AI Progress Monitor/native-monitor.log`，并访问当前 dev App 的本机资源路由来确认衬衫树懒图与防缓存响应头。它不控制 GUI；用于确认 dev Pet 是否启动、服务 URL 是否出现、本轮是否收到外观切换、隐藏/恢复/退出等 host 消息。输出中的本地访问令牌会脱敏；如果服务已被 Pet 轮询，还会显示类似 `total=4 running=1 idle=3 process_only=4` 的脱敏会话计数，用来确认终端和桌面 Claude/Codex 是否已被识别。
 
 完成真实鼠标验收时使用严格模式：
 
@@ -117,6 +117,7 @@ scripts/check_macos_floating_dev.sh --strict
 | 空闲 | `/assets/pet/idle.png` | `src/ai_progress_monitor/assets/sloth-pet-idle.png` |
 | 进行中 | `/assets/pet/running.png` | `src/ai_progress_monitor/assets/sloth-pet-running.png` |
 | 待处理 | `/assets/pet/needs-action.png` | `src/ai_progress_monitor/assets/sloth-pet-needs-action.png` |
+| 衬衫树懒外观 | `/assets/pet/shirt.png` | `src/ai_progress_monitor/assets/sloth-pet-shirt.png` |
 | APP 头像 / favicon / macOS 图标 | `/assets/app-avatar.png` | `src/ai_progress_monitor/assets/app-avatar.png` |
 
 三态 Pet 图片当前为 768 x 768 PNG，APP 头像为 1024 x 1024 PNG。图片角落必须保持透明；APP 头像源图和运行图必须保持透明圆形，水印和圆外方框背景应清除，透明像素应保持 `(0,0,0,0)`，避免系统图标缓存或缩放时出现脏边。Web 容器本身保持 `background: transparent` 且 `.pet` 不额外添加 `drop-shadow`，避免原生悬浮窗出现灰底或阴影边。macOS 发布包会把 APP 头像复制到 `.app` 资源目录，生成 `AppIcon.icns`，并让菜单栏状态项显示头像图标而不是 `AI` 文字。
@@ -134,9 +135,13 @@ scripts/check_macos_floating_dev.sh --strict
 }
 ```
 
-偏好文件默认位置是 `~/.ai-progress-monitor/preferences.json`。自定义图片支持 PNG、JPG、JPEG、WebP，单个文件最大 8 MB；路径无效、格式不支持或文件过大时会自动回退到内置资源。兼容旧入口的 `sloth-pet.png` 保留为空闲态图片。
+右键点击 Pet，选择“外观”，可以在“背带裤树懒”和“衬衫树懒”之间切换；当前外观会显示对勾。背带裤树懒使用现有三态图片，衬衫树懒当前三态共用 `/assets/pet/shirt.png`。外观选择会保存到偏好文件的 `pet_appearance` 字段，缺失或非法值会回退到背带裤树懒。
 
-页面右下角会显示原创树懒 Pet。左键点击 Pet 只负责展开或收起上方气泡列表；右键点击 Pet 会打开菜单，菜单只提供“隐藏 Pet”和“退出程序”。每条气泡只展示文件夹/对话标识和状态；桌面版 AI 对话没有真实项目文件夹时显示为 `工具名 对话` 或安全短标题，工具定义表中声明的自动聊天目录也按无真实项目文件夹处理，例如 Codex 的 `Documents/Codex/YYYY-MM-DD/<对话名>`。后续接入其他 AI 桌面端时，只需补充对应工具配置和自动聊天目录 pattern，不需要改前端命名逻辑；页面不会展示不可读 session_id 碎片。点击气泡会尝试回到对应 Claude/Codex 窗口。
+本次外观主题切换的功能 PRD 是 `docs/prd/2026-07-11-pet-appearance-theme-switching-prd.md`。
+
+偏好文件默认位置是 `~/.ai-progress-monitor/preferences.json`。自定义图片支持 PNG、JPG、JPEG、WebP，单个文件最大 8 MB；路径无效、格式不支持或文件过大时会自动回退到内置资源。兼容旧入口的 `sloth-pet.png` 保留为空闲态图片。自定义 `pet_assets.*` 仍会覆盖最终 Pet 图片；APP 头像、菜单栏图标和 favicon 不随外观主题切换。
+
+页面右下角会显示原创树懒 Pet。左键点击 Pet 只负责展开或收起上方气泡列表；右键点击 Pet 会打开菜单，菜单提供“外观”“隐藏 Pet”和“退出程序”。每条气泡只展示文件夹/对话标识和状态；桌面版 AI 对话没有真实项目文件夹时显示为 `工具名 对话` 或安全短标题，工具定义表中声明的自动聊天目录也按无真实项目文件夹处理，例如 Codex 的 `Documents/Codex/YYYY-MM-DD/<对话名>`。后续接入其他 AI 桌面端时，只需补充对应工具配置和自动聊天目录 pattern，不需要改前端命名逻辑；页面不会展示不可读 session_id 碎片。点击气泡会尝试回到对应 Claude/Codex 窗口。
 
 启动失败时，一键启动脚本会写入本地日志。macOS 日志默认在 `~/Library/Logs/AI Progress Monitor/monitor.log`，Windows 日志默认在 `%LOCALAPPDATA%\AI Progress Monitor\monitor.log`。
 

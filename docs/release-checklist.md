@@ -2,6 +2,8 @@
 
 结论：每次交付前必须先证明核心逻辑、事件接入、原生悬浮入口、进程探测边界、Pet 左键/右键边界和隐私减负主路径都可用。
 
+Pet 外观主题切换的执行 PRD 是 `docs/prd/2026-07-11-pet-appearance-theme-switching-prd.md`；发布前需确认 PRD、README、QA 报告和本清单中的菜单、资源、偏好、API、App 验收描述一致。
+
 ## 必跑检查
 
 推荐直接运行：
@@ -20,12 +22,12 @@ python3 scripts/validate_release.py
 | 敏感信息扫描 | `python3 scripts/validate_release.py` 内置检查 | 无本机真实姓名、公司相关账号标识、本机路径、旧邮箱片段或机器名命中 |
 | Web API 冒烟 | 启动服务后用页面令牌请求 `/api/sessions` | 返回会话 JSON |
 | API 安全冒烟 | 不带令牌请求 `/api/sessions` | 返回 403 |
-| 三态 Pet 资源 | `PYTHONPATH=src python3 -m unittest tests.test_web_ui tests.test_web_launch tests.test_web_ui_behavior tests.test_preferences` | 三态图片路由、APP 头像、可配置资源、透明角和状态切图均通过；运行时 APP 头像为透明圆形，无水印和圆外方框背景 |
+| 三态 Pet 资源与外观切换 | `PYTHONPATH=src python3 -m unittest tests.test_web_ui tests.test_web_launch tests.test_web_ui_behavior tests.test_preferences` | 三态图片路由、衬衫树懒外观路由、APP 头像、可配置资源、透明角、状态切图和右键外观子菜单均通过；运行时 APP 头像为透明圆形，无水印和圆外方框背景 |
 | 原生透明背景 | `PYTHONPATH=src python3 -m unittest tests.test_web_ui` | `.pet` 不添加 `drop-shadow`；WebView 背景保持透明 |
 | 发布包构建 | `python3 scripts/build_release.py` | 生成 `dist/ai-progress-monitor.pyz` 和 `dist/ai-progress-monitor-release.zip` |
 | macOS App 外壳 | 解压 release zip | 包含 `AI Progress Monitor.app` 和 `AI Progress Monitor Floating.app` |
 | macOS App 图标 | 检查两个 `.app/Contents/Resources/` 和 `Info.plist` | 包含 `app-avatar.png`、`AppIcon.icns`，且 `CFBundleIconFile` 为 `AppIcon` |
-| 发布包视觉资源 | 检查 `dist/ai-progress-monitor.pyz` 内容 | 包含 `sloth-pet-idle.png`、`sloth-pet-running.png`、`sloth-pet-needs-action.png`、`app-avatar.png` |
+| 发布包视觉资源 | 检查 `dist/ai-progress-monitor.pyz` 内容 | 包含 `sloth-pet-idle.png`、`sloth-pet-running.png`、`sloth-pet-needs-action.png`、`sloth-pet-shirt.png`、`app-avatar.png` |
 | 发布包资源收口 | 检查 `dist/ai-progress-monitor.pyz` 内容 | 不包含 `assets/sloth-candidates/` 或 `.DS_Store` |
 | 终端桥接 | `python3 scripts/monitor_command.py --help` | 正常显示参数 |
 | 一键启动 | `python3 dist/ai-progress-monitor.pyz --help` | 参数包含 `--open` |
@@ -49,6 +51,7 @@ python3 scripts/validate_release.py
 | 系统通知 | needs_action 触发通知，重复刷新不反复弹 |
 | 需要处理状态 | 页面右下角宠物显示“待处理” |
 | 三态换图 | 空闲、进行中、待处理分别显示对应 Pet 图片；右上角数字角标仍显示总气泡数 |
+| 外观子菜单 | 右键 Pet → 外观 | 展开“背带裤树懒 / 衬衫树懒”；当前项显示对勾；切换衬衫树懒后三态共用衬衫图，切回背带裤树懒后三态恢复 |
 | 悬浮窗透明 | 原生悬浮入口只显示 Pet、角标和气泡，不出现灰底、白底或额外阴影边 |
 | 菜单栏图标 | macOS 菜单栏状态项显示 APP 头像图标，不显示文字 `AI` |
 | 终端桥接 | 用 `scripts/monitor_codex.*` 或 `scripts/monitor_claude.*` 包装命令后，输出能进入 Web Companion |
@@ -58,7 +61,7 @@ python3 scripts/validate_release.py
 | 复杂交互 | 不展示直接回复按钮，引导回原窗口 |
 | 窗口定位 | 点击气泡后尝试激活对应窗口；直接 CLI 优先聚焦父 GUI 应用 |
 | 左键 Pet | 只展开/收起气泡列表，不隐藏 Pet |
-| 右键 Pet | 只出现隐藏 Pet、退出程序；隐藏后程序继续运行 |
+| 右键 Pet | 只出现外观、隐藏 Pet、退出程序；隐藏后程序继续运行 |
 | 低侵入体验 | 默认只显示 Pet、角标和气泡列表，不出现工具面板 |
 
 ## 当前发布说明
@@ -73,4 +76,4 @@ python3 scripts/validate_release.py
 | 隐私策略 | 本地运行，不上传会话内容 |
 | 当前发布包 | `ai-progress-monitor-release.zip`，包含 Python 3.9+ Web Companion、macOS 已验收 `.app`、Windows 轻量预览脚本 |
 | 诊断工具 | `scripts/doctor.py` 可用于定位权限、目录和平台适配问题 |
-| Pet 外观配置 | `~/.ai-progress-monitor/preferences.json` 支持 `pet_assets.idle`、`pet_assets.running`、`pet_assets.needs_action`、`pet_assets.app_avatar` 本地路径；无效路径自动回退内置资源 |
+| Pet 外观配置 | `~/.ai-progress-monitor/preferences.json` 支持 `pet_appearance` 选择背带裤/衬衫树懒，并支持 `pet_assets.idle`、`pet_assets.running`、`pet_assets.needs_action`、`pet_assets.app_avatar` 本地路径；无效值或无效路径自动回退内置资源 |

@@ -79,6 +79,8 @@ Check the dev app state and manual acceptance evidence:
 scripts/check_macos_floating_dev.sh
 ```
 
+The checker reads the native dev log, shows recent appearance-switch events, and requests the running dev app's local shirt-sloth asset route to verify the approved image and no-store cache header. It does not control the GUI.
+
 Strict mode reports any missing manual path:
 
 ```bash
@@ -94,6 +96,7 @@ The Pet uses three local PNG assets for user-facing states, plus a separate app 
 | Idle | `/assets/pet/idle.png` | `src/ai_progress_monitor/assets/sloth-pet-idle.png` |
 | Running | `/assets/pet/running.png` | `src/ai_progress_monitor/assets/sloth-pet-running.png` |
 | Needs action | `/assets/pet/needs-action.png` | `src/ai_progress_monitor/assets/sloth-pet-needs-action.png` |
+| Shirt sloth appearance | `/assets/pet/shirt.png` | `src/ai_progress_monitor/assets/sloth-pet-shirt.png` |
 | App avatar / favicon / macOS icon | `/assets/app-avatar.png` | `src/ai_progress_monitor/assets/app-avatar.png` |
 
 The Pet images are currently 768 x 768 PNG files. The app avatar is a 1024 x 1024 PNG. Pet and avatar assets should keep transparent backgrounds. The app avatar should remain a clean transparent circular icon with no watermark or square background.
@@ -111,7 +114,11 @@ To override the built-in visual assets without changing code, create `~/.ai-prog
 }
 ```
 
-Custom image paths fall back to built-in assets if the file is missing, unsupported, or too large.
+Right-click the Pet, open Appearance, and choose either the default overall sloth or the shirt sloth. The current choice is checked in the submenu. The default theme uses the three state images; the shirt theme currently uses `/assets/pet/shirt.png` for idle, running, and needs-action states. The selected theme is stored as `pet_appearance`; missing or invalid values fall back to the default theme.
+
+The Pet appearance theme-switching PRD is `docs/prd/2026-07-11-pet-appearance-theme-switching-prd.md`.
+
+Custom image paths fall back to built-in assets if the file is missing, unsupported, or too large. Existing `pet_assets.*` overrides still apply to the final Pet images. The app avatar, menu bar icon, and favicon do not change with the Pet appearance theme.
 
 ## Integrating Real Sessions
 

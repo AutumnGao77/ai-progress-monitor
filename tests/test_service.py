@@ -25,6 +25,32 @@ class MonitorServiceTests(unittest.TestCase):
         self.assertEqual(payload[0]["status"], "needs_action")
         self.assertEqual(payload[0]["safe_action"]["options"], ["Yes", "No"])
 
+    def test_sessions_payload_exposes_status_source_for_monitoring_diagnostics(self):
+        store = SessionStore()
+        store.apply_updates(
+            [
+                SessionUpdate(
+                    session_id="process-51005",
+                    title="Qoder Desktop",
+                    tool=ToolKind.UNKNOWN,
+                    surface=SurfaceKind.DESKTOP,
+                    status=SessionStatus.RUNNING,
+                    summary="Qoder 正在处理任务。",
+                    updated_at=datetime.now(timezone.utc),
+                    source="process",
+                    process_id=51005,
+                    status_source="qoder-log",
+                    tool_display_name="Qoder",
+                )
+            ]
+        )
+        service = MonitorService([], store, ActionExecutor())
+
+        payload = service.sessions_payload()
+
+        self.assertEqual(payload[0]["status_source"], "qoder-log")
+        self.assertEqual(payload[0]["tool_display_name"], "Qoder")
+
     def test_execute_demo_yes_action_writes_response_file(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             service = MonitorService(

@@ -182,11 +182,23 @@ class MacOSNativeCompanionTests(unittest.TestCase):
         source = native_sources()
 
         self.assertIn("private func isDesktopAIApp(_ appName: String) -> Bool", source)
-        self.assertIn('return normalized == "codex" || normalized == "claude"', source)
+        self.assertIn("let aiDesktopApps: Set<String>", source)
+        for app_name in ["claude", "codex", "chatgpt", "gemini", "perplexity", "poe", "workbuddy", "qoder", "qoder cn"]:
+            self.assertIn(f'"{app_name}"', source)
         self.assertIn("private func activateRunningApplication", source)
         self.assertIn("app.activate(options: [])", source)
         self.assertIn('return (true, "activated-app")', source)
         self.assertIn("if isDesktopAIApp(appName), let app = apps.first", source)
+
+    def test_native_focus_matches_qoder_cn_when_payload_uses_qoder_display_name(self):
+        source = native_sources()
+
+        self.assertIn("private func appNameAliases(for target: String) -> Set<String>", source)
+        self.assertIn('if target == "qoder"', source)
+        self.assertIn('return ["qoder", "qoder cn"]', source)
+        self.assertIn("for alias in appNameAliases(for: normalizedTarget)", source)
+        self.assertIn("appNameMatches(candidate: localized, target: alias)", source)
+        self.assertIn("appNameMatches(candidate: bundleName, target: alias)", source)
 
     def test_native_focus_activates_target_app_and_reraises_specific_window(self):
         source = native_sources()
@@ -333,6 +345,7 @@ class MacOSNativeCompanionTests(unittest.TestCase):
 
         self.assertIn('writeLog("Received host message: \\(type)")', source)
         self.assertIn('writeLog("Received host resize mode: \\(mode)")', source)
+        self.assertIn('rawMode == "menu"', source)
 
     def test_native_menu_actions_are_logged_for_show_hide_and_quit(self):
         source = native_sources()

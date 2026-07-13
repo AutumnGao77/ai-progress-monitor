@@ -6,6 +6,8 @@ from typing import Optional, Set
 
 
 PET_ASSET_KEYS = {"idle", "running", "needs_action", "app_avatar"}
+DEFAULT_PET_APPEARANCE = "default"
+PET_APPEARANCE_THEMES = {DEFAULT_PET_APPEARANCE, "shirt"}
 
 
 class MonitorPreferences:
@@ -61,6 +63,18 @@ class MonitorPreferences:
         value = assets.get(str(key))
         return Path(value).expanduser() if value else None
 
+    def pet_appearance(self) -> str:
+        return normalize_pet_appearance(self._read().get("pet_appearance"))
+
+    def set_pet_appearance(self, theme: str) -> bool:
+        normalized = normalize_pet_appearance(theme)
+        if normalized != theme:
+            return False
+        payload = self._read()
+        payload["pet_appearance"] = normalized
+        self._write_payload(payload)
+        return True
+
     def _read(self) -> dict:
         if not self.path.exists():
             return {}
@@ -107,3 +121,8 @@ class MonitorPreferences:
         temp_path = self.path.with_suffix(".json.tmp")
         temp_path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
         temp_path.replace(self.path)
+
+
+def normalize_pet_appearance(theme) -> str:
+    value = str(theme).strip() if theme is not None else ""
+    return value if value in PET_APPEARANCE_THEMES else DEFAULT_PET_APPEARANCE

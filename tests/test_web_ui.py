@@ -45,6 +45,7 @@ class WebUiTests(unittest.TestCase):
             "sloth-pet-idle.png",
             "sloth-pet-running.png",
             "sloth-pet-needs-action.png",
+            "sloth-pet-shirt.png",
             "app-avatar.png",
         ]
 
@@ -54,11 +55,18 @@ class WebUiTests(unittest.TestCase):
                 self.assertTrue(asset.exists())
                 self.assertEqual(asset.read_bytes()[:8], b"\x89PNG\r\n\x1a\n")
 
+    def test_pet_shirt_asset_matches_approved_source_image(self):
+        approved_source = ROOT / "docs" / "promo" / "assets" / "sloth-mascot-transparent.png"
+        runtime_asset = ROOT / "src" / "ai_progress_monitor" / "assets" / "sloth-pet-shirt.png"
+
+        self.assertEqual(runtime_asset.read_bytes(), approved_source.read_bytes())
+
     def test_pet_state_and_app_avatar_assets_have_transparent_corners(self):
         expected_sizes = {
             "sloth-pet-idle.png": (768, 768),
             "sloth-pet-running.png": (768, 768),
             "sloth-pet-needs-action.png": (768, 768),
+            "sloth-pet-shirt.png": (839, 1180),
             "app-avatar.png": (1024, 1024),
         }
 
@@ -98,10 +106,11 @@ class WebUiTests(unittest.TestCase):
         self.assertEqual(max(watermark_area_alphas), 0)
 
     def test_pet_art_switches_with_existing_status_priority(self):
-        self.assertIn('const petImages = {', HTML)
-        self.assertIn('idle:"/assets/pet/idle.png"', HTML)
-        self.assertIn('running:"/assets/pet/running.png"', HTML)
-        self.assertIn('needs_action:"/assets/pet/needs-action.png"', HTML)
+        self.assertIn("let petImages =", HTML)
+        self.assertIn('idle: "/assets/pet/idle.png"', HTML)
+        self.assertIn('running: "/assets/pet/running.png"', HTML)
+        self.assertIn('needs_action: "/assets/pet/needs-action.png"', HTML)
+        self.assertIn('idle: "/assets/pet/shirt.png"', HTML)
         self.assertIn("petArt.src = petImages[state.status] || petImages.idle;", HTML)
 
     def test_pet_supports_dragging_and_persisted_position(self):
@@ -119,6 +128,7 @@ class WebUiTests(unittest.TestCase):
         self.assertIn("html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: transparent;", HTML)
         self.assertIn('resizeHostWindow("compact")', HTML)
         self.assertIn('resizeHostWindow(willOpen ? "bubbles" : "compact")', HTML)
+        self.assertIn('resizeHostWindow("menu")', HTML)
         self.assertIn("window.webkit.messageHandlers.monitorWindow.postMessage", HTML)
         self.assertIn("max-width: min(300px, calc(100vw - 20px))", HTML)
         self.assertIn("max-height: min(320px, calc(100vh - 190px))", HTML)
@@ -135,6 +145,7 @@ class WebUiTests(unittest.TestCase):
         self.assertIn("bubbleList.style.maxHeight = `${bubbleHeight}px`", HTML)
         self.assertIn('if (bubbleList.classList.contains("open")) scheduleBubbleLayout();', HTML)
         self.assertIn("mode === \"bubbles\" ? {width: 340, height: 500}", HTML)
+        self.assertIn('mode === "menu" ? {width: 270, height: 160}', HTML)
         self.assertNotIn(".pet { left: 8px !important; right: auto; top: 8px !important;", HTML)
         self.assertNotIn("Math.max(72, petRect.top - 20)", HTML)
 
@@ -288,6 +299,11 @@ class WebUiTests(unittest.TestCase):
     def test_pet_context_menu_has_hide_and_quit(self):
         self.assertIn("contextmenu", HTML)
         self.assertIn('id="petContextMenu"', HTML)
+        self.assertIn("外观", HTML)
+        self.assertIn("背带裤树懒", HTML)
+        self.assertIn("衬衫树懒", HTML)
+        self.assertNotIn("外观：当前三态", HTML)
+        self.assertNotIn("外观：经典树懒", HTML)
         self.assertIn("隐藏 Pet", HTML)
         self.assertIn("退出程序", HTML)
         self.assertIn("hidePet", HTML)

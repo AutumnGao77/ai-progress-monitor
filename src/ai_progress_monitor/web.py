@@ -9,6 +9,7 @@ import os
 import secrets
 import socket
 import webbrowser
+import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import List, Mapping, Optional
@@ -18,6 +19,7 @@ from .actions import ActionExecutor
 from .demo import DemoSource
 from .doctor import run_diagnostics
 from .notifier import NotificationManager
+from .preferences import normalize_pet_appearance
 from .service import MonitorService
 from .sources import CodexSessionSource, JsonSessionSource, OsWindowSource, ProcessSource
 from .store import SessionStore
@@ -29,12 +31,26 @@ DEFAULT_PET_ASSETS = {
     "idle": "assets/sloth-pet-idle.png",
     "running": "assets/sloth-pet-running.png",
     "needs_action": "assets/sloth-pet-needs-action.png",
+    "shirt": "assets/sloth-pet-shirt.png",
     "app_avatar": "assets/app-avatar.png",
+}
+PET_THEME_ASSETS = {
+    "default": {
+        "idle": "/assets/pet/idle.png",
+        "running": "/assets/pet/running.png",
+        "needs_action": "/assets/pet/needs-action.png",
+    },
+    "shirt": {
+        "idle": "/assets/pet/shirt.png",
+        "running": "/assets/pet/shirt.png",
+        "needs_action": "/assets/pet/shirt.png",
+    },
 }
 PET_ASSET_ROUTES = {
     "/assets/pet/idle.png": "idle",
     "/assets/pet/running.png": "running",
     "/assets/pet/needs-action.png": "needs_action",
+    "/assets/pet/shirt.png": "shirt",
     "/assets/app-avatar.png": "app_avatar",
 }
 PET_IMAGE_CONTENT_TYPES = {
@@ -54,7 +70,15 @@ class MonitorRequestHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
         if path == "/":
-            self._send(200, render_html(self.token, pet_asset_urls()), "text/html; charset=utf-8")
+            self._send(
+                200,
+                render_html(
+                    self.token,
+                    configured_pet_asset_urls(self.service.preferences),
+                    pet_appearance=self.service.preferences.pet_appearance(),
+                ),
+                "text/html; charset=utf-8",
+            )
         elif path in PET_ASSET_ROUTES:
             self._send_pet_asset(PET_ASSET_ROUTES[path])
         elif path == "/assets/sloth-pet.png":
@@ -71,6 +95,11 @@ class MonitorRequestHandler(BaseHTTPRequestHandler):
                 self._send_json(403, {"error": "forbidden"})
                 return
             self._send_json(200, doctor_payload())
+        elif path == "/api/preferences":
+            if not self._authorized(parsed.query):
+                self._send_json(403, {"error": "forbidden"})
+                return
+            self._send_json(200, {"pet_appearance": self.service.preferences.pet_appearance()})
         elif path == "/api/hidden-sessions":
             if not self._authorized(parsed.query):
                 self._send_json(403, {"error": "forbidden"})
@@ -111,6 +140,19 @@ class MonitorRequestHandler(BaseHTTPRequestHandler):
         elif path == "/api/reset-session-title":
             result = self.service.reset_session_title(str(payload.get("session_id", "")))
             self._send_json(200 if result.ok else 400, {"ok": result.ok, "detail": result.detail})
+        elif path == "/api/preferences/pet-appearance":
+            theme = str(payload.get("theme", "")).strip()
+            try:
+                changed = self.service.preferences.set_pet_appearance(theme)
+            except OSError:
+                self._send_json(500, {"ok": False, "error": "preferences_write_failed"})
+                return
+            if not changed:
+                self._send_json(400, {"ok": False, "error": "invalid_pet_appearance"})
+                return
+            pet_appearance = self.service.preferences.pet_appearance()
+            print(pet_appearance_snapshot_line(pet_appearance), flush=True)
+            self._send_json(200, {"ok": True, "pet_appearance": pet_appearance})
         else:
             self._send_json(404, {"error": "not_found"})
 
@@ -157,6 +199,7 @@ class MonitorRequestHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("content-type", content_type)
         self.send_header("content-length", str(len(body)))
+        self.send_header("cache-control", "no-store")
         self.end_headers()
         self.wfile.write(body)
 
@@ -215,18 +258,40 @@ def pet_asset_urls() -> dict:
         "running": "/assets/pet/running.png",
         "needs_action": "/assets/pet/needs-action.png",
         "app_avatar": "/assets/app-avatar.png",
+        "themes": {theme: dict(urls) for theme, urls in PET_THEME_ASSETS.items()},
     }
 
 
-def render_html(token: str, pet_assets: Optional[Mapping[str, str]] = None) -> str:
-    assets = pet_asset_urls()
+def configured_pet_asset_urls(preferences) -> dict:
+    urls = pet_asset_urls()
+    overrides = {}
+    for key in PET_ASSET_KEYS:
+        custom_path = preferences.pet_asset_path(key)
+        if custom_path is not None and read_configured_pet_asset(custom_path) is not None:
+            overrides[key] = urls[key]
+    return overrides
+
+
+def render_html(token: str, pet_assets: Optional[Mapping[str, str]] = None, pet_appearance: str = "default") -> str:
+    default_assets = pet_asset_urls()
+    assets = {}
+    themes = {theme: dict(urls) for theme, urls in default_assets["themes"].items()}
     if pet_assets:
         for key, value in pet_assets.items():
             if key in PET_ASSET_KEYS and isinstance(value, str) and value:
                 assets[key] = value
+                if key in themes["default"]:
+                    themes["default"][key] = value
+    asset_override_keys = sorted(assets)
+    current_appearance = normalize_pet_appearance(pet_appearance)
+    if current_appearance not in themes:
+        current_appearance = "default"
     return (
         HTML_TEMPLATE.replace("__MONITOR_TOKEN__", token)
         .replace("__PET_ASSETS__", json.dumps(assets, ensure_ascii=True))
+        .replace("__PET_ASSET_OVERRIDE_KEYS__", json.dumps(asset_override_keys, ensure_ascii=True))
+        .replace("__PET_THEMES__", json.dumps(themes, ensure_ascii=True))
+        .replace("__PET_APPEARANCE__", json.dumps(current_appearance))
     )
 
 
@@ -235,14 +300,109 @@ def pet_asset_content_type(path: Path) -> str:
 
 
 def read_configured_pet_asset(path: Path) -> Optional[tuple[bytes, str]]:
-    if path.suffix.lower() not in PET_IMAGE_CONTENT_TYPES:
+    suffix = path.suffix.lower()
+    if suffix not in PET_IMAGE_CONTENT_TYPES:
         return None
     try:
         if not path.is_file() or path.stat().st_size > MAX_CONFIGURED_PET_ASSET_BYTES:
             return None
-        return path.read_bytes(), pet_asset_content_type(path)
+        body = path.read_bytes()
     except OSError:
         return None
+    if len(body) > MAX_CONFIGURED_PET_ASSET_BYTES:
+        return None
+    if not _looks_like_supported_image(body, suffix):
+        return None
+    return body, pet_asset_content_type(path)
+
+
+def _looks_like_supported_image(body: bytes, suffix: str) -> bool:
+    if suffix == ".png":
+        return _looks_like_png(body)
+    if suffix in {".jpg", ".jpeg"}:
+        return _looks_like_jpeg(body)
+    if suffix == ".webp":
+        return _looks_like_webp(body)
+    return False
+
+
+def _looks_like_png(body: bytes) -> bool:
+    if not body.startswith(b"\x89PNG\r\n\x1a\n"):
+        return False
+    offset = 8
+    seen_ihdr = False
+    while offset + 12 <= len(body):
+        length = int.from_bytes(body[offset : offset + 4], "big")
+        chunk_type = body[offset + 4 : offset + 8]
+        data_start = offset + 8
+        data_end = data_start + length
+        crc_end = data_end + 4
+        if crc_end > len(body):
+            return False
+        expected_crc = int.from_bytes(body[data_end:crc_end], "big")
+        actual_crc = zlib.crc32(chunk_type + body[data_start:data_end]) & 0xFFFFFFFF
+        if actual_crc != expected_crc:
+            return False
+        if not seen_ihdr:
+            if chunk_type != b"IHDR" or length != 13:
+                return False
+            seen_ihdr = True
+        if chunk_type == b"IEND":
+            return seen_ihdr and length == 0 and crc_end == len(body)
+        offset = crc_end
+    return False
+
+
+def _looks_like_jpeg(body: bytes) -> bool:
+    stripped = body.rstrip()
+    if len(stripped) < 12 or not stripped.startswith(b"\xff\xd8") or not stripped.endswith(b"\xff\xd9"):
+        return False
+    offset = 2
+    seen_frame = False
+    while offset + 1 < len(stripped):
+        if stripped[offset] != 0xFF:
+            return False
+        while offset < len(stripped) and stripped[offset] == 0xFF:
+            offset += 1
+        if offset >= len(stripped):
+            return False
+        marker = stripped[offset]
+        offset += 1
+        if marker == 0xD9:
+            return False
+        if marker == 0xDA:
+            if offset + 2 > len(stripped):
+                return False
+            segment_length = int.from_bytes(stripped[offset : offset + 2], "big")
+            if segment_length < 2 or offset + segment_length >= len(stripped) - 2:
+                return False
+            return seen_frame
+        if marker in {0x01, *range(0xD0, 0xD8)}:
+            continue
+        if offset + 2 > len(stripped):
+            return False
+        segment_length = int.from_bytes(stripped[offset : offset + 2], "big")
+        if segment_length < 2 or offset + segment_length > len(stripped):
+            return False
+        if marker in {0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF}:
+            seen_frame = True
+        offset += segment_length
+    return False
+
+
+def _looks_like_webp(body: bytes) -> bool:
+    if len(body) < 20 or body[:4] != b"RIFF" or body[8:12] != b"WEBP":
+        return False
+    riff_size = int.from_bytes(body[4:8], "little")
+    if riff_size + 8 != len(body):
+        return False
+    chunk_type = body[12:16]
+    if chunk_type not in {b"VP8 ", b"VP8L", b"VP8X"}:
+        return False
+    chunk_size = int.from_bytes(body[16:20], "little")
+    if chunk_size <= 0:
+        return False
+    return 20 + chunk_size + (chunk_size % 2) <= len(body)
 
 
 def create_server(host: str, port: int, service: MonitorService, token: str) -> ThreadingHTTPServer:
@@ -329,6 +489,10 @@ def focus_snapshot_line(ok: bool, detail: str = "") -> str:
     return line
 
 
+def pet_appearance_snapshot_line(theme: str) -> str:
+    return f"AI Progress Monitor pet appearance: {normalize_pet_appearance(theme)}"
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Web companion for Claude Code and Codex progress")
     parser.add_argument("--demo", action="store_true", help="Show sample Claude Code and Codex sessions")
@@ -402,8 +566,14 @@ html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background:
 .pet-badge.badge-idle { background: #2f6fbb; }
 .pet-context-menu { position: fixed; display: none; min-width: 108px; padding: 4px; border-radius: 8px; background: rgba(255,255,255,.98); border: 1px solid rgba(17,24,39,.08); box-shadow: 0 10px 24px rgba(17,24,39,.18); z-index: 30; }
 .pet-context-menu.open { display: block; }
-.pet-context-menu button { display: block; width: 100%; border: 0; background: transparent; border-radius: 6px; padding: 5px 7px; text-align: left; font: inherit; font-size: 13px; line-height: 1.2; color: #172033; cursor: pointer; }
-.pet-context-menu button:hover { background: #eef2f7; }
+.pet-context-menu button, .pet-menu-parent { display: flex; align-items: center; gap: 6px; width: 100%; min-height: 26px; border: 0; background: transparent; border-radius: 6px; padding: 5px 7px; text-align: left; font: inherit; font-size: 13px; line-height: 1.2; color: #172033; cursor: pointer; box-sizing: border-box; }
+.pet-context-menu button:hover, .pet-menu-parent:hover, .pet-menu-parent:focus-within { background: #eef2f7; }
+.pet-menu-parent { position: relative; justify-content: space-between; }
+.pet-menu-arrow { margin-left: auto; color: #667085; }
+.pet-context-submenu { position: absolute; left: calc(100% - 2px); top: -4px; display: none; width: 128px; padding: 4px; border-radius: 8px; background: rgba(255,255,255,.98); border: 1px solid rgba(17,24,39,.08); box-shadow: 0 10px 24px rgba(17,24,39,.18); }
+.pet-menu-parent:hover .pet-context-submenu, .pet-menu-parent:focus-within .pet-context-submenu { display: block; }
+.pet-context-submenu button { justify-content: flex-start; white-space: nowrap; }
+.pet-menu-check { display: inline-flex; width: 16px; flex: 0 0 16px; justify-content: center; color: #172033; font-weight: 800; }
 .status-note { position: fixed; right: 12px; bottom: 112px; max-width: 260px; display: none; padding: 7px 10px; border-radius: 10px; background: rgba(23,32,51,.9); color: white; font-size: 12px; z-index: 22; }
 .status-note.show { display: block; }
 @keyframes pet-float { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-2px); } }
@@ -423,6 +593,9 @@ html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background:
 <script>
 window.MONITOR_TOKEN = "__MONITOR_TOKEN__";
 window.PET_ASSETS = __PET_ASSETS__;
+window.PET_ASSET_OVERRIDE_KEYS = __PET_ASSET_OVERRIDE_KEYS__;
+window.PET_THEMES = __PET_THEMES__;
+window.PET_APPEARANCE = __PET_APPEARANCE__;
 </script>
 <div class="bubble-list" id="bubbleList"></div>
 <button class="pet idle" id="pet" aria-label="AI 监控 Pet">
@@ -436,6 +609,13 @@ window.PET_ASSETS = __PET_ASSETS__;
   <span class="pet-badge" id="petBadge"></span>
 </button>
 <div class="pet-context-menu" id="petContextMenu">
+  <div class="pet-menu-parent" id="appearanceMenuItem" tabindex="0">
+    <span>外观</span><span class="pet-menu-arrow" aria-hidden="true">›</span>
+    <div class="pet-context-submenu" id="appearanceSubmenu">
+      <button type="button" id="appearanceDefaultMenuItem" data-pet-appearance="default"><span class="pet-menu-check" id="appearanceDefaultCheck"></span><span>背带裤树懒</span></button>
+      <button type="button" id="appearanceShirtMenuItem" data-pet-appearance="shirt"><span class="pet-menu-check" id="appearanceShirtCheck"></span><span>衬衫树懒</span></button>
+    </div>
+  </div>
   <button type="button" id="hidePetMenuItem">隐藏 Pet</button>
   <button type="button" id="quitPetMenuItem">退出程序</button>
 </div>
@@ -450,13 +630,30 @@ const petArt = document.getElementById("petArt");
 const petBadge = document.getElementById("petBadge");
 const bubbleList = document.getElementById("bubbleList");
 const petContextMenu = document.getElementById("petContextMenu");
+const appearanceDefaultMenuItem = document.getElementById("appearanceDefaultMenuItem");
+const appearanceShirtMenuItem = document.getElementById("appearanceShirtMenuItem");
+const appearanceDefaultCheck = document.getElementById("appearanceDefaultCheck");
+const appearanceShirtCheck = document.getElementById("appearanceShirtCheck");
 const statusNote = document.getElementById("statusNote");
-const petImages = {
-  idle:"/assets/pet/idle.png",
-  running:"/assets/pet/running.png",
-  needs_action:"/assets/pet/needs-action.png",
+const defaultPetThemes = {
+  default: {
+    idle: "/assets/pet/idle.png",
+    running: "/assets/pet/running.png",
+    needs_action: "/assets/pet/needs-action.png",
+  },
+  shirt: {
+    idle: "/assets/pet/shirt.png",
+    running: "/assets/pet/shirt.png",
+    needs_action: "/assets/pet/shirt.png",
+  },
 };
-Object.assign(petImages, window.PET_ASSETS || {});
+const petThemes = Object.assign({}, defaultPetThemes, window.PET_THEMES || {});
+petThemes.default = Object.assign({}, petThemes.default, petAssetOverrides());
+let currentPetAppearance = "default";
+let confirmedPetAppearance = "default";
+let petImages = Object.assign({}, petThemes.default);
+let queuedPetAppearance = null;
+let petAppearanceSaveInFlight = false;
 const sessionSequenceByGroup = new Map();
 const BUBBLE_GAP = 10;
 const VISUAL_MOTION_BUFFER = 24;
@@ -473,6 +670,8 @@ let loadTimer = null;
 const POLL_INTERVAL_MS = 3000;
 const PET_POSITION_KEY = "monitor.pet.position";
 
+applyPetAppearance(window.PET_APPEARANCE || "default");
+confirmedPetAppearance = currentPetAppearance;
 applyPetPosition();
 resizeHostWindow("compact");
 window.restorePetFromHost = restorePetFromHost;
@@ -492,6 +691,8 @@ pet.onclick = () => {
 };
 document.getElementById("hidePetMenuItem").onclick = hidePet;
 document.getElementById("quitPetMenuItem").onclick = quitApp;
+appearanceDefaultMenuItem.onclick = event => handleAppearanceMenuClick(event, "default");
+appearanceShirtMenuItem.onclick = event => handleAppearanceMenuClick(event, "shirt");
 
 async function load() {
   try {
@@ -545,6 +746,87 @@ function renderBadge(sessions) {
   petBadge.classList.add("show", state.colorClass);
   pet.classList.add(state.status === "needs_action" ? "needs-action" : state.status);
   petArt.src = petImages[state.status] || petImages.idle;
+}
+
+function handleAppearanceMenuClick(event, theme) {
+  if (event && event.stopPropagation) event.stopPropagation();
+  selectPetAppearance(theme);
+}
+
+function applyPetAppearance(theme) {
+  const nextTheme = petThemes[theme] ? theme : "default";
+  currentPetAppearance = nextTheme;
+  window.PET_APPEARANCE = nextTheme;
+  petImages = Object.assign({}, petThemes[nextTheme] || petThemes.default, petAssetOverrides());
+  updateAppearanceMenu();
+  refreshPetArt();
+}
+
+function petAssetOverrides() {
+  const overrides = {};
+  const overrideKeys = new Set(window.PET_ASSET_OVERRIDE_KEYS || []);
+  Object.entries(window.PET_ASSETS || {}).forEach(([key, value]) => {
+    if (!value || !overrideKeys.has(key) || !Object.prototype.hasOwnProperty.call(defaultPetThemes.default, key)) return;
+    overrides[key] = value;
+  });
+  return overrides;
+}
+
+function selectPetAppearance(theme) {
+  applyPetAppearance(theme);
+  closePetContextMenu();
+  queuePetAppearanceSave(currentPetAppearance);
+}
+
+function queuePetAppearanceSave(theme) {
+  queuedPetAppearance = theme;
+  saveQueuedPetAppearance();
+}
+
+async function saveQueuedPetAppearance() {
+  if (petAppearanceSaveInFlight) return;
+  petAppearanceSaveInFlight = true;
+  try {
+    while (queuedPetAppearance !== null) {
+      const theme = queuedPetAppearance;
+      queuedPetAppearance = null;
+      await savePetAppearance(theme);
+    }
+  } finally {
+    petAppearanceSaveInFlight = false;
+    if (queuedPetAppearance !== null) saveQueuedPetAppearance();
+  }
+}
+
+async function savePetAppearance(theme) {
+  try {
+    const response = await fetch("/api/preferences/pet-appearance", {method:"POST", body: JSON.stringify({theme}), headers: {"content-type":"application/json", "x-monitor-token": window.MONITOR_TOKEN}});
+    if (!response.ok) throw new Error("pet appearance save failed");
+    const payload = await response.json();
+    const savedTheme = petThemes[payload.pet_appearance] ? payload.pet_appearance : theme;
+    confirmedPetAppearance = savedTheme;
+    if (queuedPetAppearance === null && currentPetAppearance === theme) applyPetAppearance(savedTheme);
+  } catch (_error) {
+    if (queuedPetAppearance === null && currentPetAppearance === theme) {
+      applyPetAppearance(confirmedPetAppearance);
+      showStatusNote("外观保存失败");
+    }
+  }
+}
+
+function updateAppearanceMenu() {
+  appearanceDefaultCheck.textContent = currentPetAppearance === "default" ? "✓" : "";
+  appearanceShirtCheck.textContent = currentPetAppearance === "shirt" ? "✓" : "";
+}
+
+function refreshPetArt() {
+  petArt.src = petImages[currentPetStatus()] || petImages.idle;
+}
+
+function currentPetStatus() {
+  if (pet.classList.contains("needs-action")) return "needs_action";
+  if (pet.classList.contains("running")) return "running";
+  return "idle";
 }
 
 function renderBubbles(sessions) {
@@ -842,13 +1124,17 @@ function scheduleBubbleLayout() {
 
 function showPetContextMenu(event) {
   event.preventDefault();
-  petContextMenu.style.left = `${clamp(event.clientX, 8, window.innerWidth - 116)}px`;
-  petContextMenu.style.top = `${clamp(event.clientY, 8, window.innerHeight - 72)}px`;
+  updateAppearanceMenu();
+  if (!bubbleList.classList.contains("open")) resizeHostWindow("menu");
+  petContextMenu.style.left = `${clamp(event.clientX, 8, window.innerWidth - 248)}px`;
+  petContextMenu.style.top = `${clamp(event.clientY, 8, window.innerHeight - 92)}px`;
   petContextMenu.classList.add("open");
 }
 
 function closePetContextMenu() {
+  const wasOpen = petContextMenu.classList.contains("open");
   petContextMenu.classList.remove("open");
+  if (wasOpen && !bubbleList.classList.contains("open")) resizeHostWindow("compact");
 }
 
 function hidePet() {
@@ -876,7 +1162,7 @@ function hasHostWindow() {
 }
 
 function resizeHostWindow(mode) {
-  const size = mode === "bubbles" ? {width: 340, height: 500} : {width: 170, height: 150};
+  const size = mode === "bubbles" ? {width: 340, height: 500} : mode === "menu" ? {width: 270, height: 160} : {width: 170, height: 150};
   try { window.resizeTo(size.width, size.height); } catch (_error) {}
   postHostMessage("resize", {mode, width: size.width, height: size.height});
 }
@@ -954,4 +1240,4 @@ load();
 </html>
 """
 
-HTML = render_html("__MONITOR_TOKEN__", pet_asset_urls())
+HTML = render_html("__MONITOR_TOKEN__")

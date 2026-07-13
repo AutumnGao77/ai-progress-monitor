@@ -90,6 +90,53 @@ class MonitorPreferencesTests(unittest.TestCase):
             self.assertIsNone(prefs.pet_asset_path("running"))
             self.assertIsNone(prefs.pet_asset_path("needs_action"))
 
+    def test_pet_appearance_defaults_to_default_theme(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            prefs = MonitorPreferences(Path(temp_dir) / "preferences.json")
+
+            self.assertEqual(prefs.pet_appearance(), "default")
+
+    def test_pet_appearance_reads_shirt_theme(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "preferences.json"
+            path.write_text('{"pet_appearance": "shirt"}', encoding="utf-8")
+
+            prefs = MonitorPreferences(path)
+
+            self.assertEqual(prefs.pet_appearance(), "shirt")
+
+    def test_pet_appearance_rejects_unknown_theme(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "preferences.json"
+            path.write_text('{"pet_appearance": "unknown"}', encoding="utf-8")
+
+            prefs = MonitorPreferences(path)
+
+            self.assertEqual(prefs.pet_appearance(), "default")
+
+    def test_set_pet_appearance_preserves_existing_preferences(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "preferences.json"
+            path.write_text(
+                """
+                {
+                  "hidden_sessions": ["codex-1"],
+                  "session_aliases": {"codex-1": "PRD"},
+                  "pet_assets": {"idle": "/tmp/idle.png"}
+                }
+                """,
+                encoding="utf-8",
+            )
+            prefs = MonitorPreferences(path)
+
+            self.assertTrue(prefs.set_pet_appearance("shirt"))
+
+            reloaded = MonitorPreferences(path)
+            self.assertEqual(reloaded.pet_appearance(), "shirt")
+            self.assertTrue(reloaded.is_hidden("codex-1"))
+            self.assertEqual(reloaded.session_alias("codex-1"), "PRD")
+            self.assertEqual(reloaded.pet_asset_path("idle"), Path("/tmp/idle.png"))
+
 
 if __name__ == "__main__":
     unittest.main()

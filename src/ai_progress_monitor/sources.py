@@ -18,11 +18,22 @@ from .terminal_bridge import clean_terminal_text
 SOURCE_COMMAND_TIMEOUT_SECONDS = 4.0
 DEFAULT_CLAUDE_SESSIONS_DIR = Path.home() / ".claude" / "sessions"
 DEFAULT_CODEX_SESSIONS_DIR = Path.home() / ".codex" / "sessions"
+DEFAULT_QODER_LOGS_DIRS: Tuple[Path, ...] = (
+    Path.home() / "Library" / "Application Support" / "QoderCN" / "logs",
+    Path.home() / "Library" / "Application Support" / "Qoder" / "logs",
+)
 CLAUDE_SESSION_STATUS_FRESH_SECONDS = 30.0
 CODEX_SESSION_RUNNING_STALE_SECONDS = 10 * 60.0
 CODEX_SESSION_COMPLETED_VISIBLE_SECONDS = 120.0
 CODEX_SESSION_TAIL_BYTES = 256 * 1024
 CODEX_SESSION_HEAD_BYTES = 64 * 1024
+QODER_TASK_RUNNING_STALE_SECONDS = 10 * 60.0
+QODER_REFRESH_STALE_SNAPSHOT_SECONDS = 3.0
+QODER_LOG_TAIL_BYTES = 64 * 1024
+QODER_LOG_SESSION_DIR_LIMIT = 6
+QODER_LOG_WINDOW_DIR_LIMIT = 8
+QODER_LOG_PATH_LIMIT = 24
+QODER_STATUS_LOG_FILENAMES: Tuple[str, ...] = ("quest.log", "agent.log")
 
 
 class JsonSessionSource:
@@ -72,6 +83,7 @@ class JsonSessionSource:
                 focus_app_name=_optional_str(payload.get("focus_app_name")),
                 cwd=_optional_str(payload.get("cwd")),
                 view_ack_required=_optional_bool(payload.get("view_ack_required")),
+                status_source=_optional_str(payload.get("status_source")),
                 tool_display_name=_optional_str(payload.get("tool_display_name")),
                 generated_conversation_path=_optional_bool(payload.get("generated_conversation_path")),
             )
@@ -101,10 +113,12 @@ class ProcessSource:
     def __init__(
         self,
         claude_sessions_dir: Optional[Path] = None,
+        qoder_logs_dirs: Optional[Iterable[Path]] = None,
         source_started_at: Optional[datetime] = None,
         now: Optional[Callable[[], datetime]] = None,
     ):
         self.claude_sessions_dir = claude_sessions_dir or DEFAULT_CLAUDE_SESSIONS_DIR
+        self.qoder_logs_dirs = tuple(qoder_logs_dirs) if qoder_logs_dirs is not None else DEFAULT_QODER_LOGS_DIRS
         self.source_started_at = source_started_at
         self.now = now or (lambda: datetime.now(timezone.utc))
 
@@ -120,6 +134,7 @@ class ProcessSource:
             _classify_process_rows(
                 rows,
                 claude_sessions_dir=self.claude_sessions_dir,
+                qoder_logs_dirs=self.qoder_logs_dirs,
                 source_started_at=self.source_started_at,
                 now=self.now(),
             )
@@ -200,6 +215,13 @@ class _ClaudeSessionState:
 
 
 @dataclass(frozen=True)
+class _QoderTaskState:
+    status: SessionStatus
+    updated_at: datetime
+    task_id: Optional[str] = None
+
+
+@dataclass(frozen=True)
 class AiToolDefinition:
     key: str
     display_name: str
@@ -251,6 +273,21 @@ AI_TOOL_DEFINITIONS: Tuple[AiToolDefinition, ...] = (
         cli_executables=("poe", "poe.exe"),
         desktop_main_binaries=("/poe.app/contents/macos/poe",),
     ),
+    AiToolDefinition(
+        key="workbuddy",
+        display_name="WorkBuddy",
+        cli_executables=("workbuddy", "workbuddy.exe"),
+        desktop_main_binaries=("/workbuddy.app/contents/macos/workbuddy",),
+    ),
+    AiToolDefinition(
+        key="qoder",
+        display_name="Qoder",
+        cli_executables=("qoder", "qoder.exe", "qodercn", "qodercn.exe"),
+        desktop_main_binaries=(
+            "/qoder.app/contents/macos/qoder",
+            "/qoder cn.app/contents/macos/electron",
+        ),
+    ),
     AiToolDefinition(key="cursor-agent", display_name="Cursor Agent", cli_executables=("cursor-agent", "cursor-agent.exe")),
     AiToolDefinition(key="gemini-cli", display_name="Gemini", cli_executables=("gemini-cli", "gemini-cli.exe")),
     AiToolDefinition(key="qwen-code", display_name="Qwen Code", cli_executables=("qwen", "qwen-code", "qwen.exe")),
@@ -270,10 +307,14 @@ AI_TOOL_DEFINITIONS: Tuple[AiToolDefinition, ...] = (
 def _classify_process_rows(
     rows: Iterable[str],
     claude_sessions_dir: Optional[Path] = None,
+    qoder_logs_dir: Optional[Path] = None,
+    qoder_logs_dirs: Iterable[Path] = (),
     source_started_at: Optional[datetime] = None,
     now: Optional[datetime] = None,
 ) -> Iterable[SessionUpdate]:
     current = now or datetime.now(timezone.utc)
+    qoder_log_dirs = _qoder_log_dirs(qoder_logs_dir, qoder_logs_dirs)
+    qoder_states_by_dirs: dict[Tuple[str, ...], Optional[_QoderTaskState]] = {}
     for row in rows:
         metadata = _parse_window_row(row)
         process_id = _optional_int(metadata.get("process_id"))
@@ -290,13 +331,26 @@ def _classify_process_rows(
             tool_definition = desktop_app
             tool = tool_definition.tool
             surface = SurfaceKind.DESKTOP
-            status = SessionStatus.IDLE
-            status_source = "desktop-process"
             title = f"{tool_definition.display_name} Desktop"
-            summary = f"{tool_definition.display_name} 桌面 App 正在运行；尚未识别具体对话，先作为空闲入口。"
+            qoder_state: Optional[_QoderTaskState] = None
+            if tool_definition.key == "qoder" and qoder_log_dirs:
+                selected_qoder_log_dirs = _qoder_log_dirs_for_process(process_name, command, qoder_log_dirs)
+                cache_key = tuple(str(path) for path in selected_qoder_log_dirs)
+                if cache_key not in qoder_states_by_dirs:
+                    qoder_states_by_dirs[cache_key] = _read_qoder_task_state(selected_qoder_log_dirs, current)
+                qoder_state = qoder_states_by_dirs[cache_key]
+            if tool_definition.key == "qoder" and qoder_state is not None:
+                status = qoder_state.status
+                status_source = "qoder-log"
+                updated_at = current
+                summary = _qoder_task_summary(qoder_state.status)
+            else:
+                status = SessionStatus.IDLE
+                status_source = "desktop-process"
+                updated_at = current
+                summary = f"{tool_definition.display_name} 桌面 App 正在运行；尚未识别具体对话，先作为空闲入口。"
             focus_process_id = focus_process_id or process_id
             focus_app_name = focus_app_name or tool_definition.display_name
-            updated_at = current
         else:
             tool_definition = _detect_process_tool(process_name, command)
             if tool_definition is not None and _is_detached_terminal_process(stat):
@@ -343,12 +397,311 @@ def _classify_process_rows(
         )
 
 
+def _qoder_log_dirs(qoder_logs_dir: Optional[Path], qoder_logs_dirs: Iterable[Path]) -> Tuple[Path, ...]:
+    paths: List[Path] = []
+    seen = set()
+    for path in ((qoder_logs_dir,) if qoder_logs_dir is not None else ()) + tuple(qoder_logs_dirs):
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        paths.append(path)
+    return tuple(paths)
+
+
+def _qoder_log_dirs_for_process(process_name: str, command: str, log_dirs: Tuple[Path, ...]) -> Tuple[Path, ...]:
+    text = f"{process_name} {command}".lower()
+    if "qoder cn.app" in text or "qodercn" in text:
+        return _filter_qoder_log_dirs(log_dirs, "qodercn")
+    if "qoder.app" in text or re.search(r"(^|[\\/\\s])qoder(?:\\.exe)?([\\s/\\\\]|$)", text):
+        return _filter_qoder_log_dirs(log_dirs, "qoder")
+    return log_dirs
+
+
+def _filter_qoder_log_dirs(log_dirs: Tuple[Path, ...], product: str) -> Tuple[Path, ...]:
+    filtered: List[Path] = []
+    for path in log_dirs:
+        parts = {part.lower() for part in path.parts}
+        has_cn = "qodercn" in parts or "qoder cn" in parts
+        has_regular = "qoder" in parts
+        if product == "qodercn" and has_cn:
+            filtered.append(path)
+        elif product == "qoder" and has_regular and not has_cn:
+            filtered.append(path)
+    return tuple(filtered) or log_dirs
+
+
+def _read_qoder_task_state(logs_dirs: Iterable[Path], now: datetime) -> Optional[_QoderTaskState]:
+    states_by_task: dict[str, _QoderTaskState] = {}
+    anonymous_states: List[_QoderTaskState] = []
+    for path in _qoder_quest_log_paths(logs_dirs):
+        for state in _read_qoder_task_states_from_log(path):
+            if state.task_id:
+                existing = states_by_task.get(state.task_id)
+                if existing is None or state.updated_at >= existing.updated_at:
+                    states_by_task[state.task_id] = state
+            else:
+                anonymous_states.append(state)
+    task_states = list(states_by_task.values())
+    latest_task_state: Optional[_QoderTaskState] = None
+    for state in task_states:
+        if latest_task_state is None or state.updated_at >= latest_task_state.updated_at:
+            latest_task_state = state
+    states = task_states + [
+        state
+        for state in anonymous_states
+        if latest_task_state is None or state.updated_at > latest_task_state.updated_at
+    ]
+    latest: Optional[_QoderTaskState] = None
+    latest_needs_action: Optional[_QoderTaskState] = None
+    latest_running: Optional[_QoderTaskState] = None
+    for state in states:
+        age_seconds = (now - state.updated_at).total_seconds()
+        if state.status == SessionStatus.NEEDS_ACTION:
+            if latest_needs_action is None or state.updated_at >= latest_needs_action.updated_at:
+                latest_needs_action = state
+        if state.status == SessionStatus.RUNNING and age_seconds <= QODER_TASK_RUNNING_STALE_SECONDS:
+            if latest_running is None or state.updated_at >= latest_running.updated_at:
+                latest_running = state
+        if latest is None or state.updated_at >= latest.updated_at:
+            latest = state
+    if latest_needs_action is not None:
+        return latest_needs_action
+    if latest_running is not None:
+        return latest_running
+    if latest is None:
+        return None
+    age_seconds = (now - latest.updated_at).total_seconds()
+    if latest.status == SessionStatus.RUNNING and age_seconds > QODER_TASK_RUNNING_STALE_SECONDS:
+        return None
+    return latest
+
+
+def _qoder_quest_log_paths(logs_dirs: Iterable[Path]) -> List[Path]:
+    paths: List[Path] = []
+    seen = set()
+    for logs_dir in logs_dirs:
+        candidates: List[Path] = []
+        try:
+            if logs_dir.is_file():
+                candidates.append(logs_dir)
+            elif logs_dir.exists():
+                session_dirs = sorted(
+                    (child for child in logs_dir.iterdir() if child.is_dir()),
+                    key=_path_mtime,
+                    reverse=True,
+                )
+                for session_dir in session_dirs[:QODER_LOG_SESSION_DIR_LIMIT]:
+                    candidates.extend(session_dir / filename for filename in QODER_STATUS_LOG_FILENAMES)
+                    try:
+                        window_dirs = sorted(
+                            (child for child in session_dir.iterdir() if child.is_dir()),
+                            key=_path_mtime,
+                            reverse=True,
+                        )
+                    except OSError:
+                        continue
+                    for child in window_dirs[:QODER_LOG_WINDOW_DIR_LIMIT]:
+                        candidates.extend(child / filename for filename in QODER_STATUS_LOG_FILENAMES)
+        except OSError:
+            continue
+        for path in candidates:
+            key = str(path)
+            try:
+                if key in seen or not path.is_file():
+                    continue
+            except OSError:
+                continue
+            seen.add(key)
+            paths.append(path)
+    return sorted(paths, key=_path_mtime, reverse=True)[:QODER_LOG_PATH_LIMIT]
+
+
+def _path_mtime(path: Path) -> float:
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
+def _read_qoder_task_state_from_log(path: Path) -> Optional[_QoderTaskState]:
+    latest: Optional[_QoderTaskState] = None
+    for state in _read_qoder_task_states_from_log(path):
+        if latest is None or state.updated_at >= latest.updated_at:
+            latest = state
+    return latest
+
+
+def _read_qoder_task_states_from_log(path: Path) -> List[_QoderTaskState]:
+    latest_by_task: dict[str, _QoderTaskState] = {}
+    anonymous_states: List[_QoderTaskState] = []
+    for line in _read_text_tail(path, QODER_LOG_TAIL_BYTES).splitlines():
+        updated_at = _parse_qoder_log_timestamp(line)
+        if updated_at is None:
+            continue
+        state = _qoder_log_line_state(line, updated_at)
+        if state is None:
+            continue
+        if state.task_id:
+            existing = latest_by_task.get(state.task_id)
+            if existing is None or state.updated_at >= existing.updated_at:
+                latest_by_task[state.task_id] = state
+        else:
+            anonymous_states.append(state)
+    return list(latest_by_task.values()) + anonymous_states
+
+
+def _qoder_log_line_state(line: str, updated_at: datetime) -> Optional[_QoderTaskState]:
+    payload = _qoder_log_json_payload(line) if "{" in line else None
+    if "task.status.update" in line:
+        if payload is None:
+            return None
+        status = _qoder_task_status_from_payload(line, payload, updated_at)
+    else:
+        status = _qoder_agent_stream_status(line)
+    if status is None:
+        return None
+    return _QoderTaskState(status=status, updated_at=updated_at, task_id=_qoder_task_id(line, payload))
+
+
+def _qoder_task_status_from_payload(line: str, payload: dict, updated_at: datetime) -> Optional[SessionStatus]:
+    if "task.status.update.afterRefresh" not in line:
+        return _qoder_session_status(payload.get("status"))
+    pushed_status = _qoder_session_status(payload.get("pushedStatus"))
+    final_status = _qoder_session_status(payload.get("finalStatus") or payload.get("refreshedStatus") or payload.get("status"))
+    if pushed_status is not None and _optional_bool(payload.get("shouldUsePushedStatus")):
+        return pushed_status
+    if _qoder_should_prefer_pushed_status(pushed_status, final_status, payload, updated_at):
+        return pushed_status
+    return final_status or pushed_status
+
+
+def _qoder_should_prefer_pushed_status(
+    pushed_status: Optional[SessionStatus],
+    final_status: Optional[SessionStatus],
+    payload: dict,
+    updated_at: datetime,
+) -> bool:
+    if pushed_status != SessionStatus.RUNNING or final_status != SessionStatus.IDLE:
+        return False
+    refreshed_at = _parse_millis_datetime(payload.get("updatedAtTimestamp"))
+    if refreshed_at is None:
+        return False
+    return (updated_at - refreshed_at).total_seconds() > QODER_REFRESH_STALE_SNAPSHOT_SECONDS
+
+
+def _qoder_agent_stream_status(line: str) -> Optional[SessionStatus]:
+    text = line.lower()
+    if "acpprogressstatemachine" in text and "state transition:" in text:
+        if "-> suspended" in text:
+            return SessionStatus.NEEDS_ACTION
+        if "-> completed" in text or "-> initial" in text:
+            return SessionStatus.IDLE
+        if "-> prompting" in text or "-> streaming" in text:
+            return SessionStatus.RUNNING
+    if "acp stream completed" in text or "chat_finish" in text or '"state":"completed"' in text:
+        return SessionStatus.IDLE
+    if '"state":"streaming"' in text or "acp prompt sent successfully" in text or "handling acp session/prompt" in text:
+        return SessionStatus.RUNNING
+    return None
+
+
+def _qoder_task_id(line: str, payload: Optional[dict]) -> Optional[str]:
+    if payload is not None:
+        task_id = _normalize_qoder_task_id(payload.get("taskId") or payload.get("sessionId"))
+        if task_id:
+            return task_id
+    match = re.search(r"(task-[A-Za-z0-9]+)(?:\.session\.execution)?", line)
+    if match is not None:
+        return match.group(1)
+    match = re.search(r"\bsessionId:\s*([A-Za-z0-9][A-Za-z0-9._-]*)", line)
+    if match is not None:
+        return _normalize_qoder_task_id(match.group(1))
+    match = re.search(r"\bacp progress:\s*([A-Za-z0-9][A-Za-z0-9._-]*)", line, re.IGNORECASE)
+    if match is not None:
+        return _normalize_qoder_task_id(match.group(1))
+    return None
+
+
+def _normalize_qoder_task_id(value) -> Optional[str]:
+    text = _optional_str(value)
+    if text is None:
+        return None
+    suffix = ".session.execution"
+    if text.endswith(suffix):
+        text = text[: -len(suffix)]
+    return text or None
+
+
+def _read_text_tail(path: Path, byte_limit: int) -> str:
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as handle:
+            if size > byte_limit:
+                handle.seek(max(0, size - byte_limit))
+            raw = handle.read()
+    except OSError:
+        return ""
+    return raw.decode("utf-8", errors="ignore")
+
+
+def _qoder_log_json_payload(line: str) -> Optional[dict]:
+    start = line.find("{")
+    end = line.rfind("}")
+    if start < 0 or end <= start:
+        return None
+    try:
+        payload = json.loads(line[start : end + 1])
+    except json.JSONDecodeError:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _parse_qoder_log_timestamp(line: str) -> Optional[datetime]:
+    match = re.match(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{1,6})", line)
+    if match is None:
+        return None
+    try:
+        parsed = datetime.strptime(match.group(1), "%Y-%m-%d %H:%M:%S.%f")
+    except ValueError:
+        return None
+    return parsed.astimezone(timezone.utc)
+
+
+def _qoder_session_status(value) -> Optional[SessionStatus]:
+    status = str(value or "").strip()
+    normalized = re.sub(r"[\s_-]+", "", status).lower()
+    if normalized in {"running", "busy", "working", "thinking", "processing", "inprogress"}:
+        return SessionStatus.RUNNING
+    if normalized in {"needsaction", "actionrequired", "waiting", "awaitinguser", "waitingforuser", "prompt"}:
+        return SessionStatus.NEEDS_ACTION
+    if normalized in {"completed", "complete", "success", "succeeded", "cancelled", "canceled", "failed", "error", "idle", "ready", "stopped"}:
+        return SessionStatus.IDLE
+    return None
+
+
+def _qoder_task_summary(status: SessionStatus) -> str:
+    if status == SessionStatus.RUNNING:
+        return "Qoder 正在处理任务。"
+    if status == SessionStatus.NEEDS_ACTION:
+        return "Qoder 任务可能需要用户处理。"
+    return "Qoder 任务已完成，当前空闲。"
+
+
 def _detect_desktop_app(process_name: str, command: str) -> Optional[AiToolDefinition]:
-    haystack = f"{process_name or ''} {command or ''}".lower()
     for definition in AI_TOOL_DEFINITIONS:
-        if any(main_binary in haystack for main_binary in definition.desktop_main_binaries):
+        if any(_looks_like_invoked_desktop_binary(process_name, command, main_binary) for main_binary in definition.desktop_main_binaries):
             return definition
     return None
+
+
+def _looks_like_invoked_desktop_binary(process_name: str, command: str, main_binary: str) -> bool:
+    needle = main_binary.lower()
+    for candidate in (process_name, command):
+        text = str(candidate or "").strip().lower().lstrip("'\"")
+        if text.startswith("/") and needle in text:
+            return True
+    return False
 
 
 def _tool_definition_for_update(tool: ToolKind, tool_display_name: Optional[str] = None) -> Optional[AiToolDefinition]:
@@ -395,19 +748,24 @@ def _process_title(tool_definition: AiToolDefinition, cwd: str) -> str:
     return f"{base} - {folder}" if folder else base
 
 
-def _posix_process_case_patterns() -> str:
+def _posix_cli_process_case_patterns() -> str:
     patterns: List[str] = []
     for definition in AI_TOOL_DEFINITIONS:
-        patterns.extend(f"{executable}:*" for executable in definition.cli_executables)
-        patterns.extend(f"*:*.{main_binary}" if not main_binary.startswith("/") else f"*:*{main_binary}" for main_binary in definition.desktop_main_binaries)
+        patterns.extend(definition.cli_executables)
     return "|".join(patterns)
 
 
 def _posix_desktop_process_case_patterns() -> str:
     patterns: List[str] = []
     for definition in AI_TOOL_DEFINITIONS:
-        patterns.extend(f"*:*.{main_binary}" if not main_binary.startswith("/") else f"*:*{main_binary}" for main_binary in definition.desktop_main_binaries)
+        for main_binary in definition.desktop_main_binaries:
+            pattern = _shell_case_pattern(main_binary)
+            patterns.append(f"*:*.{pattern}*" if not main_binary.startswith("/") else f"*:*{pattern}*")
     return "|".join(patterns)
+
+
+def _shell_case_pattern(value: str) -> str:
+    return value.replace(" ", "\\ ")
 
 
 def _windows_process_name_regex() -> str:
@@ -448,6 +806,7 @@ def _read_codex_session_update(
     last_started_index = -1
     last_completed_index = -1
     last_needs_action_index = -1
+    pending_user_input_call_indices: dict[str, int] = {}
     latest_running_signal_index = -1
     latest_visible_reply_index = -1
     for index, record in enumerate(records):
@@ -473,16 +832,30 @@ def _read_codex_session_update(
         elif payload_type == "agent_message":
             latest_running_signal_index = index
             latest_visible_reply_index = index
-        elif payload_type in {"reasoning", "function_call", "custom_tool_call"}:
+        elif payload_type in {"function_call", "custom_tool_call"}:
+            if _is_codex_user_input_tool_call(payload):
+                call_id = _codex_tool_call_id(payload) or f"record-{index}"
+                pending_user_input_call_indices[call_id] = index
+            else:
+                latest_running_signal_index = index
+        elif payload_type in {"function_call_output", "custom_tool_call_output"}:
+            call_id = _codex_tool_call_id(payload)
+            if call_id is not None:
+                pending_user_input_call_indices.pop(call_id, None)
+        elif payload_type == "reasoning":
             latest_running_signal_index = index
     fallback_at = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
     updated_at = latest_at or fallback_at
     if not user_thread:
         return None
+    effective_needs_action_index = max(
+        last_needs_action_index,
+        max(pending_user_input_call_indices.values(), default=-1),
+    )
     status = _codex_session_status(
         last_started_index,
         last_completed_index,
-        last_needs_action_index,
+        effective_needs_action_index,
         latest_running_signal_index,
         latest_visible_reply_index,
     )
@@ -494,7 +867,7 @@ def _read_codex_session_update(
         status,
         last_started_index,
         last_completed_index,
-        last_needs_action_index,
+        effective_needs_action_index,
         latest_visible_reply_index,
     )
     age_seconds = (now - updated_at).total_seconds()
@@ -586,6 +959,16 @@ def _codex_payload(record: dict) -> dict:
         if isinstance(value, dict):
             return value
     return {}
+
+
+def _is_codex_user_input_tool_call(payload: dict) -> bool:
+    name = str(payload.get("name") or payload.get("tool_name") or "").strip().lower()
+    normalized = name.replace("-", "_").rsplit(".", 1)[-1].rsplit("/", 1)[-1]
+    return normalized == "request_user_input"
+
+
+def _codex_tool_call_id(payload: dict) -> Optional[str]:
+    return _optional_str(payload.get("call_id")) or _optional_str(payload.get("id"))
 
 
 def _is_codex_internal_thread(payload: dict) -> bool:
@@ -775,7 +1158,7 @@ def _windows_window_command() -> List[str]:
 
 
 def _posix_process_command() -> List[str]:
-    process_case_patterns = _posix_process_case_patterns()
+    cli_process_case_patterns = _posix_cli_process_case_patterns()
     desktop_process_case_patterns = _posix_desktop_process_case_patterns()
     script = (
         "focus_app_name() { case \"$1\" in "
@@ -806,18 +1189,27 @@ def _posix_process_command() -> List[str]:
         "esac; }; "
         "all_process_rows=$(ps -axo pid=,ppid=,pgid=,stat=,%cpu=,comm=,args= 2>/dev/null); "
         "printf '%s\\n' \"$all_process_rows\" | while read -r pid ppid pgid stat cpu comm args; do "
-        "exe=$(basename -- \"$comm\" | tr '[:upper:]' '[:lower:]'); "
-        "first_arg=${args%% *}; "
-        "first_arg_lc=$(printf '%s' \"$first_arg\" | tr '[:upper:]' '[:lower:]'); "
-        f"case \"$exe:$first_arg_lc\" in {process_case_patterns}) ;; "
+        "exe_raw=${comm##*/}; "
+        "exe=$(printf '%s' \"$exe_raw\" | tr '[:upper:]' '[:lower:]'); "
+        "args_lc=; "
+        "case \"$exe\" in sh|bash|zsh|fish) shell_process=1 ;; *) shell_process=0 ;; esac; "
+        "desktop_process=0; "
+        "if [ \"$shell_process\" = \"0\" ]; then "
+        "case \"$args\" in *.app/Contents/MacOS/*|*.app/contents/macos/*) "
+        "args_lc=$(printf '%s' \"$args\" | tr '[:upper:]' '[:lower:]'); "
+        f"case \"$exe:$args_lc\" in {desktop_process_case_patterns}) desktop_process=1 ;; "
+        "esac; "
+        ";; esac; "
+        "fi; "
+        "if [ \"$desktop_process\" = \"1\" ]; then "
+        "printf 'process_id=%s\\tprocess_name=%s\\tcommand=%s\\tcwd=\\tcpu_percent=%s\\tstat=%s\\tactive_child_count=0\\tfocus_process_id=%s\\tfocus_app_name=\\n' \"$pid\" \"$comm\" \"$args\" \"$cpu\" \"$stat\" \"$pid\"; "
+        "continue; "
+        "fi; "
+        f"case \"$exe\" in {cli_process_case_patterns}) ;; "
         "*) continue ;; "
         "esac; "
-        f"case \"$exe:$first_arg_lc\" in {desktop_process_case_patterns}) "
-        "printf 'process_id=%s\\tprocess_name=%s\\tcommand=%s\\tcwd=\\tcpu_percent=%s\\tstat=%s\\tactive_child_count=0\\tfocus_process_id=%s\\tfocus_app_name=\\n' \"$pid\" \"$comm\" \"$args\" \"$cpu\" \"$stat\" \"$pid\"; "
-        "continue ;; "
-        "esac; "
-        "case \"$exe:$first_arg_lc\" in claude:*|claude.exe:*) ;; *) cwd=$(lsof -a -p \"$pid\" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -n 1) ;; esac; "
-        "case \"$exe:$first_arg_lc\" in claude:*|claude.exe:*) active_children=0 ;; *) active_children=$(printf '%s\\n' \"$all_process_rows\" | awk -v pgid=\"$pgid\" -v pid=\"$pid\" '"
+        "case \"$exe\" in claude|claude.exe) ;; *) cwd=$(lsof -a -p \"$pid\" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -n 1) ;; esac; "
+        "case \"$exe\" in claude|claude.exe) active_children=0 ;; *) active_children=$(printf '%s\\n' \"$all_process_rows\" | awk -v pgid=\"$pgid\" -v pid=\"$pid\" '"
         "function background_ai_helper(text) { "
         "text=tolower(text); "
         "return text ~ /(mcp|tavily|searxng)/ && text ~ /(npm|npx|node|\\.bin)/ "

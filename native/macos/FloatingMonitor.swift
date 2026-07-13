@@ -30,6 +30,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         "visual studio code",
         "webstorm",
     ]
+    private let aiDesktopApps: Set<String> = [
+        "claude",
+        "claude code",
+        "codex",
+        "chatgpt",
+        "gemini",
+        "perplexity",
+        "poe",
+        "workbuddy",
+        "qoder",
+        "qoder cn",
+    ]
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -165,7 +177,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         switch type {
         case "resize":
             let rawMode = payload["mode"] as? String
-            let mode = (rawMode == "compact" || rawMode == "bubbles") ? rawMode! : "unknown"
+            let mode = (rawMode == "compact" || rawMode == "bubbles" || rawMode == "menu") ? rawMode! : "unknown"
             writeLog("Received host resize mode: \(mode)")
             guard let width = payload["width"] as? NSNumber, let height = payload["height"] as? NSNumber else { return }
             resizeWindow(width: CGFloat(truncating: width), height: CGFloat(truncating: height))
@@ -267,9 +279,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
             }
             let localized = normalizedAppName(app.localizedName ?? "")
             let bundleName = normalizedAppName(app.bundleURL?.deletingPathExtension().lastPathComponent ?? "")
-            if appNameMatches(candidate: localized, target: normalizedTarget)
-                || appNameMatches(candidate: bundleName, target: normalizedTarget)
-            {
+            var matchesTarget = false
+            for alias in appNameAliases(for: normalizedTarget) {
+                if appNameMatches(candidate: localized, target: alias)
+                    || appNameMatches(candidate: bundleName, target: alias)
+                {
+                    matchesTarget = true
+                    break
+                }
+            }
+            if matchesTarget {
                 apps.append(app)
                 seen.insert(app.processIdentifier)
             }
@@ -370,9 +389,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         return prefixMatchedAppNameTargets.contains(target) && candidate.hasPrefix(target)
     }
 
+    private func appNameAliases(for target: String) -> Set<String> {
+        if target == "qoder" {
+            return ["qoder", "qoder cn"]
+        }
+        return [target]
+    }
+
     private func isDesktopAIApp(_ appName: String) -> Bool {
         let normalized = normalizedAppName(appName)
-        return normalized == "codex" || normalized == "claude"
+        return !aiDesktopApps.isDisjoint(with: appNameAliases(for: normalized))
     }
 
     private func resizeWindow(width: CGFloat, height: CGFloat) {

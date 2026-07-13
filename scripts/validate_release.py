@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import importlib
+import json
 import os
 import re
 import shutil
@@ -83,29 +85,37 @@ def check_js_syntax(env: Dict[str, str]) -> None:
     if node is None:
         print("[SKIP] js syntax: node not found")
         return
-    script = '''
-const fs = require("fs");
-const source = fs.readFileSync("src/ai_progress_monitor/web.py", "utf8");
-const patterns = [
-  new RegExp('HTML_TEMPLATE = """([\\\\s\\\\S]*?)"""\\\\s*\\\\n\\\\nHTML = render_html'),
-  new RegExp('HTML = """([\\\\s\\\\S]*)"""\\\\s*$'),
-];
-const match = patterns.map(pattern => source.match(pattern)).find(Boolean);
-if (!match) throw new Error("HTML template block not found");
-const assetConfig = JSON.stringify({
-  idle: "/assets/pet/idle.png",
-  running: "/assets/pet/running.png",
-  needs_action: "/assets/pet/needs-action.png",
-  app_avatar: "/assets/app-avatar.png",
-});
-const html = match[1]
-  .replaceAll("__MONITOR_TOKEN__", "token")
-  .replaceAll("__PET_ASSETS__", assetConfig);
-for (const item of html.matchAll(new RegExp('<script>([\\\\s\\\\S]*?)<\\\\/script>', 'g'))) {
-  new Function(item[1]);
-}
-'''
+    html = rendered_monitor_html()
+    scripts = re.findall(r"<script>([\s\S]*?)</script>", html)
+    if not scripts:
+        raise SystemExit("[FAIL] js syntax: script block not found")
+    script = "\n".join(f"new Function({json.dumps(item)});" for item in scripts)
     run_check("js syntax", [node, "-e", script], env)
+
+
+def rendered_monitor_html() -> str:
+    src_path = str(ROOT / "src")
+    original_path = list(sys.path)
+    previous_modules = {
+        name: module
+        for name, module in list(sys.modules.items())
+        if name == "ai_progress_monitor" or name.startswith("ai_progress_monitor.")
+    }
+    try:
+        for name in previous_modules:
+            sys.modules.pop(name, None)
+        sys.path.insert(0, src_path)
+        module = importlib.import_module("ai_progress_monitor.web")
+        html = getattr(module, "HTML", "")
+    finally:
+        for name in list(sys.modules):
+            if name == "ai_progress_monitor" or name.startswith("ai_progress_monitor."):
+                sys.modules.pop(name, None)
+        sys.modules.update(previous_modules)
+        sys.path[:] = original_path
+    if not isinstance(html, str) or not html:
+        raise SystemExit("[FAIL] js syntax: rendered HTML not found")
+    return html
 
 
 def check_sensitive_text() -> None:

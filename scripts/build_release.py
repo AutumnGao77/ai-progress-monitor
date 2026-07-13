@@ -142,6 +142,8 @@ def build_release_bundle() -> None:
                 "",
                 "Pet visual assets:",
                 "  Built-in state images are served at /assets/pet/idle.png, /assets/pet/running.png, and /assets/pet/needs-action.png.",
+                "  Right-click Pet -> Appearance to switch between the default three-state sloth and the shirt sloth.",
+                "  The shirt sloth theme uses /assets/pet/shirt.png for idle, running, and needs-action states.",
                 "  The app avatar is served at /assets/app-avatar.png.",
                 "  macOS app bundles include app-avatar.png and AppIcon.icns; the menu bar item uses the avatar icon instead of AI text.",
                 "  To replace only the visual appearance, set local paths in ~/.ai-progress-monitor/preferences.json.",

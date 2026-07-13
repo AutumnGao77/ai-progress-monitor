@@ -25,6 +25,7 @@ The desktop Pet uses local raster assets under `src/ai_progress_monitor/assets/`
 | Idle | `/assets/pet/idle.png` | `sloth-pet-idle.png` |
 | Running | `/assets/pet/running.png` | `sloth-pet-running.png` |
 | Needs action | `/assets/pet/needs-action.png` | `sloth-pet-needs-action.png` |
+| Shirt appearance | `/assets/pet/shirt.png` | `sloth-pet-shirt.png` |
 | App avatar / favicon / macOS icon | `/assets/app-avatar.png` | `app-avatar.png` |
 
 Keep the Pet image background transparent. The WebView container must stay transparent and must not add a CSS `drop-shadow` on `.pet`; if a visual shadow is needed, bake it into the image intentionally and verify it still satisfies the transparent-window experience.
@@ -32,6 +33,8 @@ Keep the Pet image background transparent. The WebView container must stay trans
 Runtime `app-avatar.png` must stay a clean transparent circular icon: no watermark, no outer square/yellow background, and transparent pixels should be `(0,0,0,0)` to avoid dirty edges in menu bar and bundle icons. If local candidate/source files exist, apply the same visual standard to them before deriving runtime assets.
 
 Visual replacements should preserve the current shape contract: three Pet state PNG files at 768 x 768, one app avatar PNG at 1024 x 1024, and the legacy `sloth-pet.png` fallback kept in sync with the idle state. User-configurable overrides are read from `~/.ai-progress-monitor/preferences.json` via `pet_assets.idle`, `pet_assets.running`, `pet_assets.needs_action`, and `pet_assets.app_avatar`.
+
+Pet appearance switching is documented in `docs/prd/2026-07-11-pet-appearance-theme-switching-prd.md`. The right-click Pet menu is `外观`, `隐藏 Pet`, and `退出程序`; the `外观` submenu contains `背带裤树懒` and `衬衫树懒`, with a checkmark on the active choice. `pet_appearance` accepts `default` or `shirt`; missing or invalid values fall back to `default`. The token-protected local preference API is `GET /api/preferences` and `POST /api/preferences/pet-appearance`. `pet_assets.*` overrides still apply to the final Pet image after the selected theme is resolved.
 
 macOS bundles must copy `app-avatar.png` into `Contents/Resources/`, generate `AppIcon.icns`, declare `CFBundleIconFile=AppIcon`, and use the avatar image for the menu bar status item instead of the literal `AI` text.
 

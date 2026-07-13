@@ -2,7 +2,10 @@
 set -eu
 
 APP_NAME="AI Progress Monitor Floating Dev"
+ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 LOG_FILE="${HOME}/Library/Logs/AI Progress Monitor/native-monitor.log"
+APPROVED_SHIRT_ASSET="$ROOT_DIR/docs/promo/assets/sloth-mascot-transparent.png"
+export APPROVED_SHIRT_ASSET
 STRICT=0
 
 for arg in "$@"; do
@@ -44,7 +47,9 @@ if [ ! -f "$LOG_FILE" ]; then
 fi
 
 FILTERED_LOG="$(mktemp "${TMPDIR:-/tmp}/ai-monitor-dev-log.XXXXXX")"
-trap 'rm -f "$FILTERED_LOG"' EXIT
+SHIRT_HEADERS="$(mktemp "${TMPDIR:-/tmp}/ai-monitor-shirt-headers.XXXXXX")"
+SHIRT_BODY="$(mktemp "${TMPDIR:-/tmp}/ai-monitor-shirt-body.XXXXXX")"
+trap 'rm -f "$FILTERED_LOG" "$SHIRT_HEADERS" "$SHIRT_BODY"' EXIT
 awk '
   /Starting native companion/ {buffer = ""; seen = 1}
   {buffer = buffer $0 "\n"}
@@ -69,6 +74,43 @@ grep "AI Progress Monitor running at" "$FILTERED_LOG" | tail -n 3 | sed -E 's/to
 echo
 echo "Recent session snapshots:"
 grep "AI Progress Monitor sessions:" "$FILTERED_LOG" | tail -n 5 || true
+
+echo
+echo "Recent pet appearance changes:"
+grep "AI Progress Monitor pet appearance:" "$FILTERED_LOG" | tail -n 5 || true
+
+echo
+echo "Pet appearance asset check:"
+asset_todo=0
+monitor_url="$(grep "AI Progress Monitor running at" "$FILTERED_LOG" | tail -n 1 | sed -E 's/^.*(http:\/\/127\.0\.0\.1:[0-9]+)\/\?token=[^[:space:]]+.*$/\1/' || true)"
+if [ -z "$monitor_url" ] || [ "$monitor_url" = "$(grep "AI Progress Monitor running at" "$FILTERED_LOG" | tail -n 1 || true)" ]; then
+  echo "  [TODO] running app URL unavailable"
+  asset_todo=1
+elif [ ! -f "$APPROVED_SHIRT_ASSET" ]; then
+  echo "  [TODO] approved shirt source image missing"
+  asset_todo=1
+elif ! command -v curl >/dev/null 2>&1 || ! command -v shasum >/dev/null 2>&1; then
+  echo "  [TODO] curl or shasum unavailable"
+  asset_todo=1
+elif curl -fsS -D "$SHIRT_HEADERS" -o "$SHIRT_BODY" "$monitor_url/assets/pet/shirt.png" >/dev/null 2>&1; then
+  expected_hash="$(shasum -a 256 "$APPROVED_SHIRT_ASSET" | awk '{print $1}')"
+  actual_hash="$(shasum -a 256 "$SHIRT_BODY" | awk '{print $1}')"
+  if [ "$actual_hash" = "$expected_hash" ]; then
+    echo "  [OK] shirt asset route serves approved source image"
+  else
+    echo "  [TODO] shirt asset route does not match approved source image"
+    asset_todo=1
+  fi
+  if grep -iq '^cache-control: no-store' "$SHIRT_HEADERS"; then
+    echo "  [OK] shirt asset route disables caching"
+  else
+    echo "  [TODO] shirt asset route missing cache-control: no-store"
+    asset_todo=1
+  fi
+else
+  echo "  [TODO] shirt asset route unavailable"
+  asset_todo=1
+fi
 
 echo
 echo "Manual acceptance evidence:"
@@ -131,7 +173,7 @@ echo "  4. Drag across displays and screen edges."
 echo "  5. Click a bubble and confirm it returns to the corresponding Claude/Codex window."
 
 if [ "$STRICT" = "1" ]; then
-  if [ "$manual_todo" = "0" ]; then
+  if [ "$manual_todo" = "0" ] && [ "$asset_todo" = "0" ]; then
     echo
     echo "Manual acceptance complete"
   else

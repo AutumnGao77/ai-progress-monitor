@@ -1,3 +1,5 @@
+import contextlib
+import io
 import os
 import tempfile
 import unittest
@@ -15,6 +17,34 @@ class ReleaseBundleTests(unittest.TestCase):
         env["PYTHONPATH"] = "src"
 
         validate_release.check_js_syntax(env)
+
+    def test_validate_release_js_syntax_checks_rendered_html_not_raw_template(self):
+        env = os.environ.copy()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            package_dir = root / "src" / "ai_progress_monitor"
+            package_dir.mkdir(parents=True)
+            (package_dir / "__init__.py").write_text("", encoding="utf-8")
+            (package_dir / "web.py").write_text(
+                '\n'.join(
+                    [
+                        "def render_html(token):",
+                        '    return """<script>window.PET_THEMES = ;</script>"""',
+                        "",
+                        'HTML_TEMPLATE = """<script>window.PET_THEMES = __PET_THEMES__;</script>"""',
+                        "",
+                        'HTML = render_html("token")',
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            env["PYTHONPATH"] = str(root / "src")
+
+            with mock.patch.object(validate_release, "ROOT", root):
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    with self.assertRaises(SystemExit):
+                        validate_release.check_js_syntax(env)
 
     def test_sensitive_scan_includes_github_workflows(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -63,6 +93,7 @@ class ReleaseBundleTests(unittest.TestCase):
         self.assertIn("/assets/pet/idle.png", source)
         self.assertIn("/assets/pet/running.png", source)
         self.assertIn("/assets/pet/needs-action.png", source)
+        self.assertIn("/assets/pet/shirt.png", source)
         self.assertIn("/assets/app-avatar.png", source)
         self.assertIn("the menu bar item uses the avatar icon instead of AI text", source)
         self.assertIn("pet_assets.idle", source)
@@ -80,6 +111,11 @@ class ReleaseBundleTests(unittest.TestCase):
         self.assertTrue(
             build_release.include_pyz_path(
                 src / "ai_progress_monitor" / "assets" / "sloth-pet-idle.png"
+            )
+        )
+        self.assertTrue(
+            build_release.include_pyz_path(
+                src / "ai_progress_monitor" / "assets" / "sloth-pet-shirt.png"
             )
         )
         self.assertFalse(

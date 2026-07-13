@@ -10,6 +10,31 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def _add_fake_shirt_asset_curl(env: dict, temp_dir: str) -> None:
+    fake_bin = Path(temp_dir) / "bin"
+    fake_bin.mkdir(exist_ok=True)
+    fake_curl = fake_bin / "curl"
+    fake_curl.write_text(
+        """#!/bin/sh
+headers=""
+body=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -D) headers="$2"; shift 2 ;;
+    -o) body="$2"; shift 2 ;;
+    -*) shift ;;
+    *) shift ;;
+  esac
+done
+printf 'HTTP/1.0 200 OK\\r\\ncache-control: no-store\\r\\n\\r\\n' > "$headers"
+cat "$APPROVED_SHIRT_ASSET" > "$body"
+""",
+        encoding="utf-8",
+    )
+    fake_curl.chmod(0o755)
+    env["PATH"] = str(fake_bin) + os.pathsep + env.get("PATH", "")
+
+
 class StartScriptTests(unittest.TestCase):
     def test_shell_start_script_writes_log_and_shows_failure_hint(self):
         script = (ROOT / "scripts" / "start_monitor.sh").read_text()
@@ -71,6 +96,12 @@ class StartScriptTests(unittest.TestCase):
         self.assertIn("Received host message", script)
         self.assertIn("Show monitor requested", script)
         self.assertIn("Hide monitor requested", script)
+        self.assertIn("Pet appearance asset check", script)
+        self.assertIn("/assets/pet/shirt.png", script)
+        self.assertIn("sloth-mascot-transparent.png", script)
+        self.assertIn("cache-control: no-store", script)
+        self.assertIn("Recent pet appearance changes", script)
+        self.assertIn("AI Progress Monitor pet appearance:", script)
         self.assertIn("pgrep", script)
         self.assertNotIn('LOG_FILE="${HOME}/Library/Logs/AI Progress Monitor/monitor.log"', script)
         self.assertNotIn("/usr/bin/open", script)
@@ -103,6 +134,67 @@ class StartScriptTests(unittest.TestCase):
             self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
             self.assertIn("token=[REDACTED]", completed.stdout)
             self.assertIn("AI Progress Monitor sessions: total=4", completed.stdout)
+            self.assertNotIn("secret-token", completed.stdout)
+
+    @unittest.skipUnless(os.name == "posix", "Shell helper execution is only available on POSIX systems")
+    def test_macos_dev_acceptance_helper_checks_running_app_shirt_asset_route(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            home = Path(temp_dir) / "home"
+            log_dir = home / "Library" / "Logs" / "AI Progress Monitor"
+            log_dir.mkdir(parents=True)
+            (log_dir / "native-monitor.log").write_text(
+                "AI Progress Monitor running at http://127.0.0.1:8765/?token=secret-token\n"
+                "AI Progress Monitor sessions: total=4 needs_action=0 running=1 idle=3 process_only=4 full=0\n",
+                encoding="utf-8",
+            )
+            env = os.environ.copy()
+            env["HOME"] = str(home)
+            _add_fake_shirt_asset_curl(env, temp_dir)
+
+            completed = subprocess.run(
+                ["sh", str(ROOT / "scripts" / "check_macos_floating_dev.sh")],
+                cwd=ROOT,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+
+            self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+            self.assertIn("[OK] shirt asset route serves approved source image", completed.stdout)
+            self.assertIn("[OK] shirt asset route disables caching", completed.stdout)
+            self.assertNotIn("secret-token", completed.stdout)
+
+    @unittest.skipUnless(os.name == "posix", "Shell helper execution is only available on POSIX systems")
+    def test_macos_dev_acceptance_helper_reports_recent_pet_appearance_changes(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            home = Path(temp_dir) / "home"
+            log_dir = home / "Library" / "Logs" / "AI Progress Monitor"
+            log_dir.mkdir(parents=True)
+            (log_dir / "native-monitor.log").write_text(
+                "AI Progress Monitor running at http://127.0.0.1:8765/?token=secret-token\n"
+                "AI Progress Monitor sessions: total=4 needs_action=0 running=1 idle=3 process_only=4 full=0\n"
+                "AI Progress Monitor pet appearance: shirt\n"
+                "AI Progress Monitor pet appearance: default\n",
+                encoding="utf-8",
+            )
+            env = os.environ.copy()
+            env["HOME"] = str(home)
+            _add_fake_shirt_asset_curl(env, temp_dir)
+
+            completed = subprocess.run(
+                ["sh", str(ROOT / "scripts" / "check_macos_floating_dev.sh")],
+                cwd=ROOT,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+
+            self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+            self.assertIn("Recent pet appearance changes:", completed.stdout)
+            self.assertIn("AI Progress Monitor pet appearance: shirt", completed.stdout)
+            self.assertIn("AI Progress Monitor pet appearance: default", completed.stdout)
             self.assertNotIn("secret-token", completed.stdout)
 
     @unittest.skipUnless(os.name == "posix", "Shell helper execution is only available on POSIX systems")
@@ -225,6 +317,7 @@ class StartScriptTests(unittest.TestCase):
             )
             env = os.environ.copy()
             env["HOME"] = str(home)
+            _add_fake_shirt_asset_curl(env, temp_dir)
 
             completed = subprocess.run(
                 ["sh", str(ROOT / "scripts" / "check_macos_floating_dev.sh"), "--strict"],
@@ -253,6 +346,7 @@ class StartScriptTests(unittest.TestCase):
             )
             env = os.environ.copy()
             env["HOME"] = str(home)
+            _add_fake_shirt_asset_curl(env, temp_dir)
 
             completed = subprocess.run(
                 ["sh", str(ROOT / "scripts" / "check_macos_floating_dev.sh"), "--strict"],
@@ -332,6 +426,7 @@ class StartScriptTests(unittest.TestCase):
             )
             env = os.environ.copy()
             env["HOME"] = str(home)
+            _add_fake_shirt_asset_curl(env, temp_dir)
 
             completed = subprocess.run(
                 ["sh", str(ROOT / "scripts" / "check_macos_floating_dev.sh"), "--strict"],

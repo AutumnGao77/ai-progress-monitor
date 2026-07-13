@@ -22,6 +22,16 @@ class WebUiBehaviorTests(unittest.TestCase):
         self.assertEqual(payload["badgeText"], "3")
         self.assertIn("badge-needs-action", payload["badgeClass"])
         self.assertEqual(payload["needsActionPetSrc"], "/assets/pet/needs-action.png")
+        self.assertEqual(payload["shirtNeedsActionPetSrc"], "/assets/pet/shirt.png")
+        self.assertEqual(payload["shirtRunningPetSrc"], "/assets/pet/shirt.png")
+        self.assertEqual(payload["shirtIdlePetSrc"], "/assets/pet/shirt.png")
+        self.assertEqual(payload["defaultAfterShirtRunningPetSrc"], "/assets/pet/running.png")
+        self.assertEqual(payload["customOverrideShirtNeedsActionPetSrc"], "/custom/needs-action.png")
+        self.assertEqual(payload["customOverrideShirtRunningPetSrc"], "/custom/running.png")
+        self.assertEqual(payload["customOverrideShirtIdlePetSrc"], "/custom/idle.png")
+        self.assertEqual(payload["appearanceDefaultCheck"], "")
+        self.assertEqual(payload["appearanceShirtCheck"], "✓")
+        self.assertEqual(payload["messagesAfterAppearanceClick"], [])
         self.assertEqual(payload["mixedSixBadgeText"], "6")
         self.assertIn("badge-needs-action", payload["mixedSixBadgeClass"])
         self.assertEqual(payload["runningPairBadgeText"], "2")
@@ -87,11 +97,57 @@ class WebUiBehaviorTests(unittest.TestCase):
         self.assertTrue(payload["contextMenuOpen"])
         self.assertEqual(payload["contextMenuLeft"], "50px")
         self.assertEqual(payload["contextMenuTop"], "60px")
-        self.assertEqual(payload["messagesAfterContextMenuOpen"], [])
-        self.assertEqual(payload["messagesAfterContextHide"][-1], "hide")
+        self.assertEqual(payload["messagesAfterContextMenuOpen"], ["resize:menu"])
+        self.assertEqual(payload["messagesAfterContextHide"][-2:], ["resize:compact", "hide"])
         self.assertFalse(payload["contextMenuOpenAfterHide"])
-        self.assertEqual(payload["messagesAfterContextQuit"][-1], "quit")
+        self.assertEqual(payload["messagesAfterContextQuit"], ["resize:menu", "resize:compact", "quit"])
         self.assertFalse(payload["contextMenuOpenAfterQuit"])
+        self.assertEqual(payload["messagesAfterContextAppearance"], ["resize:menu", "resize:compact"])
+        self.assertEqual(payload["petSrcAfterContextAppearanceClick"], "/assets/pet/shirt.png")
+        self.assertFalse(payload["contextMenuOpenAfterAppearance"])
+        self.assertEqual(payload["appearancePreferenceBodies"], [{"theme": "shirt"}])
+
+    def test_pet_appearance_save_queue_keeps_latest_choice(self):
+        script = _main_script().replace("\nload();\n", "\n")
+        result = subprocess.run(
+            ["node", "-e", _appearance_save_queue_harness(script)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["optimisticAppearanceAfterClicks"], "default")
+        self.assertEqual(payload["optimisticPetSrcAfterClicks"], "/assets/pet/idle.png")
+        self.assertEqual(payload["requestBodiesBeforeFirstResponse"], [{"theme": "shirt"}])
+        self.assertEqual(payload["requestBodiesAfterFirstResponse"], [{"theme": "shirt"}, {"theme": "default"}])
+        self.assertEqual(payload["appearanceAfterFirstResponse"], "default")
+        self.assertEqual(payload["petSrcAfterFirstResponse"], "/assets/pet/idle.png")
+        self.assertEqual(payload["finalAppearance"], "default")
+        self.assertEqual(payload["finalPetSrc"], "/assets/pet/idle.png")
+        self.assertEqual(payload["finalDefaultCheck"], "✓")
+        self.assertEqual(payload["finalShirtCheck"], "")
+
+    def test_pet_appearance_save_failure_rolls_back_to_confirmed_theme(self):
+        script = _main_script().replace("\nload();\n", "\n")
+        result = subprocess.run(
+            ["node", "-e", _appearance_save_failure_harness(script)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["appearanceBeforeFailure"], "shirt")
+        self.assertEqual(payload["petSrcBeforeFailure"], "/assets/pet/shirt.png")
+        self.assertEqual(payload["requestBodies"], [{"theme": "shirt"}])
+        self.assertEqual(payload["appearanceAfterFailure"], "default")
+        self.assertEqual(payload["petSrcAfterFailure"], "/assets/pet/idle.png")
+        self.assertEqual(payload["defaultCheckAfterFailure"], "✓")
+        self.assertEqual(payload["shirtCheckAfterFailure"], "")
+        self.assertEqual(payload["statusTextAfterFailure"], "外观保存失败")
 
 
 def _main_script() -> str:
@@ -178,6 +234,12 @@ def _node_harness(script: str) -> str:
           petBadge: new Element("petBadge"),
           bubbleList: new Element("bubbleList"),
           petContextMenu: new Element("petContextMenu"),
+          appearanceMenuItem: new Element("appearanceMenuItem"),
+          appearanceSubmenu: new Element("appearanceSubmenu"),
+          appearanceDefaultMenuItem: new Element("appearanceDefaultMenuItem"),
+          appearanceShirtMenuItem: new Element("appearanceShirtMenuItem"),
+          appearanceDefaultCheck: new Element("appearanceDefaultCheck"),
+          appearanceShirtCheck: new Element("appearanceShirtCheck"),
           statusNote: new Element("statusNote"),
           hidePetMenuItem: new Element("hidePetMenuItem"),
           quitPetMenuItem: new Element("quitPetMenuItem"),
@@ -201,6 +263,26 @@ def _node_harness(script: str) -> str:
           }},
           window: {{
             MONITOR_TOKEN: "test-token",
+            PET_APPEARANCE: "default",
+            PET_ASSETS: {{
+              idle: "/assets/pet/idle.png",
+              running: "/assets/pet/running.png",
+              needs_action: "/assets/pet/needs-action.png",
+              app_avatar: "/assets/app-avatar.png",
+            }},
+            PET_ASSET_OVERRIDE_KEYS: [],
+            PET_THEMES: {{
+              default: {{
+                idle: "/assets/pet/idle.png",
+                running: "/assets/pet/running.png",
+                needs_action: "/assets/pet/needs-action.png",
+              }},
+              shirt: {{
+                idle: "/assets/pet/shirt.png",
+                running: "/assets/pet/shirt.png",
+                needs_action: "/assets/pet/shirt.png",
+              }},
+            }},
             innerWidth: 340,
             innerHeight: 500,
             resizeTo: () => {{}},
@@ -221,7 +303,7 @@ def _node_harness(script: str) -> str:
         }};
         context.globalThis = context;
         vm.createContext(context);
-        vm.runInContext(script + "\\nglobalThis.__api = {{displayStatus,badgeState,renderBadge,renderBubbles,toggleBubbleList,hidePet,quitApp,restorePetFromHost}};", context);
+        vm.runInContext(script + "\\nglobalThis.__api = {{displayStatus,badgeState,renderBadge,renderBubbles,toggleBubbleList,hidePet,quitApp,restorePetFromHost,applyPetAppearance,updateAppearanceMenu}};", context);
 
         const api = context.__api;
         assert.equal(api.displayStatus({{status:"needs_action"}}), "needs_action");
@@ -242,6 +324,45 @@ def _node_harness(script: str) -> str:
         const needsActionPetSrc = elements.petArt.src;
         const bubbleHtml = elements.bubbleList.innerHTML;
         const bubbleTitles = elements.bubbleList.children.map(child => child.titleText);
+
+        api.applyPetAppearance("shirt");
+        api.renderBadge(sessions);
+        const shirtNeedsActionPetSrc = elements.petArt.src;
+        api.renderBadge([{{session_id:"shirt-running", title:"Codex - x", tool:"codex", status:"running", monitoring_level:"full"}}]);
+        const shirtRunningPetSrc = elements.petArt.src;
+        api.renderBadge([{{session_id:"shirt-idle", title:"Codex - x", tool:"codex", status:"idle", monitoring_level:"full"}}]);
+        const shirtIdlePetSrc = elements.petArt.src;
+        api.applyPetAppearance("default");
+        api.renderBadge([{{session_id:"default-running", title:"Codex - x", tool:"codex", status:"running", monitoring_level:"full"}}]);
+        const defaultAfterShirtRunningPetSrc = elements.petArt.src;
+        context.window.PET_ASSETS = {{
+          idle: "/custom/idle.png",
+          running: "/custom/running.png",
+          needs_action: "/custom/needs-action.png",
+        }};
+        context.window.PET_ASSET_OVERRIDE_KEYS = ["idle", "running", "needs_action"];
+        api.applyPetAppearance("shirt");
+        api.renderBadge(sessions);
+        const customOverrideShirtNeedsActionPetSrc = elements.petArt.src;
+        api.renderBadge([{{session_id:"custom-running", title:"Codex - x", tool:"codex", status:"running", monitoring_level:"full"}}]);
+        const customOverrideShirtRunningPetSrc = elements.petArt.src;
+        api.renderBadge([{{session_id:"custom-idle", title:"Codex - x", tool:"codex", status:"idle", monitoring_level:"full"}}]);
+        const customOverrideShirtIdlePetSrc = elements.petArt.src;
+        context.window.PET_ASSETS = {{
+          idle: "/assets/pet/idle.png",
+          running: "/assets/pet/running.png",
+          needs_action: "/assets/pet/needs-action.png",
+          app_avatar: "/assets/app-avatar.png",
+        }};
+        context.window.PET_ASSET_OVERRIDE_KEYS = [];
+        api.applyPetAppearance("shirt");
+        api.updateAppearanceMenu();
+        const appearanceDefaultCheck = elements.appearanceDefaultCheck.textContent;
+        const appearanceShirtCheck = elements.appearanceShirtCheck.textContent;
+        hostMessages.length = 0;
+        api.applyPetAppearance("shirt");
+        const messagesAfterAppearanceClick = hostMessages.map(message => `${{message.type}}:${{message.mode || ""}}`.replace(/:$/, ""));
+        api.applyPetAppearance("default");
 
         const mixedSixSessions = [
           {{session_id:"mix-needs", title:"Codex - checkout-flow", tool:"codex", status:"needs_action", monitoring_level:"full"}},
@@ -441,10 +562,31 @@ def _node_harness(script: str) -> str:
         const messagesAfterContextQuit = hostMessages.map(message => `${{message.type}}:${{message.mode || ""}}`.replace(/:$/, ""));
         const contextMenuOpenAfterQuit = elements.petContextMenu.classList.contains("open");
 
+        hostMessages.length = 0;
+        fetchCalls.length = 0;
+        elements.pet.listeners.contextmenu({{preventDefault() {{}}, clientX: 50, clientY: 60}});
+        elements.appearanceShirtMenuItem.onclick({{stopPropagation() {{}}}});
+        const messagesAfterContextAppearance = hostMessages.map(message => `${{message.type}}:${{message.mode || ""}}`.replace(/:$/, ""));
+        const petSrcAfterContextAppearanceClick = elements.petArt.src;
+        const contextMenuOpenAfterAppearance = elements.petContextMenu.classList.contains("open");
+        const appearancePreferenceBodies = fetchCalls
+          .filter(call => String(call.url).includes("/api/preferences/pet-appearance"))
+          .map(call => JSON.parse(call.options.body));
+
         process.stdout.write(JSON.stringify({{
           badgeText,
           badgeClass,
           needsActionPetSrc,
+          shirtNeedsActionPetSrc,
+          shirtRunningPetSrc,
+          shirtIdlePetSrc,
+          defaultAfterShirtRunningPetSrc,
+          customOverrideShirtNeedsActionPetSrc,
+          customOverrideShirtRunningPetSrc,
+          customOverrideShirtIdlePetSrc,
+          appearanceDefaultCheck,
+          appearanceShirtCheck,
+          messagesAfterAppearanceClick,
           mixedSixBadgeText,
           mixedSixBadgeClass,
           runningPairBadgeText,
@@ -508,6 +650,351 @@ def _node_harness(script: str) -> str:
           contextMenuOpenAfterHide,
           messagesAfterContextQuit,
           contextMenuOpenAfterQuit,
+          messagesAfterContextAppearance,
+          petSrcAfterContextAppearanceClick,
+          contextMenuOpenAfterAppearance,
+          appearancePreferenceBodies,
         }}));
+        """
+    )
+
+
+def _appearance_save_queue_harness(script: str) -> str:
+    return textwrap.dedent(
+        f"""
+        const vm = require("node:vm");
+        const script = {json.dumps(script)};
+
+        class ClassList {{
+          constructor() {{ this.items = new Set(); }}
+          add(...names) {{ names.forEach(name => this.items.add(name)); }}
+          remove(...names) {{ names.forEach(name => this.items.delete(name)); }}
+          contains(name) {{ return this.items.has(name); }}
+          toggle(name, force) {{
+            const next = force === undefined ? !this.items.has(name) : Boolean(force);
+            if (next) this.items.add(name); else this.items.delete(name);
+            return next;
+          }}
+          toString() {{ return Array.from(this.items).join(" "); }}
+        }}
+
+        class Element {{
+          constructor(id) {{
+            this.id = id;
+            this.classList = new ClassList();
+            this.style = {{}};
+            this.dataset = {{}};
+            this.children = [];
+            this.textContent = "";
+            this.offsetWidth = id === "pet" ? 150 : 260;
+            this.offsetHeight = id === "pet" ? 136 : 120;
+            this.scrollHeight = 120;
+            this.listeners = {{}};
+            this._innerHTML = "";
+          }}
+          set className(value) {{
+            this.classList = new ClassList();
+            String(value).split(/\\s+/).filter(Boolean).forEach(name => this.classList.add(name));
+          }}
+          get className() {{ return this.classList.toString(); }}
+          set innerHTML(value) {{ this._innerHTML = String(value); }}
+          get innerHTML() {{ return this._innerHTML; }}
+          addEventListener(name, handler) {{ this.listeners[name] = handler; }}
+          contains(target) {{ return target === this || this.children.includes(target); }}
+          setPointerCapture() {{}}
+          getBoundingClientRect() {{
+            return {{left: 180, top: 350, right: 330, bottom: 486, width: 150, height: 136}};
+          }}
+          querySelectorAll() {{ return []; }}
+        }}
+
+        function successResponse(theme) {{
+          return {{
+            ok: true,
+            json: async () => ({{ok: true, pet_appearance: theme}}),
+          }};
+        }}
+
+        async function settle() {{
+          await Promise.resolve();
+          await new Promise(resolve => setImmediate(resolve));
+          await Promise.resolve();
+        }}
+
+        (async () => {{
+          const elements = {{
+            pet: new Element("pet"),
+            petArt: new Element("petArt"),
+            petBadge: new Element("petBadge"),
+            bubbleList: new Element("bubbleList"),
+            petContextMenu: new Element("petContextMenu"),
+            appearanceMenuItem: new Element("appearanceMenuItem"),
+            appearanceSubmenu: new Element("appearanceSubmenu"),
+            appearanceDefaultMenuItem: new Element("appearanceDefaultMenuItem"),
+            appearanceShirtMenuItem: new Element("appearanceShirtMenuItem"),
+            appearanceDefaultCheck: new Element("appearanceDefaultCheck"),
+            appearanceShirtCheck: new Element("appearanceShirtCheck"),
+            statusNote: new Element("statusNote"),
+            hidePetMenuItem: new Element("hidePetMenuItem"),
+            quitPetMenuItem: new Element("quitPetMenuItem"),
+          }};
+          elements.pet.classList.add("pet", "idle");
+
+          const pendingRequests = [];
+          const hostMessages = [];
+          const windowListeners = {{}};
+          const context = {{
+            console,
+            setTimeout: fn => {{ if (typeof fn === "function") fn(); return 0; }},
+            clearTimeout: () => {{}},
+            fetch: (url, options={{}}) => {{
+              if (String(url).includes("/api/preferences/pet-appearance")) {{
+                return new Promise(resolve => pendingRequests.push({{url, options, resolve}}));
+              }}
+              return Promise.resolve({{json: async () => ({{sessions: []}}), ok: true}});
+            }},
+            localStorage: {{ getItem: () => null, setItem: () => {{}}, removeItem: () => {{}} }},
+            document: {{
+              getElementById: id => elements[id],
+            }},
+            window: {{
+              MONITOR_TOKEN: "test-token",
+              PET_APPEARANCE: "default",
+              PET_ASSETS: {{}},
+              PET_ASSET_OVERRIDE_KEYS: [],
+              PET_THEMES: {{
+                default: {{
+                  idle: "/assets/pet/idle.png",
+                  running: "/assets/pet/running.png",
+                  needs_action: "/assets/pet/needs-action.png",
+                }},
+                shirt: {{
+                  idle: "/assets/pet/shirt.png",
+                  running: "/assets/pet/shirt.png",
+                  needs_action: "/assets/pet/shirt.png",
+                }},
+              }},
+              innerWidth: 340,
+              innerHeight: 500,
+              resizeTo: () => {{}},
+              requestAnimationFrame: fn => {{ if (typeof fn === "function") fn(); return 0; }},
+              setTimeout: fn => {{ if (typeof fn === "function") fn(); return 0; }},
+              clearTimeout: () => {{}},
+              addEventListener: (name, handler) => {{ windowListeners[name] = handler; }},
+              webkit: {{
+                messageHandlers: {{
+                  monitorWindow: {{
+                    postMessage(message) {{
+                      hostMessages.push(message);
+                    }},
+                  }},
+                }},
+              }},
+            }},
+          }};
+          context.globalThis = context;
+          vm.createContext(context);
+          vm.runInContext(script + "\\nglobalThis.__api = {{selectPetAppearance}};", context);
+
+          const api = context.__api;
+          api.selectPetAppearance("shirt");
+          api.selectPetAppearance("default");
+          await settle();
+
+          const optimisticAppearanceAfterClicks = context.window.PET_APPEARANCE;
+          const optimisticPetSrcAfterClicks = elements.petArt.src;
+          const requestBodiesBeforeFirstResponse = pendingRequests.map(request => JSON.parse(request.options.body));
+
+          pendingRequests[0].resolve(successResponse("shirt"));
+          await settle();
+          const requestBodiesAfterFirstResponse = pendingRequests.map(request => JSON.parse(request.options.body));
+          const appearanceAfterFirstResponse = context.window.PET_APPEARANCE;
+          const petSrcAfterFirstResponse = elements.petArt.src;
+
+          pendingRequests[1].resolve(successResponse("default"));
+          await settle();
+
+          process.stdout.write(JSON.stringify({{
+            optimisticAppearanceAfterClicks,
+            optimisticPetSrcAfterClicks,
+            requestBodiesBeforeFirstResponse,
+            requestBodiesAfterFirstResponse,
+            appearanceAfterFirstResponse,
+            petSrcAfterFirstResponse,
+            finalAppearance: context.window.PET_APPEARANCE,
+            finalPetSrc: elements.petArt.src,
+            finalDefaultCheck: elements.appearanceDefaultCheck.textContent,
+            finalShirtCheck: elements.appearanceShirtCheck.textContent,
+          }}));
+        }})().catch(error => {{
+          console.error(error && error.stack ? error.stack : error);
+          process.exit(1);
+        }});
+        """
+    )
+
+
+def _appearance_save_failure_harness(script: str) -> str:
+    return textwrap.dedent(
+        f"""
+        const vm = require("node:vm");
+        const script = {json.dumps(script)};
+
+        class ClassList {{
+          constructor() {{ this.items = new Set(); }}
+          add(...names) {{ names.forEach(name => this.items.add(name)); }}
+          remove(...names) {{ names.forEach(name => this.items.delete(name)); }}
+          contains(name) {{ return this.items.has(name); }}
+          toggle(name, force) {{
+            const next = force === undefined ? !this.items.has(name) : Boolean(force);
+            if (next) this.items.add(name); else this.items.delete(name);
+            return next;
+          }}
+          toString() {{ return Array.from(this.items).join(" "); }}
+        }}
+
+        class Element {{
+          constructor(id) {{
+            this.id = id;
+            this.classList = new ClassList();
+            this.style = {{}};
+            this.dataset = {{}};
+            this.children = [];
+            this.textContent = "";
+            this.offsetWidth = id === "pet" ? 150 : 260;
+            this.offsetHeight = id === "pet" ? 136 : 120;
+            this.scrollHeight = 120;
+            this.listeners = {{}};
+            this._innerHTML = "";
+          }}
+          set className(value) {{
+            this.classList = new ClassList();
+            String(value).split(/\\s+/).filter(Boolean).forEach(name => this.classList.add(name));
+          }}
+          get className() {{ return this.classList.toString(); }}
+          set innerHTML(value) {{ this._innerHTML = String(value); }}
+          get innerHTML() {{ return this._innerHTML; }}
+          addEventListener(name, handler) {{ this.listeners[name] = handler; }}
+          contains(target) {{ return target === this || this.children.includes(target); }}
+          setPointerCapture() {{}}
+          getBoundingClientRect() {{
+            return {{left: 180, top: 350, right: 330, bottom: 486, width: 150, height: 136}};
+          }}
+          querySelectorAll() {{ return []; }}
+        }}
+
+        function failedResponse() {{
+          return {{
+            ok: false,
+            json: async () => ({{ok: false, error: "preferences_write_failed"}}),
+          }};
+        }}
+
+        async function settle() {{
+          await Promise.resolve();
+          await new Promise(resolve => setImmediate(resolve));
+          await Promise.resolve();
+        }}
+
+        (async () => {{
+          const elements = {{
+            pet: new Element("pet"),
+            petArt: new Element("petArt"),
+            petBadge: new Element("petBadge"),
+            bubbleList: new Element("bubbleList"),
+            petContextMenu: new Element("petContextMenu"),
+            appearanceMenuItem: new Element("appearanceMenuItem"),
+            appearanceSubmenu: new Element("appearanceSubmenu"),
+            appearanceDefaultMenuItem: new Element("appearanceDefaultMenuItem"),
+            appearanceShirtMenuItem: new Element("appearanceShirtMenuItem"),
+            appearanceDefaultCheck: new Element("appearanceDefaultCheck"),
+            appearanceShirtCheck: new Element("appearanceShirtCheck"),
+            statusNote: new Element("statusNote"),
+            hidePetMenuItem: new Element("hidePetMenuItem"),
+            quitPetMenuItem: new Element("quitPetMenuItem"),
+          }};
+          elements.pet.classList.add("pet", "idle");
+
+          const pendingRequests = [];
+          const hostMessages = [];
+          const windowListeners = {{}};
+          const context = {{
+            console,
+            setTimeout: fn => {{ if (typeof fn === "function") fn(); return 0; }},
+            clearTimeout: () => {{}},
+            fetch: (url, options={{}}) => {{
+              if (String(url).includes("/api/preferences/pet-appearance")) {{
+                return new Promise(resolve => pendingRequests.push({{url, options, resolve}}));
+              }}
+              return Promise.resolve({{json: async () => ({{sessions: []}}), ok: true}});
+            }},
+            localStorage: {{ getItem: () => null, setItem: () => {{}}, removeItem: () => {{}} }},
+            document: {{
+              getElementById: id => elements[id],
+            }},
+            window: {{
+              MONITOR_TOKEN: "test-token",
+              PET_APPEARANCE: "default",
+              PET_ASSETS: {{}},
+              PET_ASSET_OVERRIDE_KEYS: [],
+              PET_THEMES: {{
+                default: {{
+                  idle: "/assets/pet/idle.png",
+                  running: "/assets/pet/running.png",
+                  needs_action: "/assets/pet/needs-action.png",
+                }},
+                shirt: {{
+                  idle: "/assets/pet/shirt.png",
+                  running: "/assets/pet/shirt.png",
+                  needs_action: "/assets/pet/shirt.png",
+                }},
+              }},
+              innerWidth: 340,
+              innerHeight: 500,
+              resizeTo: () => {{}},
+              requestAnimationFrame: fn => {{ if (typeof fn === "function") fn(); return 0; }},
+              setTimeout: fn => {{ if (typeof fn === "function") fn(); return 0; }},
+              clearTimeout: () => {{}},
+              addEventListener: (name, handler) => {{ windowListeners[name] = handler; }},
+              webkit: {{
+                messageHandlers: {{
+                  monitorWindow: {{
+                    postMessage(message) {{
+                      hostMessages.push(message);
+                    }},
+                  }},
+                }},
+              }},
+            }},
+          }};
+          context.globalThis = context;
+          vm.createContext(context);
+          vm.runInContext(script + "\\nglobalThis.__api = {{selectPetAppearance}};", context);
+
+          const api = context.__api;
+          api.selectPetAppearance("shirt");
+          await settle();
+
+          const appearanceBeforeFailure = context.window.PET_APPEARANCE;
+          const petSrcBeforeFailure = elements.petArt.src;
+          const requestBodies = pendingRequests.map(request => JSON.parse(request.options.body));
+
+          pendingRequests[0].resolve(failedResponse());
+          await settle();
+
+          process.stdout.write(JSON.stringify({{
+            appearanceBeforeFailure,
+            petSrcBeforeFailure,
+            requestBodies,
+            appearanceAfterFailure: context.window.PET_APPEARANCE,
+            petSrcAfterFailure: elements.petArt.src,
+            defaultCheckAfterFailure: elements.appearanceDefaultCheck.textContent,
+            shirtCheckAfterFailure: elements.appearanceShirtCheck.textContent,
+            statusTextAfterFailure: elements.statusNote.textContent,
+          }}));
+        }})().catch(error => {{
+          console.error(error && error.stack ? error.stack : error);
+          process.exit(1);
+        }});
         """
     )

@@ -293,6 +293,73 @@ class DocsPrdAlignmentTests(unittest.TestCase):
         self.assertIn("项目窗口", combined)
         self.assertIn("不应继续保留气泡", combined)
 
+    def test_pet_appearance_theme_switching_increment_is_documented_and_mapped(self):
+        prd_path = ROOT / "docs" / "prd" / "2026-07-11-pet-appearance-theme-switching-prd.md"
+        prd = prd_path.read_text()
+        maintenance_docs = "\n".join(
+            [
+                (ROOT / "AGENTS.md").read_text(),
+                (ROOT / "README.md").read_text(),
+                (ROOT / "README.en.md").read_text(),
+                (ROOT / "docs" / "release-checklist.md").read_text(),
+                (ROOT / "docs" / "qa" / "2026-07-02-macos-sloth-pet-monitor-acceptance.md").read_text(),
+            ]
+        )
+        source_and_tests = "\n".join(
+            [
+                (ROOT / "src" / "ai_progress_monitor" / "preferences.py").read_text(),
+                (ROOT / "src" / "ai_progress_monitor" / "web.py").read_text(),
+                (ROOT / "scripts" / "build_release.py").read_text(),
+                (ROOT / "scripts" / "check_macos_floating_dev.sh").read_text(),
+                (ROOT / "tests" / "test_preferences.py").read_text(),
+                (ROOT / "tests" / "test_web_launch.py").read_text(),
+                (ROOT / "tests" / "test_web_ui.py").read_text(),
+                (ROOT / "tests" / "test_web_ui_behavior.py").read_text(),
+                (ROOT / "tests" / "test_release_bundle.py").read_text(),
+                (ROOT / "tests" / "test_start_scripts.py").read_text(),
+            ]
+        )
+
+        for phrase in [
+            "Pet 外观主题切换",
+            "背带裤树懒",
+            "衬衫树懒",
+            "只切换 Pet 本体",
+            "pet_appearance",
+            "pet_assets.*",
+            "/assets/pet/shirt.png",
+            "sloth-pet-shirt.png",
+            "docs/promo/assets/sloth-mascot-transparent.png",
+            "GET /api/preferences",
+            "POST /api/preferences/pet-appearance",
+            "cache-control: no-store",
+            "scripts/check_macos_floating_dev.sh --strict",
+        ]:
+            self.assertIn(phrase, prd)
+
+        for phrase in [
+            prd_path.name,
+            "外观",
+            "背带裤树懒",
+            "衬衫树懒",
+            "pet_appearance",
+            "/assets/pet/shirt.png",
+            "sloth-pet-shirt.png",
+        ]:
+            self.assertIn(phrase, maintenance_docs)
+
+        for phrase in [
+            "PET_APPEARANCE_THEMES",
+            '"/assets/pet/shirt.png"',
+            '"/api/preferences"',
+            '"/api/preferences/pet-appearance"',
+            "pet_appearance_snapshot_line",
+            "cache-control",
+            "sloth-pet-shirt.png",
+            "AI Progress Monitor pet appearance: shirt",
+        ]:
+            self.assertIn(phrase, source_and_tests)
+
 
 if __name__ == "__main__":
     unittest.main()

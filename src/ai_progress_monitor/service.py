@@ -263,5 +263,6 @@ def session_to_dict(session: SessionUpdate) -> dict:
         "focus_app_name": session.focus_app_name,
         "cwd": session.cwd,
         "view_ack_required": session.view_ack_required,
+        "status_source": session.status_source,
         "generated_conversation_path": session.generated_conversation_path,
     }
