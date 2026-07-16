@@ -107,6 +107,42 @@ class WindowFocusTests(unittest.TestCase):
 
                 self.assertIsNone(command)
 
+    def test_macos_ai_desktop_fallback_activates_app_even_when_cwd_is_available(self):
+        command = focus_fallback_command(
+            FocusTarget(
+                title="Qoder CN Desktop - 围棋游戏开发",
+                process_id=11063,
+                app_name="Qoder CN",
+                cwd="/Users/Gao/Documents/QoderCN/2026-07-14/chat-1",
+            )
+        )
+
+        self.assertEqual(command, ["open", "-a", "Qoder CN"])
+
+    def test_macos_ai_desktop_focus_failure_runs_activate_fallback(self):
+        calls = []
+
+        def fake_run(command, **_kwargs):
+            calls.append(command)
+            if command[0] == "osascript":
+                return subprocess.CompletedProcess(command, 1, stdout="", stderr="not found")
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+        with patch("ai_progress_monitor.window_focus.platform.system", return_value="Darwin"):
+            with patch("ai_progress_monitor.window_focus.subprocess.run", side_effect=fake_run):
+                result = focus_native_window(
+                    FocusTarget(
+                        title="Qoder CN Desktop - 围棋游戏开发",
+                        process_id=11063,
+                        app_name="Qoder CN",
+                        cwd="/Users/Gao/Documents/QoderCN/2026-07-14/chat-1",
+                    )
+                )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.detail, "activated-app")
+        self.assertEqual(calls[1], ["open", "-a", "Qoder CN"])
+
     def test_macos_project_editor_focus_failure_does_not_run_open_fallback(self):
         calls = []
 

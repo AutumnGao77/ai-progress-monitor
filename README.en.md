@@ -18,9 +18,11 @@ The current stable delivery focus is the local Web Companion plus the validated 
 | Three-state Pet UI | Idle, running, and needs-action images |
 | Numeric badge | Shows the total number of visible session bubbles |
 | Bubble list | Shows session/tool labels and status without exposing content |
-| Click to focus | Opens the related terminal, IDE, or desktop window when possible |
-| Direct CLI detection | Detects running `claude` / `codex` sessions conservatively |
+| Click to focus | Clicking a bubble returns to the matching AI tool window when possible |
+| Direct CLI detection | Detects configured AI CLI sessions conservatively, including Claude Code, Codex, Qoder, WorkBuddy, and `codebuddy` |
 | Codex Desktop session detection | Reads local Codex session events when available |
+| Qoder desktop status detection | Reads local Qoder/Qoder CN logs when available and falls back to a desktop idle entry when only the app is running |
+| WorkBuddy desktop status detection | Reads explicit local WorkBuddy session database states when available and falls back to a desktop idle entry when only the app is running |
 | JSON event source | Supported for reliable integrations |
 | Local notifications | Optional needs-action notifications |
 | Asset overrides | Configurable Pet and app avatar images |
@@ -126,8 +128,8 @@ There are two recommended integration paths:
 
 | Path | Best for |
 |---|---|
-| Terminal wrapper scripts | Claude Code / Codex terminal sessions where you want reliable status updates |
-| JSON events | External tools or custom integrations |
+| Terminal wrapper scripts | Claude Code, Codex, Qoder, WorkBuddy, or another AI CLI where you want reliable status updates |
+| JSON events | External tools or custom integrations that can publish full session status |
 
 macOS / Linux wrapper example:
 
@@ -145,7 +147,21 @@ AI_MONITOR_TITLE="Codex - PRD polish" \
 sh scripts/monitor_codex.sh codex
 ```
 
+Generic AI wrapper examples:
+
+```bash
+AI_MONITOR_SESSION_ID=workbuddy-product-ops \
+AI_MONITOR_TITLE="WorkBuddy - product ops" \
+sh scripts/monitor_workbuddy.sh workbuddy
+
+AI_MONITOR_SESSION_ID=qoder-prd \
+AI_MONITOR_TITLE="Qoder - PRD polish" \
+sh scripts/monitor_qoder.sh qoder
+```
+
 JSON event example:
+
+`scripts/emit_event.py` also follows `AI_PROGRESS_MONITOR_HOME`; by default it writes to `$AI_PROGRESS_MONITOR_HOME/sessions` and replaces a temporary file atomically so the monitor does not read a partial JSON file.
 
 ```bash
 python3 scripts/emit_event.py \
@@ -154,6 +170,21 @@ python3 scripts/emit_event.py \
   --tool claude_code \
   --surface terminal \
   --status needs_action \
+  --summary "Needs user attention in the original window"
+```
+
+For a generic AI tool, use `--tool unknown` plus `--tool-display-name` and optional focus metadata:
+
+```bash
+python3 scripts/emit_event.py \
+  --session-id workbuddy-demo-1 \
+  --title "WorkBuddy - product ops" \
+  --tool unknown \
+  --tool-display-name WorkBuddy \
+  --surface desktop \
+  --status needs_action \
+  --view-ack-required \
+  --focus-app-name WorkBuddy \
   --summary "Needs user attention in the original window"
 ```
 

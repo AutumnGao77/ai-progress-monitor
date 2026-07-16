@@ -102,11 +102,13 @@ class StartScriptTests(unittest.TestCase):
         self.assertIn("cache-control: no-store", script)
         self.assertIn("Recent pet appearance changes", script)
         self.assertIn("AI Progress Monitor pet appearance:", script)
+        self.assertIn("matching AI tool window", script)
         self.assertIn("pgrep", script)
         self.assertNotIn('LOG_FILE="${HOME}/Library/Logs/AI Progress Monitor/monitor.log"', script)
         self.assertNotIn("/usr/bin/open", script)
         self.assertNotIn("osascript", script)
         self.assertNotIn("cliclick", script)
+        self.assertNotIn("corresponding Claude/Codex window", script)
 
     @unittest.skipUnless(os.name == "posix", "Shell helper execution is only available on POSIX systems")
     def test_macos_dev_acceptance_helper_redacts_monitor_token_in_output(self):
@@ -454,7 +456,12 @@ class StartScriptTests(unittest.TestCase):
         self.assertIn("where python >nul", script)
 
     def test_windows_terminal_wrappers_fall_back_across_python_launchers(self):
-        for relative in ("scripts/monitor_claude.bat", "scripts/monitor_codex.bat"):
+        for relative in (
+            "scripts/monitor_claude.bat",
+            "scripts/monitor_codex.bat",
+            "scripts/monitor_qoder.bat",
+            "scripts/monitor_workbuddy.bat",
+        ):
             script = (ROOT / relative).read_text()
 
             self.assertIn("set PYTHON_CMD=python", script)
@@ -468,6 +475,8 @@ class StartScriptTests(unittest.TestCase):
         expected_prefixes = {
             "scripts/monitor_claude.sh": "claude-code-",
             "scripts/monitor_codex.sh": "codex-",
+            "scripts/monitor_qoder.sh": "qoder-",
+            "scripts/monitor_workbuddy.sh": "workbuddy-",
         }
         for relative, prefix in expected_prefixes.items():
             script = (ROOT / relative).read_text()
@@ -478,6 +487,8 @@ class StartScriptTests(unittest.TestCase):
             self.assertIn('cd "$LAUNCH_DIR"', script)
             self.assertIn('"$ROOT_DIR/scripts/monitor_command.py"', script)
             self.assertNotIn('cd "$(dirname "$0")/.."', script)
+        self.assertIn("--tool-display-name Qoder", (ROOT / "scripts" / "monitor_qoder.sh").read_text())
+        self.assertIn("--tool-display-name WorkBuddy", (ROOT / "scripts" / "monitor_workbuddy.sh").read_text())
 
     @unittest.skipUnless(os.name == "posix", "Shell wrapper execution is only available on POSIX systems")
     def test_shell_wrapper_runs_command_from_user_project_and_writes_unique_session(self):
@@ -520,6 +531,42 @@ class StartScriptTests(unittest.TestCase):
                 self.assertTrue(payload["session_id"].startswith("codex-checkout-flow-"))
                 self.assertTrue(payload["title"].startswith("Codex - checkout-flow #"))
                 self.assertEqual(payload["tool"], "codex")
+
+    @unittest.skipUnless(os.name == "posix", "Shell wrapper execution is only available on POSIX systems")
+    def test_generic_shell_wrapper_writes_tool_display_name(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            project = root / "product-ops"
+            monitor_home = root / "monitor-home"
+            project.mkdir()
+            env = os.environ.copy()
+            env["AI_PROGRESS_MONITOR_HOME"] = str(monitor_home)
+            env.pop("AI_MONITOR_SESSION_ID", None)
+            env.pop("AI_MONITOR_TITLE", None)
+
+            completed = subprocess.run(
+                [
+                    "sh",
+                    str(ROOT / "scripts" / "monitor_workbuddy.sh"),
+                    sys.executable,
+                    "-u",
+                    "-c",
+                    "print('Do you want to continue? (yes/no)', flush=True)",
+                ],
+                cwd=project,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+
+            self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+            session_files = sorted((monitor_home / "sessions").glob("workbuddy-product-ops-*.json"))
+            self.assertEqual(len(session_files), 1)
+            payload = json.loads(session_files[0].read_text(encoding="utf-8"))
+            self.assertTrue(payload["title"].startswith("WorkBuddy - product-ops #"))
+            self.assertEqual(payload["tool"], "unknown")
+            self.assertEqual(payload["tool_display_name"], "WorkBuddy")
 
 
 if __name__ == "__main__":

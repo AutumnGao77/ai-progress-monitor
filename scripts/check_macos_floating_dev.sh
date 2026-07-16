@@ -170,7 +170,7 @@ echo "  1. Left-click Pet: bubbles open; left-click again: bubbles close; Pet mu
 echo "  2. Right-click Pet: menu opens; choosing Hide Pet hides it."
 echo "  3. Menu bar icon -> Show Monitor restores the hidden Pet."
 echo "  4. Drag across displays and screen edges."
-echo "  5. Click a bubble and confirm it returns to the corresponding Claude/Codex window."
+echo "  5. Click a bubble and confirm it returns to the matching AI tool window."
 
 if [ "$STRICT" = "1" ]; then
   if [ "$manual_todo" = "0" ] && [ "$asset_todo" = "0" ]; then

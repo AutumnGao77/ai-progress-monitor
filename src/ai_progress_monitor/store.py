@@ -81,6 +81,10 @@ class SessionStore:
             if _is_claude_terminal_process(update) and _is_process_status_fallback(update):
                 return self._preserve_claude_semantic_state(existing, update)
             return update
+        if _is_claude_terminal_initial_idle(update):
+            return self._normalize_claude_initial_idle(existing, update)
+        if _is_claude_terminal_prompt_idle(update):
+            return self._normalize_claude_prompt_idle(existing, update)
         if _is_process_status_fallback(update):
             return self._preserve_claude_semantic_state(existing, update)
         viewed_at = self._viewed_at_by_session.get(update.session_id)
@@ -93,6 +97,32 @@ class SessionStore:
         if existing is not None and update.updated_at > existing.updated_at:
             if viewed_at is None or viewed_at < update.updated_at:
                 return replace(update, status=SessionStatus.NEEDS_ACTION, view_ack_required=True)
+        return update
+
+    def _normalize_claude_prompt_idle(self, existing: Optional[SessionUpdate], update: SessionUpdate) -> SessionUpdate:
+        if existing is None:
+            return update
+        viewed_at = self._viewed_at_by_session.get(update.session_id)
+        if existing.view_ack_required:
+            if viewed_at is None or viewed_at < existing.updated_at:
+                return existing
+            return update
+        if existing.status == SessionStatus.RUNNING:
+            return replace(update, status=SessionStatus.NEEDS_ACTION, view_ack_required=True)
+        return update
+
+    def _normalize_claude_initial_idle(self, existing: Optional[SessionUpdate], update: SessionUpdate) -> SessionUpdate:
+        if existing is None:
+            return update
+        viewed_at = self._viewed_at_by_session.get(update.session_id)
+        if existing.view_ack_required:
+            if viewed_at is None or viewed_at < existing.updated_at:
+                return existing
+            return _with_minimum_updated_at(update, existing.updated_at)
+        if _is_process_status_fallback(existing):
+            return _with_minimum_updated_at(update, existing.updated_at)
+        if existing.status == SessionStatus.RUNNING and update.updated_at >= existing.updated_at:
+            return replace(update, status=SessionStatus.NEEDS_ACTION, view_ack_required=True)
         return update
 
     def _preserve_claude_semantic_state(self, existing: Optional[SessionUpdate], update: SessionUpdate) -> SessionUpdate:
@@ -134,3 +164,17 @@ def _is_claude_terminal_process(session: SessionUpdate) -> bool:
 
 def _is_process_status_fallback(session: SessionUpdate) -> bool:
     return session.status_source == "process"
+
+
+def _is_claude_terminal_initial_idle(session: SessionUpdate) -> bool:
+    return session.status_source == "claude-session-initial-idle"
+
+
+def _is_claude_terminal_prompt_idle(session: SessionUpdate) -> bool:
+    return session.status_source == "claude-session-prompt"
+
+
+def _with_minimum_updated_at(session: SessionUpdate, updated_at: datetime) -> SessionUpdate:
+    if session.updated_at >= updated_at:
+        return session
+    return replace(session, updated_at=updated_at)

@@ -1,4 +1,5 @@
 import json
+import sqlite3
 import subprocess
 import tempfile
 import unittest
@@ -82,11 +83,32 @@ class SourceTests(unittest.TestCase):
             self.assertEqual(updates, [])
 
     def test_run_command_distinguishes_failed_scan_from_empty_success(self):
-        with mock.patch("ai_progress_monitor.sources.subprocess.run", side_effect=subprocess.TimeoutExpired(["ps"], 2)):
-            self.assertIsNone(_run_command(["ps"]))
+        class TimeoutProcess:
+            pid = 12345
+            returncode = None
 
-        completed = subprocess.CompletedProcess(["ps"], 0, stdout="", stderr="")
-        with mock.patch("ai_progress_monitor.sources.subprocess.run", return_value=completed):
+            def communicate(self, timeout=None):
+                if timeout is not None:
+                    raise subprocess.TimeoutExpired(["ps"], timeout)
+                return ("", "")
+
+            def kill(self):
+                return None
+
+        timeout_process = TimeoutProcess()
+        with mock.patch("ai_progress_monitor.sources.subprocess.Popen", return_value=timeout_process), mock.patch(
+            "ai_progress_monitor.sources.os.killpg"
+        ) as killpg:
+            self.assertIsNone(_run_command(["ps"]))
+            killpg.assert_called_once()
+
+        class EmptySuccessProcess:
+            returncode = 0
+
+            def communicate(self, timeout=None):
+                return ("", "")
+
+        with mock.patch("ai_progress_monitor.sources.subprocess.Popen", return_value=EmptySuccessProcess()):
             self.assertEqual(_run_command(["ps"]), [])
 
     def test_posix_process_command_uses_portable_ps_columns(self):
@@ -95,6 +117,8 @@ class SourceTests(unittest.TestCase):
         self.assertEqual(command[:2], ["sh", "-c"])
         self.assertNotIn("etimes=", command[-1])
         self.assertIn("ps -axo pid=,ppid=,pgid=,stat=,%cpu=,comm=,args=", command[-1])
+        self.assertIn("Qoder.app/Contents/Resources/app/resources/bin", command[-1])
+        self.assertIn("continue", command[-1])
 
     def test_generated_conversation_path_rules_can_match_unknown_tool_by_display_name(self):
         definition = AiToolDefinition(
@@ -319,6 +343,53 @@ class SourceTests(unittest.TestCase):
             self.assertEqual(updates[0].status, SessionStatus.IDLE)
             self.assertEqual(updates[0].cwd, "/Users/Gao/Documents/projects/网点清场")
             self.assertEqual(updates[0].status_source, "claude-session")
+
+    def test_claude_prompt_session_file_is_idle_for_quiet_process(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            Path(temp_dir, "27876.json").write_text(
+                json.dumps(
+                    {
+                        "pid": 27876,
+                        "cwd": "/Users/Gao/Documents/projects/网点清场",
+                        "status": "prompt",
+                        "updatedAt": int(time() * 1000),
+                    }
+                )
+            )
+            rows = [
+                "process_id=27876\tprocess_name=claude\tcommand=claude\tcwd=/Users/Gao/Documents/projects/网点清场\tcpu_percent=0.0\tstat=S+\tactive_child_count=0"
+            ]
+
+            updates = list(_classify_process_rows(rows, claude_sessions_dir=Path(temp_dir)))
+
+            self.assertEqual(len(updates), 1)
+            self.assertEqual(updates[0].status, SessionStatus.IDLE)
+            self.assertEqual(updates[0].status_source, "claude-session-prompt")
+
+    def test_claude_initial_idle_session_file_is_marked_as_initial_idle(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            started_at = int(time() * 1000)
+            Path(temp_dir, "27876.json").write_text(
+                json.dumps(
+                    {
+                        "pid": 27876,
+                        "cwd": "/Users/Gao/Documents/projects/网点清场",
+                        "status": "idle",
+                        "startedAt": started_at,
+                        "updatedAt": started_at + 57,
+                        "statusUpdatedAt": started_at + 57,
+                    }
+                )
+            )
+            rows = [
+                "process_id=27876\tprocess_name=claude\tcommand=claude\tcwd=/Users/Gao/Documents/projects/网点清场\tcpu_percent=0.0\tstat=S+\tactive_child_count=0"
+            ]
+
+            updates = list(_classify_process_rows(rows, claude_sessions_dir=Path(temp_dir)))
+
+            self.assertEqual(len(updates), 1)
+            self.assertEqual(updates[0].status, SessionStatus.IDLE)
+            self.assertEqual(updates[0].status_source, "claude-session-initial-idle")
 
     def test_claude_session_file_updated_at_is_used_for_stable_view_ack(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -893,6 +964,15 @@ class SourceTests(unittest.TestCase):
                 None,
             ),
             (
+                "process_id=51006\tprocess_name=codebuddy\tcommand=codebuddy\tcwd=/Users/Gao/Documents/product-ops\tcpu_percent=0.0\tstat=S+",
+                "process-51006",
+                "WorkBuddy CLI - product-ops",
+                "WorkBuddy",
+                SurfaceKind.TERMINAL,
+                None,
+                None,
+            ),
+            (
                 "process_id=51002\tprocess_name=qoder\tcommand=qoder\tcwd=/Users/Gao/Documents/coding\tcpu_percent=0.0\tstat=S+",
                 "process-51002",
                 "Qoder CLI - coding",
@@ -911,6 +991,24 @@ class SourceTests(unittest.TestCase):
                 "WorkBuddy",
             ),
             (
+                "process_id=51007\tprocess_name=/Applications/WorkBuddy.app/Contents/MacOS/Electron\tcommand=/Applications/WorkBuddy.app/Contents/MacOS/Electron --app-path=/Applications/WorkBuddy.app/Contents/Resources/app.asar",
+                "process-51007",
+                "WorkBuddy Desktop",
+                "WorkBuddy",
+                SurfaceKind.DESKTOP,
+                51007,
+                "WorkBuddy",
+            ),
+            (
+                "process_id=51009\tprocess_name=/Applications/Wo\tcommand=/Applications/WorkBuddy.app/Contents/MacOS/Electron",
+                "process-51009",
+                "WorkBuddy Desktop",
+                "WorkBuddy",
+                SurfaceKind.DESKTOP,
+                51009,
+                "WorkBuddy",
+            ),
+            (
                 "process_id=51004\tprocess_name=/Applications/Qoder.app/Contents/MacOS/Qoder\tcommand=/Applications/Qoder.app/Contents/MacOS/Qoder",
                 "process-51004",
                 "Qoder Desktop",
@@ -920,19 +1018,28 @@ class SourceTests(unittest.TestCase):
                 "Qoder",
             ),
             (
-                "process_id=51005\tprocess_name=/Applications/Qo\tcommand=/Applications/Qoder CN.app/Contents/MacOS/Electron --aicoding-open-agents-window",
-                "process-51005",
+                "process_id=51008\tprocess_name=/Applications/Qoder.app/Contents/MacOS/Electron\tcommand=/Applications/Qoder.app/Contents/MacOS/Electron --app-path=/Applications/Qoder.app/Contents/Resources/app.asar",
+                "process-51008",
                 "Qoder Desktop",
                 "Qoder",
                 SurfaceKind.DESKTOP,
-                51005,
+                51008,
                 "Qoder",
+            ),
+            (
+                "process_id=51005\tprocess_name=/Applications/Qo\tcommand=/Applications/Qoder CN.app/Contents/MacOS/Electron --aicoding-open-agents-window",
+                "process-51005",
+                "Qoder CN Desktop",
+                "Qoder CN",
+                SurfaceKind.DESKTOP,
+                51005,
+                "Qoder CN",
             ),
         )
 
         for row, expected_session_id, expected_title, expected_display_name, expected_surface, expected_focus_pid, expected_focus_app in cases:
             with self.subTest(expected_display_name=expected_display_name, expected_title=expected_title):
-                updates = list(_classify_process_rows([row]))
+                updates = list(_classify_process_rows([row], workbuddy_db_paths=()))
 
                 self.assertEqual(len(updates), 1)
                 self.assertEqual(updates[0].session_id, expected_session_id)
@@ -944,6 +1051,22 @@ class SourceTests(unittest.TestCase):
                 self.assertEqual(updates[0].focus_process_id, expected_focus_pid)
                 self.assertEqual(updates[0].focus_app_name, expected_focus_app)
 
+    def test_qoder_desktop_idle_fallback_ignores_bundled_helper_process(self):
+        rows = [
+            "process_id=61028\tprocess_name=/Applications/Qo\tcommand=/Applications/Qoder.app/Contents/Resources/app/resources/bin/aarch64_darwin/Qoder start --workDir /Users/Gao/Library/Application Support/Qoder/SharedClientCache\tcpu_percent=0.0\tstat=S",
+            "process_id=60489\tprocess_name=/Applications/Qo\tcommand=/Applications/Qoder.app/Contents/MacOS/Electron\tcpu_percent=0.0\tstat=S",
+        ]
+
+        updates = list(_classify_process_rows(rows, qoder_logs_dirs=(), workbuddy_db_paths=()))
+
+        self.assertEqual(len(updates), 1)
+        self.assertEqual(updates[0].session_id, "process-60489")
+        self.assertEqual(updates[0].title, "Qoder Desktop")
+        self.assertEqual(updates[0].status, SessionStatus.IDLE)
+        self.assertEqual(updates[0].tool_display_name, "Qoder")
+        self.assertEqual(updates[0].focus_process_id, 60489)
+        self.assertEqual(updates[0].focus_app_name, "Qoder")
+
     def test_shell_process_mentioning_configured_desktop_app_is_not_classified_as_app(self):
         rows = [
             "process_id=51006\tprocess_name=sh\tcommand=sh -c echo /Applications/Qoder CN.app/Contents/MacOS/Electron\tcpu_percent=0.0\tstat=S+"
@@ -952,6 +1075,760 @@ class SourceTests(unittest.TestCase):
         updates = list(_classify_process_rows(rows))
 
         self.assertEqual(updates, [])
+
+    def test_workbuddy_desktop_scan_ignores_electron_service_processes(self):
+        rows = [
+            "process_id=52001\tprocess_name=/Applications/WorkBuddy.app/Contents/MacOS/Electron\tcommand=/Applications/WorkBuddy.app/Contents/MacOS/Electron /Applications/WorkBuddy.app/Contents/Resources/app.asar/main/daemon-app-server-entry.js --stdio\tcpu_percent=0.0\tstat=S",
+            "process_id=52002\tprocess_name=/Applications/WorkBuddy.app/Contents/MacOS/Electron\tcommand=/Applications/WorkBuddy.app/Contents/MacOS/Electron /Applications/WorkBuddy.app/Contents/Resources/app.asar/main/sidecar-entry.js --token abc\tcpu_percent=0.0\tstat=S",
+            "process_id=52003\tprocess_name=/Applications/WorkBuddy.app/Contents/MacOS/Electron\tcommand=/Applications/WorkBuddy.app/Contents/MacOS/Electron /Applications/WorkBuddy.app/Contents/Resources/app.asar/cli/bin/codebuddy --serve --port 52788\tcpu_percent=0.0\tstat=S",
+        ]
+
+        updates = list(_classify_process_rows(rows, workbuddy_db_paths=()))
+
+        self.assertEqual(updates, [])
+
+    def test_workbuddy_db_sessions_create_full_desktop_conversation_entries(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "workbuddy.db"
+            self._write_workbuddy_session_db(
+                db_path,
+                [
+                    {
+                        "id": "wb-done",
+                        "cwd": "/Users/Gao/Documents/product-ops",
+                        "title": "需求复盘",
+                        "status": "Completed",
+                        "updated_at": 1783919968000,
+                        "last_activity_at": 1783919968000,
+                    },
+                    {
+                        "id": "wb-running",
+                        "cwd": "/Users/Gao/Documents/research",
+                        "title": "竞品扫描",
+                        "status": "Running",
+                        "updated_at": 1783919970000,
+                        "last_activity_at": 1783919970000,
+                    },
+                ],
+            )
+            rows = [
+                "process_id=51007\tprocess_name=/Applications/WorkBuddy.app/Contents/MacOS/Electron\tcommand=/Applications/WorkBuddy.app/Contents/MacOS/Electron --app-path=/Applications/WorkBuddy.app/Contents/Resources/app.asar"
+            ]
+
+            updates = list(
+                _classify_process_rows(
+                    rows,
+                    workbuddy_db_paths=(db_path,),
+                    now=datetime(2026, 7, 13, 5, 19, 35, tzinfo=timezone.utc),
+                    source_started_at=datetime(2026, 7, 13, 5, 19, 20, tzinfo=timezone.utc),
+                )
+            )
+
+            self.assertEqual([update.session_id for update in updates], ["workbuddy-wb-done", "workbuddy-wb-running"])
+            self.assertEqual([update.status for update in updates], [SessionStatus.NEEDS_ACTION, SessionStatus.RUNNING])
+            self.assertEqual(updates[0].title, "WorkBuddy Desktop - product-ops - 需求复盘")
+            self.assertTrue(updates[0].view_ack_required)
+            self.assertEqual(updates[0].status_source, "workbuddy-db")
+            self.assertEqual(updates[0].source, "process")
+            self.assertEqual(updates[0].focus_process_id, 51007)
+            self.assertEqual(updates[0].focus_app_name, "WorkBuddy")
+            self.assertEqual(updates[0].tool_display_name, "WorkBuddy")
+            self.assertEqual(updates[1].title, "WorkBuddy Desktop - research - 竞品扫描")
+            self.assertEqual(updates[1].cwd, "/Users/Gao/Documents/research")
+
+    def test_workbuddy_db_ignores_history_and_ambiguous_pending_sessions(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "workbuddy.db"
+            self._write_workbuddy_session_db(
+                db_path,
+                [
+                    {
+                        "id": "wb-old-done",
+                        "cwd": "/Users/Gao/Documents/history",
+                        "title": "历史完成",
+                        "status": "Completed",
+                        "updated_at": 1783919900000,
+                        "last_activity_at": 1783919900000,
+                    },
+                    {
+                        "id": "wb-blank",
+                        "cwd": "/Users/Gao/Documents/blank",
+                        "title": "新会话",
+                        "status": "Pending",
+                        "updated_at": 1783919970000,
+                        "last_activity_at": None,
+                    },
+                ],
+            )
+            rows = [
+                "process_id=51007\tprocess_name=/Applications/WorkBuddy.app/Contents/MacOS/Electron\tcommand=/Applications/WorkBuddy.app/Contents/MacOS/Electron --app-path=/Applications/WorkBuddy.app/Contents/Resources/app.asar"
+            ]
+
+            updates = list(
+                _classify_process_rows(
+                    rows,
+                    workbuddy_db_paths=(db_path,),
+                    now=datetime(2026, 7, 13, 5, 19, 35, tzinfo=timezone.utc),
+                    source_started_at=datetime(2026, 7, 13, 5, 19, 20, tzinfo=timezone.utc),
+                )
+            )
+
+            self.assertEqual(len(updates), 1)
+            self.assertEqual(updates[0].session_id, "process-51007")
+            self.assertEqual(updates[0].title, "WorkBuddy Desktop")
+            self.assertEqual(updates[0].status, SessionStatus.IDLE)
+            self.assertEqual(updates[0].status_source, "desktop-process")
+
+    def test_workbuddy_db_ignores_completed_session_touched_without_new_activity(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "workbuddy.db"
+            self._write_workbuddy_session_db(
+                db_path,
+                [
+                    {
+                        "id": "wb-touched-history",
+                        "cwd": "/Users/Gao/Documents/history",
+                        "title": "点开的历史会话",
+                        "status": "Completed",
+                        "updated_at": 1783920030000,
+                        "last_activity_at": 1783919900000,
+                    },
+                ],
+            )
+            rows = [
+                "process_id=51007\tprocess_name=/Applications/WorkBuddy.app/Contents/MacOS/Electron\tcommand=/Applications/WorkBuddy.app/Contents/MacOS/Electron --app-path=/Applications/WorkBuddy.app/Contents/Resources/app.asar"
+            ]
+
+            updates = list(
+                _classify_process_rows(
+                    rows,
+                    workbuddy_db_paths=(db_path,),
+                    now=datetime(2026, 7, 13, 5, 20, 40, tzinfo=timezone.utc),
+                    source_started_at=datetime(2026, 7, 13, 5, 19, 20, tzinfo=timezone.utc),
+                )
+            )
+
+            self.assertEqual(len(updates), 1)
+            self.assertEqual(updates[0].session_id, "process-51007")
+            self.assertEqual(updates[0].title, "WorkBuddy Desktop")
+            self.assertEqual(updates[0].status, SessionStatus.IDLE)
+            self.assertEqual(updates[0].status_source, "desktop-process")
+
+    def test_workbuddy_db_marks_active_pending_session_as_needs_action(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "workbuddy.db"
+            self._write_workbuddy_session_db(
+                db_path,
+                [
+                    {
+                        "id": "wb-pending",
+                        "cwd": "/Users/Gao/Documents/product",
+                        "title": "Start new chat session",
+                        "status": "pending",
+                        "updated_at": 1783920000000,
+                        "last_activity_at": 1783920000000,
+                    },
+                ],
+            )
+            rows = [
+                "process_id=51007\tprocess_name=/Applications/WorkBuddy.app/Contents/MacOS/Electron\tcommand=/Applications/WorkBuddy.app/Contents/MacOS/Electron --app-path=/Applications/WorkBuddy.app/Contents/Resources/app.asar"
+            ]
+
+            updates = list(
+                _classify_process_rows(
+                    rows,
+                    workbuddy_db_paths=(db_path,),
+                    now=datetime(2026, 7, 13, 5, 20, 5, tzinfo=timezone.utc),
+                    source_started_at=datetime(2026, 7, 13, 5, 19, 55, tzinfo=timezone.utc),
+                )
+            )
+
+            self.assertEqual(len(updates), 1)
+            self.assertEqual(updates[0].session_id, "workbuddy-wb-pending")
+            self.assertEqual(updates[0].title, "WorkBuddy Desktop - product - Start new chat session")
+            self.assertEqual(updates[0].status, SessionStatus.NEEDS_ACTION)
+            self.assertFalse(updates[0].view_ack_required)
+            self.assertEqual(updates[0].status_source, "workbuddy-db")
+
+    def test_workbuddy_db_pending_user_attention_before_monitor_start_still_needs_action(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "workbuddy.db"
+            self._write_workbuddy_session_db(
+                db_path,
+                [
+                    {
+                        "id": "wb-pending-before-start",
+                        "cwd": "/Users/Gao/Documents/product",
+                        "title": "Start new chat session",
+                        "status": "pending",
+                        "updated_at": 1783920000000,
+                        "last_activity_at": 1783920000000,
+                    },
+                ],
+            )
+            rows = [
+                "process_id=51007\tprocess_name=/Applications/WorkBuddy.app/Contents/MacOS/Electron\tcommand=/Applications/WorkBuddy.app/Contents/MacOS/Electron --app-path=/Applications/WorkBuddy.app/Contents/Resources/app.asar"
+            ]
+
+            updates = list(
+                _classify_process_rows(
+                    rows,
+                    workbuddy_db_paths=(db_path,),
+                    now=datetime(2026, 7, 13, 5, 22, 0, tzinfo=timezone.utc),
+                    source_started_at=datetime(2026, 7, 13, 5, 21, 0, tzinfo=timezone.utc),
+                )
+            )
+
+            self.assertEqual(len(updates), 1)
+            self.assertEqual(updates[0].session_id, "workbuddy-wb-pending-before-start")
+            self.assertEqual(updates[0].status, SessionStatus.NEEDS_ACTION)
+            self.assertFalse(updates[0].view_ack_required)
+            self.assertEqual(updates[0].status_source, "workbuddy-db")
+
+    def test_workbuddy_db_user_attention_status_variants_are_needs_action(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "workbuddy.db"
+            statuses = [
+                "WaitingForInput",
+                "RequiresApproval",
+                "ApprovalRequired",
+                "InputRequired",
+                "Suspended",
+            ]
+            self._write_workbuddy_session_db(
+                db_path,
+                [
+                    {
+                        "id": f"wb-attention-{index}",
+                        "cwd": f"/Users/Gao/Documents/product-{index}",
+                        "title": f"待处理会话 {index}",
+                        "status": status,
+                        "updated_at": 1783920000000 + index,
+                        "last_activity_at": 1783920000000 + index,
+                    }
+                    for index, status in enumerate(statuses, start=1)
+                ],
+            )
+            rows = [
+                "process_id=51007\tprocess_name=/Applications/WorkBuddy.app/Contents/MacOS/Electron\tcommand=/Applications/WorkBuddy.app/Contents/MacOS/Electron --app-path=/Applications/WorkBuddy.app/Contents/Resources/app.asar"
+            ]
+
+            updates = list(
+                _classify_process_rows(
+                    rows,
+                    workbuddy_db_paths=(db_path,),
+                    now=datetime(2026, 7, 13, 5, 20, 5, tzinfo=timezone.utc),
+                    source_started_at=datetime(2026, 7, 13, 5, 19, 55, tzinfo=timezone.utc),
+                )
+            )
+
+            self.assertEqual(len(updates), len(statuses))
+            self.assertEqual({update.status for update in updates}, {SessionStatus.NEEDS_ACTION})
+            self.assertTrue(all(not update.view_ack_required for update in updates))
+            self.assertEqual({update.status_source for update in updates}, {"workbuddy-db"})
+
+    def test_workbuddy_db_paused_session_is_idle_fallback(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "workbuddy.db"
+            self._write_workbuddy_session_db(
+                db_path,
+                [
+                    {
+                        "id": "wb-paused",
+                        "cwd": "/Users/Gao/Documents/product",
+                        "title": "用户暂停的会话",
+                        "status": "Paused",
+                        "updated_at": 1783920000000,
+                        "last_activity_at": 1783920000000,
+                    },
+                ],
+            )
+            rows = [
+                "process_id=51007\tprocess_name=/Applications/WorkBuddy.app/Contents/MacOS/Electron\tcommand=/Applications/WorkBuddy.app/Contents/MacOS/Electron --app-path=/Applications/WorkBuddy.app/Contents/Resources/app.asar"
+            ]
+
+            updates = list(
+                _classify_process_rows(
+                    rows,
+                    workbuddy_db_paths=(db_path,),
+                    now=datetime(2026, 7, 13, 5, 20, 5, tzinfo=timezone.utc),
+                    source_started_at=datetime(2026, 7, 13, 5, 19, 55, tzinfo=timezone.utc),
+                )
+            )
+
+            self.assertEqual(len(updates), 1)
+            self.assertEqual(updates[0].session_id, "process-51007")
+            self.assertEqual(updates[0].title, "WorkBuddy Desktop")
+            self.assertEqual(updates[0].status, SessionStatus.IDLE)
+            self.assertEqual(updates[0].status_source, "desktop-process")
+
+    def test_workbuddy_db_prompt_status_is_idle_fallback(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "workbuddy.db"
+            self._write_workbuddy_session_db(
+                db_path,
+                [
+                    {
+                        "id": "wb-prompt",
+                        "cwd": "/Users/Gao/Documents/product",
+                        "title": "等待输入提示符",
+                        "status": "Prompt",
+                        "updated_at": 1783920000000,
+                        "last_activity_at": 1783920000000,
+                    },
+                ],
+            )
+            rows = [
+                "process_id=51007\tprocess_name=/Applications/WorkBuddy.app/Contents/MacOS/Electron\tcommand=/Applications/WorkBuddy.app/Contents/MacOS/Electron --app-path=/Applications/WorkBuddy.app/Contents/Resources/app.asar"
+            ]
+
+            updates = list(
+                _classify_process_rows(
+                    rows,
+                    workbuddy_db_paths=(db_path,),
+                    now=datetime(2026, 7, 13, 5, 20, 5, tzinfo=timezone.utc),
+                    source_started_at=datetime(2026, 7, 13, 5, 19, 55, tzinfo=timezone.utc),
+                )
+            )
+
+            self.assertEqual(len(updates), 1)
+            self.assertEqual(updates[0].session_id, "process-51007")
+            self.assertEqual(updates[0].title, "WorkBuddy Desktop")
+            self.assertEqual(updates[0].status, SessionStatus.IDLE)
+            self.assertEqual(updates[0].status_source, "desktop-process")
+
+    def test_workbuddy_db_completed_with_incomplete_final_assistant_is_idle_fallback(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "workbuddy.db"
+            session_id = "wb-stopped"
+            cwd = "/Users/Gao/WorkBuddy/stop-generation"
+            self._write_workbuddy_session_db(
+                db_path,
+                [
+                    {
+                        "id": session_id,
+                        "cwd": cwd,
+                        "title": "用户停止生成的会话",
+                        "status": "Completed",
+                        "updated_at": 1783920000000,
+                        "last_activity_at": 1783920000000,
+                    },
+                ],
+            )
+            project_dir = Path(temp_dir) / "projects" / "Users-Gao-WorkBuddy-stop-generation"
+            project_dir.mkdir(parents=True)
+            (project_dir / f"{session_id}.jsonl").write_text(
+                "\n".join(
+                    [
+                        json.dumps({"timestamp": 1783919999000, "type": "message", "role": "assistant", "status": "completed"}),
+                        json.dumps({"timestamp": 1783920000000, "type": "message", "role": "assistant", "status": "incomplete"}),
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            rows = [
+                "process_id=51007\tprocess_name=/Applications/WorkBuddy.app/Contents/MacOS/Electron\tcommand=/Applications/WorkBuddy.app/Contents/MacOS/Electron --app-path=/Applications/WorkBuddy.app/Contents/Resources/app.asar"
+            ]
+
+            updates = list(
+                _classify_process_rows(
+                    rows,
+                    workbuddy_db_paths=(db_path,),
+                    now=datetime(2026, 7, 13, 5, 20, 5, tzinfo=timezone.utc),
+                    source_started_at=datetime(2026, 7, 13, 5, 19, 55, tzinfo=timezone.utc),
+                )
+            )
+
+            self.assertEqual(len(updates), 1)
+            self.assertEqual(updates[0].session_id, "process-51007")
+            self.assertEqual(updates[0].title, "WorkBuddy Desktop")
+            self.assertEqual(updates[0].status, SessionStatus.IDLE)
+            self.assertEqual(updates[0].status_source, "desktop-process")
+
+    def test_workbuddy_db_running_status_uses_newer_updated_at_when_activity_is_stale(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "workbuddy.db"
+            self._write_workbuddy_session_db(
+                db_path,
+                [
+                    {
+                        "id": "wb-working",
+                        "cwd": "/Users/Gao/Documents/product",
+                        "title": "开发一个五子棋游戏",
+                        "status": "working",
+                        "updated_at": 1783920120000,
+                        "last_activity_at": 1783918800000,
+                    },
+                ],
+            )
+            rows = [
+                "process_id=51007\tprocess_name=/Applications/WorkBuddy.app/Contents/MacOS/Electron\tcommand=/Applications/WorkBuddy.app/Contents/MacOS/Electron --app-path=/Applications/WorkBuddy.app/Contents/Resources/app.asar"
+            ]
+
+            updates = list(
+                _classify_process_rows(
+                    rows,
+                    workbuddy_db_paths=(db_path,),
+                    now=datetime(2026, 7, 13, 5, 22, 5, tzinfo=timezone.utc),
+                    source_started_at=datetime(2026, 7, 13, 5, 21, 0, tzinfo=timezone.utc),
+                )
+            )
+
+            self.assertEqual(len(updates), 1)
+            self.assertEqual(updates[0].session_id, "workbuddy-wb-working")
+            self.assertEqual(updates[0].status, SessionStatus.RUNNING)
+            self.assertEqual(updates[0].status_source, "workbuddy-db")
+            self.assertEqual(updates[0].updated_at, datetime(2026, 7, 13, 5, 22, tzinfo=timezone.utc))
+
+    def test_workbuddy_db_planning_status_is_running_not_idle_fallback(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "workbuddy.db"
+            self._write_workbuddy_session_db(
+                db_path,
+                [
+                    {
+                        "id": "wb-planning",
+                        "cwd": "/Users/Gao/Documents/product",
+                        "title": "规划任务",
+                        "status": "planning",
+                        "updated_at": 1783920120000,
+                        "last_activity_at": 1783918800000,
+                    },
+                ],
+            )
+            rows = [
+                "process_id=51007\tprocess_name=/Applications/WorkBuddy.app/Contents/MacOS/Electron\tcommand=/Applications/WorkBuddy.app/Contents/MacOS/Electron --app-path=/Applications/WorkBuddy.app/Contents/Resources/app.asar"
+            ]
+
+            updates = list(
+                _classify_process_rows(
+                    rows,
+                    workbuddy_db_paths=(db_path,),
+                    now=datetime(2026, 7, 13, 5, 22, 5, tzinfo=timezone.utc),
+                    source_started_at=datetime(2026, 7, 13, 5, 21, 0, tzinfo=timezone.utc),
+                )
+            )
+
+            self.assertEqual(len(updates), 1)
+            self.assertEqual(updates[0].session_id, "workbuddy-wb-planning")
+            self.assertEqual(updates[0].status, SessionStatus.RUNNING)
+            self.assertEqual(updates[0].status_source, "workbuddy-db")
+
+    def test_workbuddy_runtime_log_running_overrides_completed_db_status_with_clock_skew(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "workbuddy.db"
+            db_updated_at = datetime(2026, 7, 15, 13, 48, 24, 388000).astimezone(timezone.utc)
+            self._write_workbuddy_session_db(
+                db_path,
+                [
+                    {
+                        "id": "wb-live",
+                        "cwd": "/Users/Gao/WorkBuddy/2026-07-15-13-12-11",
+                        "title": "问候并询问今日状况",
+                        "status": "Completed",
+                        "updated_at": int(db_updated_at.timestamp() * 1000),
+                        "last_activity_at": int(db_updated_at.timestamp() * 1000),
+                    },
+                ],
+            )
+            log_path = Path(temp_dir) / "logs" / "2026-07-15" / "workspace.log"
+            log_path.parent.mkdir(parents=True)
+            log_path.write_text(
+                "[7/15/2026, 1:48:24 PM.368] [Info] [SessionRunStateMachine] transition | "
+                "sessionId=wb-live | event=MODEL_RESPONSE_DONE | from=model_streaming | "
+                "to=model_done | lifecycle=running | busy=true | queueBusy=true\n",
+                encoding="utf-8",
+            )
+            rows = [
+                "process_id=51007\tprocess_name=/Applications/WorkBuddy.app/Contents/MacOS/Electron\tcommand=/Applications/WorkBuddy.app/Contents/MacOS/Electron --app-path=/Applications/WorkBuddy.app/Contents/Resources/app.asar"
+            ]
+
+            updates = list(
+                _classify_process_rows(
+                    rows,
+                    workbuddy_db_paths=(db_path,),
+                    now=db_updated_at + timedelta(seconds=1),
+                    source_started_at=db_updated_at - timedelta(seconds=5),
+                )
+            )
+
+            self.assertEqual(len(updates), 1)
+            self.assertEqual(updates[0].session_id, "workbuddy-wb-live")
+            self.assertEqual(updates[0].title, "WorkBuddy Desktop - 2026-07-15-13-12-11 - 问候并询问今日状况")
+            self.assertEqual(updates[0].status, SessionStatus.RUNNING)
+            self.assertEqual(updates[0].status_source, "workbuddy-log")
+
+    def test_workbuddy_runtime_log_latest_idle_keeps_completed_result_needs_action(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "workbuddy.db"
+            db_updated_at = datetime(2026, 7, 15, 13, 48, 24, 388000).astimezone(timezone.utc)
+            self._write_workbuddy_session_db(
+                db_path,
+                [
+                    {
+                        "id": "wb-finished",
+                        "cwd": "/Users/Gao/WorkBuddy/2026-07-15-13-12-11",
+                        "title": "问候并询问今日状况",
+                        "status": "Completed",
+                        "updated_at": int(db_updated_at.timestamp() * 1000),
+                        "last_activity_at": int(db_updated_at.timestamp() * 1000),
+                    },
+                ],
+            )
+            log_path = Path(temp_dir) / "logs" / "2026-07-15" / "workspace.log"
+            log_path.parent.mkdir(parents=True)
+            log_path.write_text(
+                "[7/15/2026, 1:48:24 PM.368] [Info] [SessionRunStateMachine] transition | "
+                "sessionId=wb-finished | event=MODEL_RESPONSE_DONE | from=model_streaming | "
+                "to=model_done | lifecycle=running | busy=true | queueBusy=true\n"
+                "[7/15/2026, 1:48:24 PM.370] [Info] [SessionRunStateMachine] transition | "
+                "sessionId=wb-finished | event=AGENT_ENDED | from=model_done | "
+                "to=idle | lifecycle=idle | busy=false | queueBusy=false\n",
+                encoding="utf-8",
+            )
+            rows = [
+                "process_id=51007\tprocess_name=/Applications/WorkBuddy.app/Contents/MacOS/Electron\tcommand=/Applications/WorkBuddy.app/Contents/MacOS/Electron --app-path=/Applications/WorkBuddy.app/Contents/Resources/app.asar"
+            ]
+
+            updates = list(
+                _classify_process_rows(
+                    rows,
+                    workbuddy_db_paths=(db_path,),
+                    now=db_updated_at + timedelta(seconds=1),
+                    source_started_at=db_updated_at - timedelta(seconds=5),
+                )
+            )
+
+            self.assertEqual(len(updates), 1)
+            self.assertEqual(updates[0].session_id, "workbuddy-wb-finished")
+            self.assertEqual(updates[0].title, "WorkBuddy Desktop - 2026-07-15-13-12-11 - 问候并询问今日状况")
+            self.assertEqual(updates[0].status, SessionStatus.NEEDS_ACTION)
+            self.assertTrue(updates[0].view_ack_required)
+            self.assertEqual(updates[0].status_source, "workbuddy-db")
+
+    def test_workbuddy_runtime_log_latest_idle_clears_running_db_status(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "workbuddy.db"
+            db_updated_at = datetime(2026, 7, 15, 13, 48, 24, 388000).astimezone(timezone.utc)
+            self._write_workbuddy_session_db(
+                db_path,
+                [
+                    {
+                        "id": "wb-working",
+                        "cwd": "/Users/Gao/WorkBuddy/2026-07-15-13-12-11",
+                        "title": "问候并询问今日状况",
+                        "status": "Running",
+                        "updated_at": int(db_updated_at.timestamp() * 1000),
+                        "last_activity_at": int(db_updated_at.timestamp() * 1000),
+                    },
+                ],
+            )
+            log_path = Path(temp_dir) / "logs" / "2026-07-15" / "workspace.log"
+            log_path.parent.mkdir(parents=True)
+            log_path.write_text(
+                "[7/15/2026, 1:48:24 PM.368] [Info] [SessionRunStateMachine] transition | "
+                "sessionId=wb-working | event=MODEL_RESPONSE_DONE | from=model_streaming | "
+                "to=model_done | lifecycle=running | busy=true | queueBusy=true\n"
+                "[7/15/2026, 1:48:24 PM.370] [Info] [SessionRunStateMachine] transition | "
+                "sessionId=wb-working | event=AGENT_ENDED | from=model_done | "
+                "to=idle | lifecycle=idle | busy=false | queueBusy=false\n",
+                encoding="utf-8",
+            )
+            rows = [
+                "process_id=51007\tprocess_name=/Applications/WorkBuddy.app/Contents/MacOS/Electron\tcommand=/Applications/WorkBuddy.app/Contents/MacOS/Electron --app-path=/Applications/WorkBuddy.app/Contents/Resources/app.asar"
+            ]
+
+            updates = list(
+                _classify_process_rows(
+                    rows,
+                    workbuddy_db_paths=(db_path,),
+                    now=db_updated_at + timedelta(seconds=1),
+                    source_started_at=db_updated_at - timedelta(seconds=5),
+                )
+            )
+
+            self.assertEqual(len(updates), 1)
+            self.assertEqual(updates[0].session_id, "process-51007")
+            self.assertEqual(updates[0].title, "WorkBuddy Desktop")
+            self.assertEqual(updates[0].status, SessionStatus.IDLE)
+            self.assertEqual(updates[0].status_source, "desktop-process")
+
+    def test_workbuddy_runtime_log_running_creates_session_when_db_has_not_caught_up(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "workbuddy.db"
+            runtime_at = datetime(2026, 7, 15, 8, 24, 30, 349000).astimezone(timezone.utc)
+            self._write_workbuddy_session_db(db_path, [])
+            log_path = Path(temp_dir) / "logs" / "2026-07-15" / "workspace.log"
+            log_path.parent.mkdir(parents=True)
+            log_path.write_text(
+                "[7/15/2026, 8:24:30 AM.349] [Info] [SessionRunStateMachine] transition | "
+                "sessionId=wb-runtime-only | event=AGENT_STARTED | from=pending | "
+                "to=agent_running | lifecycle=running | busy=true | queueBusy=true\n",
+                encoding="utf-8",
+            )
+            rows = [
+                "process_id=51007\tprocess_name=/Applications/WorkBuddy.app/Contents/MacOS/Electron\tcommand=/Applications/WorkBuddy.app/Contents/MacOS/Electron --app-path=/Applications/WorkBuddy.app/Contents/Resources/app.asar"
+            ]
+
+            updates = list(
+                _classify_process_rows(
+                    rows,
+                    workbuddy_db_paths=(db_path,),
+                    now=runtime_at + timedelta(seconds=1),
+                    source_started_at=runtime_at - timedelta(seconds=5),
+                )
+            )
+
+            self.assertEqual(len(updates), 1)
+            self.assertEqual(updates[0].session_id, "workbuddy-wb-runtime-only")
+            self.assertEqual(updates[0].title, "WorkBuddy Desktop - wb-runtime-only")
+            self.assertEqual(updates[0].status, SessionStatus.RUNNING)
+            self.assertFalse(updates[0].view_ack_required)
+            self.assertEqual(updates[0].status_source, "workbuddy-log")
+
+    def test_workbuddy_runtime_log_keeps_state_machine_when_noisy_tail_exceeds_legacy_window(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "workbuddy.db"
+            db_updated_at = datetime(2026, 7, 15, 13, 48, 24, 388000).astimezone(timezone.utc)
+            self._write_workbuddy_session_db(
+                db_path,
+                [
+                    {
+                        "id": "wb-noisy",
+                        "cwd": "/Users/Gao/WorkBuddy/2026-07-15-13-12-11",
+                        "title": "写入文档",
+                        "status": "Completed",
+                        "updated_at": int(db_updated_at.timestamp() * 1000),
+                        "last_activity_at": int(db_updated_at.timestamp() * 1000),
+                    },
+                ],
+            )
+            log_path = Path(temp_dir) / "logs" / "2026-07-15" / "workspace.log"
+            log_path.parent.mkdir(parents=True)
+            noisy_tail = "x" * (96 * 1024)
+            log_path.write_text(
+                "[7/15/2026, 1:48:24 PM.368] [Info] [SessionRunStateMachine] transition | "
+                "sessionId=wb-noisy | event=MODEL_RESPONSE_DONE | from=model_streaming | "
+                "to=model_done | lifecycle=running | busy=true | queueBusy=true\n"
+                f"[7/15/2026, 1:48:25 PM.000] [Info] [WorkflowMemProbe] {noisy_tail}\n",
+                encoding="utf-8",
+            )
+            rows = [
+                "process_id=51007\tprocess_name=/Applications/WorkBuddy.app/Contents/MacOS/Electron\tcommand=/Applications/WorkBuddy.app/Contents/MacOS/Electron --app-path=/Applications/WorkBuddy.app/Contents/Resources/app.asar"
+            ]
+
+            updates = list(
+                _classify_process_rows(
+                    rows,
+                    workbuddy_db_paths=(db_path,),
+                    now=db_updated_at + timedelta(seconds=1),
+                    source_started_at=db_updated_at - timedelta(seconds=5),
+                )
+            )
+
+            self.assertEqual(len(updates), 1)
+            self.assertEqual(updates[0].session_id, "workbuddy-wb-noisy")
+            self.assertEqual(updates[0].status, SessionStatus.RUNNING)
+            self.assertEqual(updates[0].status_source, "workbuddy-log")
+
+    def test_workbuddy_old_runtime_log_does_not_override_newer_db_attention_status(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "workbuddy.db"
+            db_updated_at = datetime(2026, 7, 15, 13, 50, 0).astimezone(timezone.utc)
+            self._write_workbuddy_session_db(
+                db_path,
+                [
+                    {
+                        "id": "wb-attention",
+                        "cwd": "/Users/Gao/WorkBuddy/current",
+                        "title": "等待用户确认",
+                        "status": "Completed",
+                        "updated_at": int(db_updated_at.timestamp() * 1000),
+                        "last_activity_at": int(db_updated_at.timestamp() * 1000),
+                    },
+                ],
+            )
+            log_path = Path(temp_dir) / "logs" / "2026-07-15" / "workspace.log"
+            log_path.parent.mkdir(parents=True)
+            log_path.write_text(
+                "[7/15/2026, 1:48:24 PM.368] [Info] [SessionRunStateMachine] transition | "
+                "sessionId=wb-attention | event=MODEL_RESPONSE_DONE | from=model_streaming | "
+                "to=model_done | lifecycle=running | busy=true | queueBusy=true\n",
+                encoding="utf-8",
+            )
+            rows = [
+                "process_id=51007\tprocess_name=/Applications/WorkBuddy.app/Contents/MacOS/Electron\tcommand=/Applications/WorkBuddy.app/Contents/MacOS/Electron --app-path=/Applications/WorkBuddy.app/Contents/Resources/app.asar"
+            ]
+
+            updates = list(
+                _classify_process_rows(
+                    rows,
+                    workbuddy_db_paths=(db_path,),
+                    now=db_updated_at + timedelta(seconds=1),
+                    source_started_at=db_updated_at - timedelta(seconds=5),
+                )
+            )
+
+            self.assertEqual(len(updates), 1)
+            self.assertEqual(updates[0].session_id, "workbuddy-wb-attention")
+            self.assertEqual(updates[0].status, SessionStatus.NEEDS_ACTION)
+            self.assertEqual(updates[0].status_source, "workbuddy-db")
+
+    def _write_workbuddy_session_db(self, path: Path, rows: list[dict]) -> None:
+        connection = sqlite3.connect(path)
+        try:
+            connection.execute(
+                """
+                CREATE TABLE sessions (
+                    id TEXT PRIMARY KEY,
+                    cwd TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    title TEXT,
+                    custom_title TEXT,
+                    status TEXT NOT NULL DEFAULT 'Pending',
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    deleted_at INTEGER,
+                    is_playground INTEGER NOT NULL DEFAULT 0,
+                    source_mode TEXT,
+                    is_background_automation INTEGER,
+                    mode TEXT,
+                    model TEXT,
+                    expert_id TEXT,
+                    expert_locale TEXT,
+                    expert_runtime_identity TEXT,
+                    expert_marketplace TEXT,
+                    permission_mode TEXT,
+                    last_activity_at INTEGER,
+                    use_sandbox_cli INTEGER,
+                    project_id TEXT
+                )
+                """
+            )
+            for row in rows:
+                connection.execute(
+                    """
+                    INSERT INTO sessions (
+                        id, cwd, user_id, title, custom_title, status,
+                        created_at, updated_at, deleted_at, last_activity_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        row["id"],
+                        row["cwd"],
+                        "user-1",
+                        row.get("title"),
+                        row.get("custom_title"),
+                        row["status"],
+                        row.get("created_at", row["updated_at"]),
+                        row["updated_at"],
+                        row.get("deleted_at"),
+                        row.get("last_activity_at"),
+                    ),
+                )
+            connection.commit()
+        finally:
+            connection.close()
 
     def test_qoder_desktop_process_uses_recent_task_status_log_as_running(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -975,11 +1852,625 @@ class SourceTests(unittest.TestCase):
             )
 
             self.assertEqual(len(updates), 1)
-            self.assertEqual(updates[0].title, "Qoder Desktop")
+            self.assertEqual(updates[0].title, "Qoder CN Desktop - 对话")
             self.assertEqual(updates[0].status, SessionStatus.RUNNING)
             self.assertEqual(updates[0].status_source, "qoder-log")
-            self.assertEqual(updates[0].tool_display_name, "Qoder")
-            self.assertEqual(updates[0].updated_at, datetime(2026, 7, 10, 10, 26, 0).astimezone(timezone.utc))
+            self.assertEqual(updates[0].tool_display_name, "Qoder CN")
+            self.assertEqual(updates[0].updated_at, datetime(2026, 7, 10, 10, 25, 58, 547000).astimezone(timezone.utc))
+
+    def test_qoder_resumed_prompt_to_status_counts_as_running(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / "20260715T162247" / "questWindow" / "quest.log"
+            log_path.parent.mkdir(parents=True)
+            log_path.write_text(
+                '2026-07-15 16:24:54.558 [info] quest.task.resumedByUserPrompt '
+                '{"taskId":"task-edfa4f9da2a447d5b106","sessionId":"task-edfa4f9da2a447d5b106.session.execution",'
+                '"fromStatus":"Completed","toStatus":"Running","acpState":"prompting"}\n',
+                encoding="utf-8",
+            )
+            rows = [
+                "process_id=51005\tprocess_name=/Applications/Qo\tcommand=/Applications/Qoder CN.app/Contents/MacOS/Electron --aicoding-open-agents-window\tcpu_percent=0.0\tstat=S"
+            ]
+
+            updates = list(
+                _classify_process_rows(
+                    rows,
+                    qoder_logs_dir=Path(temp_dir),
+                    now=datetime(2026, 7, 15, 16, 25, 0).astimezone(timezone.utc),
+                )
+            )
+
+            self.assertEqual(len(updates), 1)
+            self.assertEqual(updates[0].session_id, "qoder-task-edfa4f9da2a447d5b106")
+            self.assertEqual(updates[0].title, "Qoder CN Desktop - 对话")
+            self.assertEqual(updates[0].status, SessionStatus.RUNNING)
+            self.assertFalse(updates[0].view_ack_required)
+            self.assertEqual(updates[0].status_source, "qoder-log")
+
+    def test_qoder_completed_task_log_creates_needs_action_conversation(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / "20260713T110839" / "questWindow" / "quest.log"
+            agent_log_path = log_path.with_name("agent.log")
+            log_path.parent.mkdir(parents=True)
+            agent_log_path.write_text(
+                '2026-07-13 11:09:59.009 [info] [ChatSessionService] rebindSessionAuthorityFromTask.resolve {"sessionId":"task-alpha.session.execution","taskId":"task-alpha","filePath":"/Users/Gao/Documents/QoderCN/2026-07-13/chat-1"}\n',
+                encoding="utf-8",
+            )
+            log_path.write_text(
+                '2026-07-13 11:09:58.931 [info] task.status.update {"taskId":"task-alpha.session.execution","status":"Running"}\n'
+                '2026-07-13 11:10:08.022 [info] task.status.update {"taskId":"task-alpha.session.execution","status":"Completed"}\n',
+                encoding="utf-8",
+            )
+            rows = [
+                "process_id=51005\tprocess_name=/Applications/Qo\tcommand=/Applications/Qoder CN.app/Contents/MacOS/Electron --aicoding-open-agents-window\tcpu_percent=0.0\tstat=S"
+            ]
+
+            updates = list(
+                _classify_process_rows(
+                    rows,
+                    qoder_logs_dir=Path(temp_dir),
+                    now=datetime(2026, 7, 13, 11, 10, 10).astimezone(timezone.utc),
+                )
+            )
+
+            self.assertEqual(len(updates), 1)
+            self.assertEqual(updates[0].session_id, "qoder-task-alpha")
+            self.assertEqual(updates[0].title, "Qoder CN Desktop - 对话")
+            self.assertEqual(updates[0].status, SessionStatus.NEEDS_ACTION)
+            self.assertTrue(updates[0].view_ack_required)
+            self.assertEqual(updates[0].cwd, "/Users/Gao/Documents/QoderCN/2026-07-13/chat-1")
+            self.assertTrue(updates[0].generated_conversation_path)
+            self.assertEqual(updates[0].updated_at, datetime(2026, 7, 13, 11, 10, 8, 22000).astimezone(timezone.utc))
+
+    def test_qoder_uses_project_session_title_instead_of_generated_chat_folder(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app_root = Path(temp_dir) / "QoderCN"
+            log_path = app_root / "logs" / "20260713T110839" / "questWindow" / "quest.log"
+            agent_log_path = log_path.with_name("agent.log")
+            project_session = (
+                app_root
+                / "SharedClientCache"
+                / "cli"
+                / "projects"
+                / "task-alpha.session.execution-session.json"
+            )
+            log_path.parent.mkdir(parents=True)
+            project_session.parent.mkdir(parents=True)
+            agent_log_path.write_text(
+                '2026-07-13 11:09:59.009 [info] [ChatSessionService] rebindSessionAuthorityFromTask.resolve {"sessionId":"task-alpha.session.execution","taskId":"task-alpha","filePath":"/Users/Gao/Documents/QoderCN/2026-07-13/chat-1"}\n',
+                encoding="utf-8",
+            )
+            log_path.write_text(
+                '2026-07-13 11:09:58.931 [info] task.status.update {"taskId":"task-alpha.session.execution","status":"Running"}\n',
+                encoding="utf-8",
+            )
+            project_session.write_text(
+                json.dumps({"title": "深度分析AI代码助手动向"}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            rows = [
+                "process_id=51005\tprocess_name=/Applications/Qo\tcommand=/Applications/Qoder CN.app/Contents/MacOS/Electron --aicoding-open-agents-window\tcpu_percent=0.0\tstat=S"
+            ]
+
+            updates = list(
+                _classify_process_rows(
+                    rows,
+                    qoder_logs_dir=app_root / "logs",
+                    now=datetime(2026, 7, 13, 11, 10, 10).astimezone(timezone.utc),
+                )
+            )
+
+            self.assertEqual(len(updates), 1)
+            self.assertEqual(updates[0].session_id, "qoder-task-alpha")
+            self.assertEqual(updates[0].title, "Qoder CN Desktop - 深度分析AI代码助手动向")
+            self.assertEqual(updates[0].cwd, "/Users/Gao/Documents/QoderCN/2026-07-13/chat-1")
+            self.assertTrue(updates[0].generated_conversation_path)
+
+    def test_qoder_uses_local_cache_session_title_instead_of_generated_chat_folder(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app_root = Path(temp_dir) / "QoderCN"
+            log_path = app_root / "logs" / "20260714T091333" / "questWindow" / "quest.log"
+            agent_log_path = log_path.with_name("agent.log")
+            db_path = app_root / "SharedClientCache" / "cache" / "db" / "local.db"
+            log_path.parent.mkdir(parents=True)
+            db_path.parent.mkdir(parents=True)
+            agent_log_path.write_text(
+                '2026-07-14 09:13:33.213 [info] [ChatSessionService] rebindSessionAuthorityFromTask.resolve {"sessionId":"task-alpha.session.execution","taskId":"task-alpha","filePath":"/Users/Gao/Documents/QoderCN/2026-07-14/chat-1"}\n',
+                encoding="utf-8",
+            )
+            log_path.write_text(
+                '2026-07-14 09:13:35.741 [info] task.status.update {"taskId":"task-alpha.session.execution","status":"Running"}\n',
+                encoding="utf-8",
+            )
+            connection = sqlite3.connect(db_path)
+            try:
+                connection.execute(
+                    """
+                    CREATE TABLE chat_session (
+                        session_id TEXT,
+                        session_title TEXT,
+                        project_uri TEXT,
+                        project_name TEXT,
+                        status TEXT,
+                        extra TEXT,
+                        gmt_create INTEGER,
+                        gmt_modified INTEGER
+                    )
+                    """
+                )
+                connection.execute(
+                    """
+                    INSERT INTO chat_session (
+                        session_id, session_title, project_uri, project_name, status, extra, gmt_create, gmt_modified
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "task-alpha.session.execution",
+                        "围棋游戏开发",
+                        "/Users/Gao/Documents/QoderCN/2026-07-14/chat-1",
+                        "chat-1",
+                        "Running",
+                        "{}",
+                        1783991613213,
+                        1783991615741,
+                    ),
+                )
+                connection.commit()
+            finally:
+                connection.close()
+            rows = [
+                "process_id=51005\tprocess_name=/Applications/Qo\tcommand=/Applications/Qoder CN.app/Contents/MacOS/Electron --aicoding-open-agents-window\tcpu_percent=0.0\tstat=S"
+            ]
+
+            updates = list(
+                _classify_process_rows(
+                    rows,
+                    qoder_logs_dir=app_root / "logs",
+                    now=datetime(2026, 7, 14, 9, 13, 40).astimezone(timezone.utc),
+                )
+            )
+
+            self.assertEqual(len(updates), 1)
+            self.assertEqual(updates[0].session_id, "qoder-task-alpha")
+            self.assertEqual(updates[0].title, "Qoder CN Desktop - 围棋游戏开发")
+            self.assertEqual(updates[0].cwd, "/Users/Gao/Documents/QoderCN/2026-07-14/chat-1")
+            self.assertTrue(updates[0].generated_conversation_path)
+
+    def test_qoder_shared_cache_db_status_creates_full_session_without_status_log(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app_root = Path(temp_dir) / "Qoder"
+            db_path = app_root / "SharedClientCache" / "cache" / "db" / "local.db"
+            db_path.parent.mkdir(parents=True)
+            connection = sqlite3.connect(db_path)
+            try:
+                connection.execute(
+                    """
+                    CREATE TABLE chat_session (
+                        session_id TEXT,
+                        session_title TEXT,
+                        project_uri TEXT,
+                        project_name TEXT,
+                        status TEXT,
+                        stop_reason TEXT,
+                        extra TEXT,
+                        last_user_query_at INTEGER,
+                        gmt_create INTEGER,
+                        gmt_modified INTEGER
+                    )
+                    """
+                )
+                connection.execute(
+                    """
+                    INSERT INTO chat_session (
+                        session_id, session_title, project_uri, project_name, status, stop_reason, extra,
+                        last_user_query_at, gmt_create, gmt_modified
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "task-48708e3212644a42b72d.session.execution",
+                        "Hello",
+                        "/Users/Gao/Documents/StudyCC",
+                        "StudyCC",
+                        "Stopped",
+                        "Stopped",
+                        '{"acp_session_chat_finish_reason":"action_required"}',
+                        1783929398082,
+                        1783929398081,
+                        1784081769413,
+                    ),
+                )
+                connection.commit()
+            finally:
+                connection.close()
+            rows = [
+                "process_id=60489\tprocess_name=/Applications/Qo\tcommand=/Applications/Qoder.app/Contents/MacOS/Qoder\tcpu_percent=0.0\tstat=S"
+            ]
+
+            updates = list(
+                _classify_process_rows(
+                    rows,
+                    qoder_logs_dir=app_root / "SharedClientCache" / "logs",
+                    now=datetime(2026, 7, 15, 10, 20, 0).astimezone(timezone.utc),
+                )
+            )
+            updates_after_monitor_start = list(
+                _classify_process_rows(
+                    rows,
+                    qoder_logs_dir=app_root / "SharedClientCache" / "logs",
+                    now=datetime(2026, 7, 15, 10, 20, 0).astimezone(timezone.utc),
+                    source_started_at=datetime(2026, 7, 15, 10, 30, 0).astimezone(timezone.utc),
+                )
+            )
+
+            self.assertEqual(len(updates), 1)
+            self.assertEqual(updates[0].session_id, "qoder-task-48708e3212644a42b72d")
+            self.assertEqual(updates[0].title, "Qoder Desktop - Hello")
+            self.assertEqual(updates[0].status, SessionStatus.NEEDS_ACTION)
+            self.assertTrue(updates[0].view_ack_required)
+            self.assertEqual(updates[0].status_source, "qoder-log")
+            self.assertEqual(updates[0].cwd, "/Users/Gao/Documents/StudyCC")
+            self.assertEqual(len(updates_after_monitor_start), 1)
+            self.assertEqual(updates_after_monitor_start[0].session_id, "process-60489")
+            self.assertEqual(updates_after_monitor_start[0].title, "Qoder Desktop")
+            self.assertEqual(updates_after_monitor_start[0].status, SessionStatus.IDLE)
+            self.assertEqual(updates_after_monitor_start[0].status_source, "desktop-process")
+
+    def test_qoder_shared_cache_db_error_overrides_running_status(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app_root = Path(temp_dir) / "Qoder"
+            db_path = app_root / "SharedClientCache" / "cache" / "db" / "local.db"
+            db_path.parent.mkdir(parents=True)
+            connection = sqlite3.connect(db_path)
+            try:
+                connection.execute(
+                    """
+                    CREATE TABLE chat_session (
+                        session_id TEXT,
+                        session_title TEXT,
+                        project_uri TEXT,
+                        project_name TEXT,
+                        status TEXT,
+                        stop_reason TEXT,
+                        extra TEXT,
+                        last_user_query_at INTEGER,
+                        gmt_create INTEGER,
+                        gmt_modified INTEGER
+                    )
+                    """
+                )
+                connection.execute(
+                    """
+                    INSERT INTO chat_session (
+                        session_id, session_title, project_uri, project_name, status, stop_reason, extra,
+                        last_user_query_at, gmt_create, gmt_modified
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "task-b251.session.execution",
+                        "hello",
+                        "/Users/Gao/Documents/Qoder/2026-07-15/chat-2",
+                        "chat-2",
+                        "Running",
+                        "Stopped",
+                        json.dumps(
+                            {
+                                "acp_session_chat_finish_reason": "net/http: request canceled (Client.Timeout or context cancellation while reading body)",
+                                "acp_session_status_code": 500,
+                            }
+                        ),
+                        1784099454157,
+                        1784099454157,
+                        1784099464238,
+                    ),
+                )
+                connection.commit()
+            finally:
+                connection.close()
+            rows = [
+                "process_id=60489\tprocess_name=/Applications/Qo\tcommand=/Applications/Qoder.app/Contents/MacOS/Qoder\tcpu_percent=0.0\tstat=S"
+            ]
+
+            updates = list(
+                _classify_process_rows(
+                    rows,
+                    qoder_logs_dir=app_root / "SharedClientCache" / "logs",
+                    now=datetime(2026, 7, 15, 15, 11, 10).astimezone(timezone.utc),
+                )
+            )
+
+            self.assertEqual(len(updates), 1)
+            self.assertEqual(updates[0].session_id, "qoder-task-b251")
+            self.assertEqual(updates[0].title, "Qoder Desktop - hello")
+            self.assertEqual(updates[0].status, SessionStatus.NEEDS_ACTION)
+            self.assertTrue(updates[0].view_ack_required)
+            self.assertEqual(updates[0].status_source, "qoder-log")
+
+    def test_qoder_cn_cache_history_before_source_start_falls_back_to_single_idle_entry(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app_root = Path(temp_dir) / "QoderCN"
+            db_path = app_root / "SharedClientCache" / "cache" / "db" / "local.db"
+            db_path.parent.mkdir(parents=True)
+            connection = sqlite3.connect(db_path)
+            try:
+                connection.execute(
+                    """
+                    CREATE TABLE chat_session (
+                        session_id TEXT,
+                        session_title TEXT,
+                        project_uri TEXT,
+                        project_name TEXT,
+                        status TEXT,
+                        stop_reason TEXT,
+                        extra TEXT,
+                        last_user_query_at INTEGER,
+                        gmt_create INTEGER,
+                        gmt_modified INTEGER
+                    )
+                    """
+                )
+                rows_to_insert = [
+                    (
+                        "task-alpha.session.execution",
+                        "介绍一下你自己",
+                        "/Users/Gao/Documents/QoderCN/2026-07-14/chat-1",
+                        "chat-1",
+                        "Stopped",
+                        "Stopped",
+                        '{"acp_session_chat_finish_reason":"action_required"}',
+                        1783991600000,
+                        1783991600000,
+                        1783991601000,
+                    ),
+                    (
+                        "task-beta.session.execution",
+                        "Qoder国际版免费额度",
+                        "/Users/Gao/Documents/QoderCN/2026-07-14/chat-2",
+                        "chat-2",
+                        "Stopped",
+                        "Stopped",
+                        '{"acp_session_chat_finish_reason":"action_required"}',
+                        1783991700000,
+                        1783991700000,
+                        1783991701000,
+                    ),
+                ]
+                connection.executemany(
+                    """
+                    INSERT INTO chat_session (
+                        session_id, session_title, project_uri, project_name, status, stop_reason, extra,
+                        last_user_query_at, gmt_create, gmt_modified
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    rows_to_insert,
+                )
+                connection.commit()
+            finally:
+                connection.close()
+            rows = [
+                "process_id=51005\tprocess_name=/Applications/Qo\tcommand=/Applications/Qoder CN.app/Contents/MacOS/Electron --aicoding-open-agents-window\tcpu_percent=0.0\tstat=S"
+            ]
+
+            updates = list(
+                _classify_process_rows(
+                    rows,
+                    qoder_logs_dir=app_root / "SharedClientCache" / "logs",
+                    now=datetime(2026, 7, 15, 10, 20, 0).astimezone(timezone.utc),
+                    source_started_at=datetime(2026, 7, 15, 10, 0, 0).astimezone(timezone.utc),
+                )
+            )
+
+            self.assertEqual(len(updates), 1)
+            self.assertEqual(updates[0].session_id, "process-51005")
+            self.assertEqual(updates[0].title, "Qoder CN Desktop")
+            self.assertEqual(updates[0].status, SessionStatus.IDLE)
+            self.assertEqual(updates[0].status_source, "desktop-process")
+
+    def test_qoder_status_update_planning_counts_as_running(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / "20260710T102318" / "window1" / "quest.log"
+            log_path.parent.mkdir(parents=True)
+            log_path.write_text(
+                '2026-07-10 10:25:58.542 [info] task.status.update {"taskId":"task-1.session.execution","status":"Planning"}\n',
+                encoding="utf-8",
+            )
+            rows = [
+                "process_id=51005\tprocess_name=/Applications/Qo\tcommand=/Applications/Qoder CN.app/Contents/MacOS/Electron --aicoding-open-agents-window\tcpu_percent=0.0\tstat=S"
+            ]
+
+            updates = list(
+                _classify_process_rows(
+                    rows,
+                    qoder_logs_dir=Path(temp_dir),
+                    now=datetime(2026, 7, 10, 10, 26, 0).astimezone(timezone.utc),
+                )
+            )
+
+            self.assertEqual(len(updates), 1)
+            self.assertEqual(updates[0].session_id, "qoder-task-1")
+            self.assertEqual(updates[0].status, SessionStatus.RUNNING)
+            self.assertEqual(updates[0].status_source, "qoder-log")
+
+    def test_qoder_completion_after_monitor_start_is_not_filtered_as_history(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / "20260713T110839" / "questWindow" / "quest.log"
+            agent_log_path = log_path.with_name("agent.log")
+            log_path.parent.mkdir(parents=True)
+            agent_log_path.write_text(
+                '2026-07-13 11:09:59.009 [info] [ChatSessionService] rebindSessionAuthorityFromTask.resolve {"sessionId":"task-alpha.session.execution","taskId":"task-alpha","filePath":"/Users/Gao/Documents/QoderCN/2026-07-13/chat-1"}\n',
+                encoding="utf-8",
+            )
+            log_path.write_text(
+                '2026-07-13 11:09:58.931 [info] task.status.update {"taskId":"task-alpha.session.execution","status":"Running"}\n'
+                '2026-07-13 11:10:08.022 [info] task.status.update {"taskId":"task-alpha.session.execution","status":"Completed"}\n',
+                encoding="utf-8",
+            )
+            rows = [
+                "process_id=51005\tprocess_name=/Applications/Qo\tcommand=/Applications/Qoder CN.app/Contents/MacOS/Electron --aicoding-open-agents-window\tcpu_percent=0.0\tstat=S"
+            ]
+
+            updates = list(
+                _classify_process_rows(
+                    rows,
+                    qoder_logs_dir=Path(temp_dir),
+                    source_started_at=datetime(2026, 7, 13, 11, 10, 0).astimezone(timezone.utc),
+                    now=datetime(2026, 7, 13, 11, 10, 10).astimezone(timezone.utc),
+                )
+            )
+
+            self.assertEqual(len(updates), 1)
+            self.assertEqual(updates[0].session_id, "qoder-task-alpha")
+            self.assertEqual(updates[0].title, "Qoder CN Desktop - 对话")
+            self.assertEqual(updates[0].status, SessionStatus.NEEDS_ACTION)
+            self.assertTrue(updates[0].view_ack_required)
+
+    def test_qoder_completion_before_monitor_start_falls_back_to_idle_desktop_entry(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / "20260713T110839" / "questWindow" / "quest.log"
+            log_path.parent.mkdir(parents=True)
+            log_path.write_text(
+                '2026-07-13 11:09:58.931 [info] task.status.update {"taskId":"task-alpha.session.execution","status":"Running"}\n'
+                '2026-07-13 11:10:08.022 [info] task.status.update {"taskId":"task-alpha.session.execution","status":"Completed"}\n',
+                encoding="utf-8",
+            )
+            rows = [
+                "process_id=51005\tprocess_name=/Applications/Qo\tcommand=/Applications/Qoder CN.app/Contents/MacOS/Electron --aicoding-open-agents-window\tcpu_percent=0.0\tstat=S"
+            ]
+
+            updates = list(
+                _classify_process_rows(
+                    rows,
+                    qoder_logs_dir=Path(temp_dir),
+                    source_started_at=datetime(2026, 7, 13, 11, 11, 0).astimezone(timezone.utc),
+                    now=datetime(2026, 7, 13, 11, 11, 10).astimezone(timezone.utc),
+                )
+            )
+
+            self.assertEqual(len(updates), 1)
+            self.assertEqual(updates[0].session_id, "process-51005")
+            self.assertEqual(updates[0].title, "Qoder CN Desktop")
+            self.assertEqual(updates[0].status, SessionStatus.IDLE)
+            self.assertEqual(updates[0].status_source, "desktop-process")
+
+    def test_qoder_after_refresh_completed_snapshot_without_running_evidence_is_idle_desktop_entry(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / "20260713T110839" / "questWindow" / "quest.log"
+            log_path.parent.mkdir(parents=True)
+            log_path.write_text(
+                '2026-07-13 11:10:08.022 [info] task.status.update.afterRefresh {"taskId":"task-alpha.session.execution","finalStatus":"Completed"}\n',
+                encoding="utf-8",
+            )
+            rows = [
+                "process_id=51005\tprocess_name=/Applications/Qo\tcommand=/Applications/Qoder.app/Contents/MacOS/Qoder\tcpu_percent=0.0\tstat=S"
+            ]
+
+            updates = list(
+                _classify_process_rows(
+                    rows,
+                    qoder_logs_dir=Path(temp_dir),
+                    source_started_at=datetime(2026, 7, 13, 11, 0, 0).astimezone(timezone.utc),
+                    now=datetime(2026, 7, 13, 11, 10, 10).astimezone(timezone.utc),
+                )
+            )
+
+            self.assertEqual(len(updates), 1)
+            self.assertEqual(updates[0].session_id, "process-51005")
+            self.assertEqual(updates[0].title, "Qoder Desktop")
+            self.assertEqual(updates[0].status, SessionStatus.IDLE)
+            self.assertEqual(updates[0].status_source, "desktop-process")
+
+    def test_qoder_history_loaded_chat_finish_from_load_is_idle_desktop_entry(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / "20260715T095144" / "questWindow" / "agent.log"
+            log_path.parent.mkdir(parents=True)
+            log_path.write_text(
+                '2026-07-15 09:51:48.417 [info] [ChatSessionService] loadHistory.authorityContext {"sessionId":"task-alpha.session.execution","sessionType":"quest","taskId":"task-alpha","filePath":"/Users/Gao/Documents/StudyCC"}\n'
+                "2026-07-15 09:51:48.549 [info] [ChatSessionService] ACP progress: task-alpha.session.execution, rid=req-1, type=notification, notification type=chat_finish, from=load\n",
+                encoding="utf-8",
+            )
+            rows = [
+                "process_id=51005\tprocess_name=/Applications/Qoder.app/Contents/MacOS/Electron\tcommand=/Applications/Qoder.app/Contents/MacOS/Electron\tcpu_percent=0.0\tstat=S"
+            ]
+
+            updates = list(
+                _classify_process_rows(
+                    rows,
+                    qoder_logs_dir=Path(temp_dir),
+                    now=datetime(2026, 7, 15, 9, 52, 0).astimezone(timezone.utc),
+                )
+            )
+
+            self.assertEqual(len(updates), 1)
+            self.assertEqual(updates[0].session_id, "process-51005")
+            self.assertEqual(updates[0].title, "Qoder Desktop")
+            self.assertEqual(updates[0].status, SessionStatus.IDLE)
+            self.assertEqual(updates[0].status_source, "desktop-process")
+
+    def test_qoder_current_cancelled_history_state_overrides_older_suspended_state(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            old_log_path = Path(temp_dir) / "20260714T092500" / "questWindow" / "agent.log"
+            current_log_path = Path(temp_dir) / "20260715T095144" / "questWindow" / "agent.log"
+            old_log_path.parent.mkdir(parents=True)
+            current_log_path.parent.mkdir(parents=True)
+            old_log_path.write_text(
+                '2026-07-14 09:25:37.860 [info] [ChatPanel.acpBlocks] {"taskId":"task-alpha","sessionId":"task-alpha.session.execution","state":"suspended"}\n',
+                encoding="utf-8",
+            )
+            current_log_path.write_text(
+                '2026-07-15 09:51:48.417 [info] [ChatSessionService] loadHistory.authorityContext {"sessionId":"task-alpha.session.execution","sessionType":"quest","taskId":"task-alpha","filePath":"/Users/Gao/Documents/StudyCC"}\n'
+                '2026-07-15 09:51:48.563 [info] [ChatPanel.acpBlocks] {"taskId":"task-alpha","sessionId":"task-alpha.session.execution","state":"cancelled"}\n',
+                encoding="utf-8",
+            )
+            rows = [
+                "process_id=51005\tprocess_name=/Applications/Qoder.app/Contents/MacOS/Electron\tcommand=/Applications/Qoder.app/Contents/MacOS/Electron\tcpu_percent=0.0\tstat=S"
+            ]
+
+            updates = list(
+                _classify_process_rows(
+                    rows,
+                    qoder_logs_dir=Path(temp_dir),
+                    now=datetime(2026, 7, 15, 9, 52, 0).astimezone(timezone.utc),
+                )
+            )
+
+            self.assertEqual(len(updates), 1)
+            self.assertEqual(updates[0].session_id, "process-51005")
+            self.assertEqual(updates[0].title, "Qoder Desktop")
+            self.assertEqual(updates[0].status, SessionStatus.IDLE)
+            self.assertEqual(updates[0].status_source, "desktop-process")
+
+    def test_qoder_multiple_task_logs_create_separate_conversation_updates(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / "20260713T110839" / "questWindow" / "quest.log"
+            agent_log_path = log_path.with_name("agent.log")
+            log_path.parent.mkdir(parents=True)
+            agent_log_path.write_text(
+                '2026-07-13 11:09:59.009 [info] [ChatSessionService] rebindSessionAuthorityFromTask.resolve {"sessionId":"task-alpha.session.execution","taskId":"task-alpha","filePath":"/Users/Gao/Documents/QoderCN/2026-07-13/chat-1"}\n'
+                '2026-07-13 11:12:30.916 [info] [ChatSessionService] rebindSessionAuthorityFromTask.resolve {"sessionId":"task-beta.session.execution","taskId":"task-beta","filePath":"/Users/Gao/Documents/QoderCN/2026-07-10/chat-2"}\n',
+                encoding="utf-8",
+            )
+            log_path.write_text(
+                '2026-07-13 11:10:08.022 [info] task.status.update {"taskId":"task-alpha.session.execution","status":"Completed"}\n'
+                '2026-07-13 11:12:26.675 [info] task.status.update {"taskId":"task-beta.session.execution","status":"Running"}\n',
+                encoding="utf-8",
+            )
+            rows = [
+                "process_id=51005\tprocess_name=/Applications/Qo\tcommand=/Applications/Qoder CN.app/Contents/MacOS/Electron --aicoding-open-agents-window\tcpu_percent=0.0\tstat=S"
+            ]
+
+            updates = list(
+                _classify_process_rows(
+                    rows,
+                    qoder_logs_dir=Path(temp_dir),
+                    now=datetime(2026, 7, 13, 11, 12, 30).astimezone(timezone.utc),
+                )
+            )
+
+            by_id = {update.session_id: update for update in updates}
+            self.assertEqual(set(by_id), {"qoder-task-alpha", "qoder-task-beta"})
+            self.assertEqual(by_id["qoder-task-alpha"].title, "Qoder CN Desktop - 对话")
+            self.assertEqual(by_id["qoder-task-alpha"].status, SessionStatus.NEEDS_ACTION)
+            self.assertEqual(by_id["qoder-task-beta"].title, "Qoder CN Desktop - 对话")
+            self.assertEqual(by_id["qoder-task-beta"].status, SessionStatus.RUNNING)
 
     def test_qoder_after_refresh_final_status_overrides_pushed_running_status(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1003,9 +2494,10 @@ class SourceTests(unittest.TestCase):
             )
 
             self.assertEqual(len(updates), 1)
-            self.assertEqual(updates[0].status, SessionStatus.IDLE)
+            self.assertEqual(updates[0].status, SessionStatus.NEEDS_ACTION)
+            self.assertTrue(updates[0].view_ack_required)
             self.assertEqual(updates[0].status_source, "qoder-log")
-            self.assertEqual(updates[0].updated_at, datetime(2026, 7, 10, 10, 34, 50).astimezone(timezone.utc))
+            self.assertEqual(updates[0].updated_at, datetime(2026, 7, 10, 10, 34, 45, 999000).astimezone(timezone.utc))
 
     def test_qoder_after_refresh_ignores_stale_completed_snapshot_when_pushed_status_is_running(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1102,6 +2594,214 @@ class SourceTests(unittest.TestCase):
 
             self.assertEqual(len(updates), 1)
             self.assertEqual(updates[0].status, SessionStatus.NEEDS_ACTION)
+            self.assertFalse(updates[0].view_ack_required)
+            self.assertEqual(updates[0].status_source, "qoder-log")
+
+    def test_qoder_suspended_transition_is_not_overridden_by_same_timestamp_streaming_snapshot(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / "20260710T102318" / "questWindow" / "agent.log"
+            log_path.parent.mkdir(parents=True)
+            log_path.write_text(
+                "2026-07-10 10:21:21.448 [info] [ACPProgressStateMachine] State transition: streaming -> suspended, trigger: resume_tool_call, sessionId: task-2.session.execution\n"
+                '2026-07-10 10:21:21.448 [info] [ChatPanel.acpBlocks] {"taskId":"task-2","sessionId":"task-2.session.execution","state":"streaming"}\n',
+                encoding="utf-8",
+            )
+            rows = [
+                "process_id=51005\tprocess_name=/Applications/Qo\tcommand=/Applications/Qoder CN.app/Contents/MacOS/Electron --aicoding-open-agents-window\tcpu_percent=0.0\tstat=S"
+            ]
+
+            updates = list(
+                _classify_process_rows(
+                    rows,
+                    qoder_logs_dir=Path(temp_dir),
+                    now=datetime(2026, 7, 10, 10, 21, 25).astimezone(timezone.utc),
+                )
+            )
+
+            self.assertEqual(len(updates), 1)
+            self.assertEqual(updates[0].status, SessionStatus.NEEDS_ACTION)
+            self.assertFalse(updates[0].view_ack_required)
+            self.assertEqual(updates[0].status_source, "qoder-log")
+
+    def test_qoder_agent_error_state_survives_cancelled_cleanup(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / "20260715T151026" / "questWindow" / "agent.log"
+            log_path.parent.mkdir(parents=True)
+            log_path.write_text(
+                "2026-07-15 15:11:04.237 [info] [ACPProgressStateMachine] State transition: prompting -> error, trigger: chat_finish:net/http: request canceled (Client.Timeout or context cancellation while reading body):500, sessionId: task-b251.session.execution\n"
+                '2026-07-15 15:11:04.238 [info] [ChatSessionService] ACP stream completed: {"sessionId":"task-b251.session.execution","state":"error","totalUpdates":4}\n'
+                "2026-07-15 15:11:04.253 [info] [ACPProgressStateMachine] State transition: error -> cancelled, trigger: session/prompt:cancelled, sessionId: task-b251.session.execution\n"
+                '2026-07-15 15:11:04.265 [info] [ChatPanel.acpBlocks] {"taskId":"task-b251","sessionId":"task-b251.session.execution","progressLen":5,"blocksLen":3,"state":"cancelled"}\n',
+                encoding="utf-8",
+            )
+            rows = [
+                "process_id=60489\tprocess_name=/Applications/Qoder.app/Contents/MacOS/Electron\tcommand=/Applications/Qoder.app/Contents/MacOS/Electron\tcpu_percent=0.0\tstat=S"
+            ]
+
+            updates = list(
+                _classify_process_rows(
+                    rows,
+                    qoder_logs_dir=Path(temp_dir),
+                    now=datetime(2026, 7, 15, 15, 11, 10).astimezone(timezone.utc),
+                )
+            )
+
+            self.assertEqual(len(updates), 1)
+            self.assertEqual(updates[0].session_id, "qoder-task-b251")
+            self.assertEqual(updates[0].status, SessionStatus.NEEDS_ACTION)
+            self.assertTrue(updates[0].view_ack_required)
+            self.assertEqual(updates[0].status_source, "qoder-log")
+
+    def test_qoder_suspended_payload_state_counts_as_needs_action(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / "20260710T102318" / "questWindow" / "agent.log"
+            log_path.parent.mkdir(parents=True)
+            log_path.write_text(
+                '2026-07-10 10:21:21.448 [info] [ChatPanel.acpBlocks] {"taskId":"task-2","sessionId":"task-2.session.execution","state":"suspended"}\n',
+                encoding="utf-8",
+            )
+            rows = [
+                "process_id=51005\tprocess_name=/Applications/Qo\tcommand=/Applications/Qoder CN.app/Contents/MacOS/Electron --aicoding-open-agents-window\tcpu_percent=0.0\tstat=S"
+            ]
+
+            updates = list(
+                _classify_process_rows(
+                    rows,
+                    qoder_logs_dir=Path(temp_dir),
+                    now=datetime(2026, 7, 10, 10, 21, 25).astimezone(timezone.utc),
+                )
+            )
+
+            self.assertEqual(len(updates), 1)
+            self.assertEqual(updates[0].status, SessionStatus.NEEDS_ACTION)
+            self.assertFalse(updates[0].view_ack_required)
+            self.assertEqual(updates[0].status_source, "qoder-log")
+
+    def test_qoder_action_required_with_suspended_acp_state_needs_user_attention(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / "20260710T102318" / "questWindow" / "agent.log"
+            log_path.parent.mkdir(parents=True)
+            log_path.write_text(
+                '2026-07-10 10:21:21.448 [info] task.status.update.afterRefresh {"taskId":"task-2","pushedStatus":"ActionRequired","finalStatus":"ActionRequired","acpState":"suspended"}\n',
+                encoding="utf-8",
+            )
+            rows = [
+                "process_id=51005\tprocess_name=/Applications/Qo\tcommand=/Applications/Qoder CN.app/Contents/MacOS/Electron --aicoding-open-agents-window\tcpu_percent=0.0\tstat=S"
+            ]
+
+            updates = list(
+                _classify_process_rows(
+                    rows,
+                    qoder_logs_dir=Path(temp_dir),
+                    now=datetime(2026, 7, 10, 10, 21, 25).astimezone(timezone.utc),
+                )
+            )
+
+            self.assertEqual(len(updates), 1)
+            self.assertEqual(updates[0].status, SessionStatus.NEEDS_ACTION)
+            self.assertFalse(updates[0].view_ack_required)
+            self.assertEqual(updates[0].status_source, "qoder-log")
+
+    def test_qoder_prompt_payload_state_falls_back_to_idle_desktop_entry(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / "20260710T102318" / "questWindow" / "agent.log"
+            log_path.parent.mkdir(parents=True)
+            log_path.write_text(
+                '2026-07-10 10:21:21.448 [info] [ChatPanel.acpBlocks] {"taskId":"task-2","sessionId":"task-2.session.execution","state":"prompt"}\n',
+                encoding="utf-8",
+            )
+            rows = [
+                "process_id=51005\tprocess_name=/Applications/Qo\tcommand=/Applications/Qoder CN.app/Contents/MacOS/Electron --aicoding-open-agents-window\tcpu_percent=0.0\tstat=S"
+            ]
+
+            updates = list(
+                _classify_process_rows(
+                    rows,
+                    qoder_logs_dir=Path(temp_dir),
+                    now=datetime(2026, 7, 10, 10, 21, 25).astimezone(timezone.utc),
+                )
+            )
+
+            self.assertEqual(len(updates), 1)
+            self.assertEqual(updates[0].session_id, "process-51005")
+            self.assertEqual(updates[0].title, "Qoder CN Desktop")
+            self.assertEqual(updates[0].status, SessionStatus.IDLE)
+            self.assertEqual(updates[0].status_source, "desktop-process")
+
+    def test_qoder_user_attention_state_is_not_cleared_by_view_ack(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / "20260710T102318" / "questWindow" / "agent.log"
+            log_path.parent.mkdir(parents=True)
+            log_path.write_text(
+                '2026-07-10 10:21:21.448 [info] [ChatPanel.acpBlocks] {"taskId":"task-2","sessionId":"task-2.session.execution","state":"suspended"}\n',
+                encoding="utf-8",
+            )
+            rows = [
+                "process_id=51005\tprocess_name=/Applications/Qo\tcommand=/Applications/Qoder CN.app/Contents/MacOS/Electron --aicoding-open-agents-window\tcpu_percent=0.0\tstat=S"
+            ]
+
+            updates = list(
+                _classify_process_rows(
+                    rows,
+                    qoder_logs_dir=Path(temp_dir),
+                    now=datetime(2026, 7, 10, 10, 21, 25).astimezone(timezone.utc),
+                )
+            )
+
+            self.assertEqual(len(updates), 1)
+            self.assertEqual(updates[0].status, SessionStatus.NEEDS_ACTION)
+            self.assertFalse(updates[0].view_ack_required)
+            self.assertEqual(updates[0].status_source, "qoder-log")
+
+    def test_qoder_user_attention_state_before_monitor_start_still_needs_action(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / "20260710T102318" / "questWindow" / "agent.log"
+            log_path.parent.mkdir(parents=True)
+            log_path.write_text(
+                '2026-07-10 10:21:21.448 [info] [ChatPanel.acpBlocks] {"taskId":"task-2","sessionId":"task-2.session.execution","state":"suspended"}\n',
+                encoding="utf-8",
+            )
+            rows = [
+                "process_id=51005\tprocess_name=/Applications/Qo\tcommand=/Applications/Qoder CN.app/Contents/MacOS/Electron --aicoding-open-agents-window\tcpu_percent=0.0\tstat=S"
+            ]
+
+            updates = list(
+                _classify_process_rows(
+                    rows,
+                    qoder_logs_dir=Path(temp_dir),
+                    source_started_at=datetime(2026, 7, 10, 10, 22, 0).astimezone(timezone.utc),
+                    now=datetime(2026, 7, 10, 10, 22, 10).astimezone(timezone.utc),
+                )
+            )
+
+            self.assertEqual(len(updates), 1)
+            self.assertEqual(updates[0].status, SessionStatus.NEEDS_ACTION)
+            self.assertFalse(updates[0].view_ack_required)
+            self.assertEqual(updates[0].status_source, "qoder-log")
+
+    def test_qoder_payload_requiring_user_input_counts_as_needs_action(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / "20260710T102318" / "questWindow" / "agent.log"
+            log_path.parent.mkdir(parents=True)
+            log_path.write_text(
+                '2026-07-10 10:21:21.448 [info] [ChatPanel.acpBlocks] {"taskId":"task-2","sessionId":"task-2.session.execution","state":"streaming","requiresApproval":true}\n',
+                encoding="utf-8",
+            )
+            rows = [
+                "process_id=51005\tprocess_name=/Applications/Qo\tcommand=/Applications/Qoder CN.app/Contents/MacOS/Electron --aicoding-open-agents-window\tcpu_percent=0.0\tstat=S"
+            ]
+
+            updates = list(
+                _classify_process_rows(
+                    rows,
+                    qoder_logs_dir=Path(temp_dir),
+                    now=datetime(2026, 7, 10, 10, 21, 25).astimezone(timezone.utc),
+                )
+            )
+
+            self.assertEqual(len(updates), 1)
+            self.assertEqual(updates[0].status, SessionStatus.NEEDS_ACTION)
+            self.assertFalse(updates[0].view_ack_required)
             self.assertEqual(updates[0].status_source, "qoder-log")
 
     def test_qoder_agent_state_machine_groups_uuid_session_transitions(self):
@@ -1115,7 +2815,7 @@ class SourceTests(unittest.TestCase):
                 encoding="utf-8",
             )
             rows = [
-                "process_id=51005\tprocess_name=/Applications/Qo\tcommand=/Applications/Qoder.app/Contents/MacOS/Qoder\tcpu_percent=0.0\tstat=S"
+                "process_id=51005\tprocess_name=/Applications/Qo\tcommand=/Applications/Qoder.app/Contents/MacOS/Electron --app-path=/Applications/Qoder.app/Contents/Resources/app.asar\tcpu_percent=0.0\tstat=S"
             ]
 
             updates = list(
@@ -1127,7 +2827,7 @@ class SourceTests(unittest.TestCase):
             )
 
             self.assertEqual(len(updates), 1)
-            self.assertEqual(updates[0].status, SessionStatus.IDLE)
+            self.assertEqual(updates[0].status, SessionStatus.NEEDS_ACTION)
             self.assertEqual(updates[0].status_source, "qoder-log")
 
     def test_qoder_same_task_completed_log_overrides_older_agent_streaming_log(self):
@@ -1156,8 +2856,76 @@ class SourceTests(unittest.TestCase):
             )
 
             self.assertEqual(len(updates), 1)
-            self.assertEqual(updates[0].status, SessionStatus.IDLE)
+            self.assertEqual(updates[0].status, SessionStatus.NEEDS_ACTION)
             self.assertEqual(updates[0].status_source, "qoder-log")
+
+    def test_qoder_running_signal_survives_verbose_log_tail(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / "20260710T102318" / "questWindow" / "agent.log"
+            log_path.parent.mkdir(parents=True)
+            noisy_lines = "".join(
+                f"2026-07-10 10:59:{index % 60:02d}.000 [info] [InlineChatInput] verbose noise {index:04d} {'x' * 80}\n"
+                for index in range(1600)
+            )
+            log_path.write_text(
+                '2026-07-10 10:59:57.244 [info] [ChatPanel.acpBlocks] {"taskId":"task-2","sessionId":"task-2.session.execution","progressLen":456,"blocksLen":14,"state":"streaming"}\n'
+                + noisy_lines,
+                encoding="utf-8",
+            )
+            rows = [
+                "process_id=51005\tprocess_name=/Applications/Qo\tcommand=/Applications/Qoder CN.app/Contents/MacOS/Electron --aicoding-open-agents-window\tcpu_percent=0.0\tstat=S"
+            ]
+
+            updates = list(
+                _classify_process_rows(
+                    rows,
+                    qoder_logs_dir=Path(temp_dir),
+                    now=datetime(2026, 7, 10, 11, 0, 0).astimezone(timezone.utc),
+                )
+            )
+
+            self.assertEqual(len(updates), 1)
+            self.assertEqual(updates[0].session_id, "qoder-task-2")
+            self.assertEqual(updates[0].status, SessionStatus.RUNNING)
+            self.assertEqual(updates[0].status_source, "qoder-log")
+
+    def test_qoder_short_run_completion_keeps_running_visible_for_one_poll(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / "20260710T102318" / "questWindow" / "quest.log"
+            log_path.parent.mkdir(parents=True)
+            log_path.write_text(
+                '2026-07-10 10:59:55.950 [info] task.status.update {"taskId":"task-2.session.execution","status":"Running"}\n'
+                '2026-07-10 11:00:01.632 [info] task.status.update.afterRefresh {"taskId":"task-2.session.execution","pushedStatus":"Completed","refreshedStatus":"Completed","finalStatus":"Completed","acpState":"completed"}\n',
+                encoding="utf-8",
+            )
+            rows = [
+                "process_id=51005\tprocess_name=/Applications/Qo\tcommand=/Applications/Qoder CN.app/Contents/MacOS/Electron --aicoding-open-agents-window\tcpu_percent=0.0\tstat=S"
+            ]
+
+            updates = list(
+                _classify_process_rows(
+                    rows,
+                    qoder_logs_dir=Path(temp_dir),
+                    now=datetime(2026, 7, 10, 11, 0, 3).astimezone(timezone.utc),
+                )
+            )
+
+            self.assertEqual(len(updates), 1)
+            self.assertEqual(updates[0].session_id, "qoder-task-2")
+            self.assertEqual(updates[0].status, SessionStatus.RUNNING)
+            self.assertFalse(updates[0].view_ack_required)
+
+            updates_after_visibility_window = list(
+                _classify_process_rows(
+                    rows,
+                    qoder_logs_dir=Path(temp_dir),
+                    now=datetime(2026, 7, 10, 11, 0, 11).astimezone(timezone.utc),
+                )
+            )
+
+            self.assertEqual(len(updates_after_visibility_window), 1)
+            self.assertEqual(updates_after_visibility_window[0].status, SessionStatus.NEEDS_ACTION)
+            self.assertTrue(updates_after_visibility_window[0].view_ack_required)
 
     def test_qoder_anonymous_prompt_log_does_not_override_newer_completed_task_state(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1185,7 +2953,7 @@ class SourceTests(unittest.TestCase):
             )
 
             self.assertEqual(len(updates), 1)
-            self.assertEqual(updates[0].status, SessionStatus.IDLE)
+            self.assertEqual(updates[0].status, SessionStatus.NEEDS_ACTION)
             self.assertEqual(updates[0].status_source, "qoder-log")
 
     def test_qoder_keeps_other_running_task_when_same_agent_log_later_records_completed_task(self):
@@ -1209,9 +2977,12 @@ class SourceTests(unittest.TestCase):
                 )
             )
 
-            self.assertEqual(len(updates), 1)
-            self.assertEqual(updates[0].status, SessionStatus.RUNNING)
-            self.assertEqual(updates[0].status_source, "qoder-log")
+            by_id = {update.session_id: update for update in updates}
+            self.assertEqual(set(by_id), {"qoder-task-1", "qoder-task-2"})
+            self.assertEqual(by_id["qoder-task-1"].status, SessionStatus.NEEDS_ACTION)
+            self.assertEqual(by_id["qoder-task-2"].status, SessionStatus.RUNNING)
+            self.assertEqual(by_id["qoder-task-1"].status_source, "qoder-log")
+            self.assertEqual(by_id["qoder-task-2"].status_source, "qoder-log")
 
     def test_qoder_completed_log_replaces_previous_running_poll_in_store(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1244,7 +3015,8 @@ class SourceTests(unittest.TestCase):
 
             sessions = store.sessions(now=second_poll_at)
             self.assertEqual(len(sessions), 1)
-            self.assertEqual(sessions[0].status, SessionStatus.IDLE)
+            self.assertEqual(sessions[0].status, SessionStatus.NEEDS_ACTION)
+            self.assertTrue(sessions[0].view_ack_required)
             self.assertEqual(sessions[0].status_source, "qoder-log")
 
     def test_qoder_desktop_process_uses_latest_task_status_across_windows(self):
@@ -1254,7 +3026,7 @@ class SourceTests(unittest.TestCase):
             older_log_path.parent.mkdir(parents=True)
             newer_log_path.parent.mkdir(parents=True)
             older_log_path.write_text(
-                '2026-07-10 10:25:58.542 [info] task.status.update.afterRefresh {"taskId":"task-1.session.execution","finalStatus":"Completed"}\n',
+                '2026-07-10 10:25:58.542 [info] task.status.update.afterRefresh {"taskId":"task-1.session.execution","pushedStatus":"Running","finalStatus":"Completed"}\n',
                 encoding="utf-8",
             )
             newer_log_path.write_text(
@@ -1273,9 +3045,12 @@ class SourceTests(unittest.TestCase):
                 )
             )
 
-            self.assertEqual(len(updates), 1)
-            self.assertEqual(updates[0].status, SessionStatus.RUNNING)
-            self.assertEqual(updates[0].status_source, "qoder-log")
+            by_id = {update.session_id: update for update in updates}
+            self.assertEqual(set(by_id), {"qoder-task-1", "qoder-task-2"})
+            self.assertEqual(by_id["qoder-task-1"].status, SessionStatus.NEEDS_ACTION)
+            self.assertEqual(by_id["qoder-task-2"].status, SessionStatus.RUNNING)
+            self.assertEqual(by_id["qoder-task-1"].status_source, "qoder-log")
+            self.assertEqual(by_id["qoder-task-2"].status_source, "qoder-log")
 
     def test_qoder_recent_running_window_is_not_overridden_by_other_completed_window(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1288,7 +3063,7 @@ class SourceTests(unittest.TestCase):
                 encoding="utf-8",
             )
             completed_log_path.write_text(
-                '2026-07-10 10:27:20.100 [info] task.status.update.afterRefresh {"taskId":"task-2.session.execution","finalStatus":"Completed"}\n',
+                '2026-07-10 10:27:20.100 [info] task.status.update.afterRefresh {"taskId":"task-2.session.execution","pushedStatus":"Running","finalStatus":"Completed"}\n',
                 encoding="utf-8",
             )
             rows = [
@@ -1303,9 +3078,12 @@ class SourceTests(unittest.TestCase):
                 )
             )
 
-            self.assertEqual(len(updates), 1)
-            self.assertEqual(updates[0].status, SessionStatus.RUNNING)
-            self.assertEqual(updates[0].status_source, "qoder-log")
+            by_id = {update.session_id: update for update in updates}
+            self.assertEqual(set(by_id), {"qoder-task-1", "qoder-task-2"})
+            self.assertEqual(by_id["qoder-task-1"].status, SessionStatus.RUNNING)
+            self.assertEqual(by_id["qoder-task-2"].status, SessionStatus.NEEDS_ACTION)
+            self.assertEqual(by_id["qoder-task-1"].status_source, "qoder-log")
+            self.assertEqual(by_id["qoder-task-2"].status_source, "qoder-log")
 
     def test_qoder_after_refresh_falls_back_to_pushed_status_when_final_status_is_missing(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1378,6 +3156,7 @@ class SourceTests(unittest.TestCase):
 
             self.assertEqual(len(updates), 1)
             self.assertEqual(updates[0].status, SessionStatus.NEEDS_ACTION)
+            self.assertTrue(updates[0].view_ack_required)
             self.assertEqual(updates[0].status_source, "qoder-log")
 
     def test_qoder_needs_action_task_takes_priority_over_other_running_task(self):
@@ -1401,9 +3180,12 @@ class SourceTests(unittest.TestCase):
                 )
             )
 
-            self.assertEqual(len(updates), 1)
-            self.assertEqual(updates[0].status, SessionStatus.NEEDS_ACTION)
-            self.assertEqual(updates[0].status_source, "qoder-log")
+            by_id = {update.session_id: update for update in updates}
+            self.assertEqual(set(by_id), {"qoder-task-running", "qoder-task-waiting"})
+            self.assertEqual(by_id["qoder-task-running"].status, SessionStatus.RUNNING)
+            self.assertEqual(by_id["qoder-task-waiting"].status, SessionStatus.NEEDS_ACTION)
+            self.assertEqual(by_id["qoder-task-running"].status_source, "qoder-log")
+            self.assertEqual(by_id["qoder-task-waiting"].status_source, "qoder-log")
 
     def test_qoder_cn_desktop_ignores_regular_qoder_logs(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1412,7 +3194,7 @@ class SourceTests(unittest.TestCase):
             cn_log_path.parent.mkdir(parents=True)
             regular_log_path.parent.mkdir(parents=True)
             cn_log_path.write_text(
-                '2026-07-10 11:00:03.940 [info] task.status.update.afterRefresh {"taskId":"task-cn.session.execution","finalStatus":"Completed"}\n',
+                '2026-07-10 11:00:03.940 [info] task.status.update.afterRefresh {"taskId":"task-cn.session.execution","pushedStatus":"Running","finalStatus":"Completed"}\n',
                 encoding="utf-8",
             )
             regular_log_path.write_text(
@@ -1432,7 +3214,7 @@ class SourceTests(unittest.TestCase):
             )
 
             self.assertEqual(len(updates), 1)
-            self.assertEqual(updates[0].status, SessionStatus.IDLE)
+            self.assertEqual(updates[0].status, SessionStatus.NEEDS_ACTION)
             self.assertEqual(updates[0].status_source, "qoder-log")
 
     def test_regular_qoder_desktop_ignores_qoder_cn_logs(self):
@@ -1446,7 +3228,7 @@ class SourceTests(unittest.TestCase):
                 encoding="utf-8",
             )
             regular_log_path.write_text(
-                '2026-07-10 10:21:29.448 [info] task.status.update.afterRefresh {"taskId":"regular-session","finalStatus":"Completed"}\n',
+                '2026-07-10 10:21:29.448 [info] task.status.update.afterRefresh {"taskId":"regular-session","pushedStatus":"Running","finalStatus":"Completed"}\n',
                 encoding="utf-8",
             )
             rows = [
@@ -1462,7 +3244,7 @@ class SourceTests(unittest.TestCase):
             )
 
             self.assertEqual(len(updates), 1)
-            self.assertEqual(updates[0].status, SessionStatus.IDLE)
+            self.assertEqual(updates[0].status, SessionStatus.NEEDS_ACTION)
             self.assertEqual(updates[0].status_source, "qoder-log")
 
     def test_qoder_log_scan_prefers_recently_modified_session_dirs_over_names(self):
@@ -1488,6 +3270,7 @@ class SourceTests(unittest.TestCase):
                 _classify_process_rows(
                     rows,
                     qoder_logs_dir=Path(temp_dir),
+                    source_started_at=datetime(2026, 7, 10, 10, 30, 0).astimezone(timezone.utc),
                     now=datetime(2026, 7, 10, 10, 30, 20).astimezone(timezone.utc),
                 )
             )
@@ -1553,14 +3336,26 @@ class SourceTests(unittest.TestCase):
         self.assertIn("cursor-agent|cursor-agent.exe", script)
         self.assertIn("qwen|qwen-code|qwen.exe", script)
         self.assertIn("opencode|opencode.exe", script)
-        self.assertIn("workbuddy|workbuddy.exe", script)
+        self.assertIn("workbuddy|workbuddy.exe|codebuddy|codebuddy.exe", script)
         self.assertIn("qoder|qoder.exe|qodercn|qodercn.exe", script)
         self.assertIn("/chatgpt.app/contents/macos/chatgpt", script)
         self.assertIn("/perplexity.app/contents/macos/perplexity", script)
         self.assertIn("/workbuddy.app/contents/macos/workbuddy", script)
+        self.assertIn("/workbuddy.app/contents/macos/electron", script)
         self.assertIn("/qoder.app/contents/macos/qoder", script)
+        self.assertIn("/qoder.app/contents/macos/electron", script)
         self.assertIn("qodercn|qodercn.exe", script)
         self.assertIn("/qoder\\ cn.app/contents/macos/electron", script)
+
+    def test_posix_process_command_skips_ignored_desktop_helpers_before_emit(self):
+        script = _posix_process_command()[-1]
+
+        self.assertIn("ignored_desktop_process=0", script)
+        self.assertIn('if [ "$shell_process" = "0" ] && [ "$ignored_desktop_process" = "0" ]; then', script)
+        self.assertIn("/main/daemon-app-server-entry.js", script)
+        self.assertIn("/main/sidecar-entry.js", script)
+        self.assertIn("/cli/bin/codebuddy\\ --serve", script)
+        self.assertIn("mcp-app-bootstrap.cjs", script)
 
     def test_posix_process_command_matches_desktop_app_paths_with_spaces(self):
         script = _posix_process_command()[-1]
@@ -1569,7 +3364,7 @@ class SourceTests(unittest.TestCase):
         self.assertIn('case "$args" in *.app/Contents/MacOS/*|*.app/contents/macos/*)', script)
         self.assertIn('case "$exe:$args_lc" in', script)
         self.assertIn("/qoder\\ cn.app/contents/macos/electron*", script)
-        self.assertIn('case "$exe" in sh|bash|zsh|fish) shell_process=1 ;;', script)
+        self.assertIn('case "$exe_raw" in sh|bash|zsh|fish) shell_process=1 ;;', script)
 
     def test_posix_process_command_skips_lsof_for_claude_cli(self):
         script = _posix_process_command()[-1]
@@ -1604,7 +3399,7 @@ class SourceTests(unittest.TestCase):
         self.assertIn("next", script)
 
     def test_external_source_timeout_allows_macos_cwd_lookup_within_poll_budget(self):
-        self.assertGreaterEqual(SOURCE_COMMAND_TIMEOUT_SECONDS, 3.0)
+        self.assertGreaterEqual(SOURCE_COMMAND_TIMEOUT_SECONDS, 4.0)
         self.assertLessEqual(SOURCE_COMMAND_TIMEOUT_SECONDS, 4.0)
 
     def test_ignores_codex_desktop_internal_processes(self):

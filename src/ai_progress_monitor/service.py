@@ -78,6 +78,9 @@ class MonitorService:
                 return
         if source == "process" and updates:
             self._process_empty_started_at = None
+        if source == "process":
+            updates = self._retain_recent_full_process_desktop_sessions(updates)
+            updates = self._add_desktop_app_fallbacks(updates)
         self.store.replace_source_updates(source, updates)
         if source == "process" and not updates:
             self._process_empty_started_at = None
@@ -96,20 +99,17 @@ class MonitorService:
         full_process_ids = {
             session.process_id
             for session in sessions
-            if session.source != "process" and session.process_id is not None
+            if session.process_id is not None and (session.source != "process" or _is_full_process_desktop_session(session))
         }
         full_desktop_tools = {
             session.tool
             for session in sessions
-            if session.source != "process" and session.surface == SurfaceKind.DESKTOP and session.tool != ToolKind.UNKNOWN
+            if _is_full_desktop_session(session) and session.tool != ToolKind.UNKNOWN
         }
         full_desktop_display_names = {
             session.tool_display_name
             for session in sessions
-            if session.source != "process"
-            and session.surface == SurfaceKind.DESKTOP
-            and session.tool == ToolKind.UNKNOWN
-            and session.tool_display_name
+            if _is_full_desktop_session(session) and session.tool == ToolKind.UNKNOWN and session.tool_display_name
         }
         return [
             session
@@ -126,6 +126,8 @@ class MonitorService:
     ) -> bool:
         if session.source != "process":
             return False
+        if _is_full_process_desktop_session(session):
+            return False
         if session.process_id in full_process_ids:
             return True
         if session.surface != SurfaceKind.DESKTOP:
@@ -134,8 +136,54 @@ class MonitorService:
             return True
         return bool(session.tool == ToolKind.UNKNOWN and session.tool_display_name in full_desktop_display_names)
 
+    def _retain_recent_full_process_desktop_sessions(self, updates: List[SessionUpdate]) -> List[SessionUpdate]:
+        live_ids = {update.session_id for update in updates}
+        live_desktop_process_ids = {
+            update.process_id
+            for update in updates
+            if update.source == "process" and update.surface == SurfaceKind.DESKTOP and update.process_id is not None
+        }
+        current = self.now()
+        retained = [
+            session
+            for session in self.store.sessions(now=current)
+            if session.session_id not in live_ids
+            and _is_full_process_desktop_session(session)
+            and session.process_id in live_desktop_process_ids
+            and not self._is_expired_retained_process_desktop_session(session, current)
+        ]
+        return updates + retained
+
+    def _add_desktop_app_fallbacks(self, updates: List[SessionUpdate]) -> List[SessionUpdate]:
+        existing_fallback_keys = {
+            _desktop_app_fallback_key(update)
+            for update in updates
+            if _is_desktop_app_idle_fallback(update)
+        }
+        fallbacks: List[SessionUpdate] = []
+        current = self.now()
+        for update in updates:
+            if not _is_full_process_desktop_session(update):
+                continue
+            fallback = _desktop_app_fallback_for_full_process_session(update, current)
+            if fallback is None:
+                continue
+            key = _desktop_app_fallback_key(fallback)
+            if key in existing_fallback_keys:
+                continue
+            existing_fallback_keys.add(key)
+            fallbacks.append(fallback)
+        return updates + fallbacks
+
+    def _is_expired_retained_process_desktop_session(self, session: SessionUpdate, now: datetime) -> bool:
+        viewed_at = self.store.session_viewed_at(session.session_id)
+        retention_started_at = viewed_at if viewed_at is not None and session.status == SessionStatus.IDLE else session.updated_at
+        return (now - retention_started_at).total_seconds() >= self.viewed_desktop_idle_visible_seconds
+
     def _is_expired_viewed_desktop_idle_session(self, session: SessionUpdate, now: datetime) -> bool:
-        if session.source == "process":
+        if _is_desktop_app_idle_fallback(session):
+            return False
+        if session.source == "process" and not _is_full_process_desktop_session(session):
             return False
         if session.surface != SurfaceKind.DESKTOP:
             return False
@@ -237,6 +285,7 @@ class MonitorService:
 
 
 def session_to_dict(session: SessionUpdate) -> dict:
+    monitoring_level = "process_only" if session.source == "process" and not _is_full_process_desktop_session(session) else "full"
     return {
         "session_id": session.session_id,
         "title": session.title,
@@ -255,7 +304,7 @@ def session_to_dict(session: SessionUpdate) -> dict:
             "prompt": clean_terminal_text(session.safe_action.prompt),
         },
         "source": session.source,
-        "monitoring_level": "process_only" if session.source == "process" else "full",
+        "monitoring_level": monitoring_level,
         "window_id": session.window_id,
         "process_id": session.process_id,
         "process_name": session.process_name,
@@ -266,3 +315,64 @@ def session_to_dict(session: SessionUpdate) -> dict:
         "status_source": session.status_source,
         "generated_conversation_path": session.generated_conversation_path,
     }
+
+
+def _is_full_process_desktop_session(session: SessionUpdate) -> bool:
+    return (
+        session.source == "process"
+        and session.surface == SurfaceKind.DESKTOP
+        and session.status_source in {"qoder-log", "workbuddy-db"}
+    )
+
+
+def _is_full_desktop_session(session: SessionUpdate) -> bool:
+    if session.surface != SurfaceKind.DESKTOP:
+        return False
+    if session.source == "process":
+        return _is_full_process_desktop_session(session)
+    return True
+
+
+def _is_desktop_app_idle_fallback(session: SessionUpdate) -> bool:
+    return (
+        session.source == "process"
+        and session.surface == SurfaceKind.DESKTOP
+        and session.status == SessionStatus.IDLE
+        and session.status_source == "desktop-process"
+    )
+
+
+def _desktop_app_fallback_key(session: SessionUpdate):
+    if session.process_id is not None:
+        return ("process", session.process_id)
+    if session.tool != ToolKind.UNKNOWN:
+        return ("tool", session.tool.value)
+    return ("display", session.tool_display_name or session.title)
+
+
+def _desktop_app_fallback_for_full_process_session(
+    session: SessionUpdate,
+    updated_at: datetime,
+) -> Optional[SessionUpdate]:
+    process_id = session.focus_process_id if session.focus_process_id is not None else session.process_id
+    if process_id is None:
+        return None
+    display_name = session.tool_display_name or session.focus_app_name or session.title.split(" Desktop", 1)[0].strip()
+    if not display_name:
+        display_name = "AI"
+    return SessionUpdate(
+        session_id=f"process-{process_id}",
+        title=f"{display_name} Desktop",
+        tool=session.tool,
+        surface=SurfaceKind.DESKTOP,
+        status=SessionStatus.IDLE,
+        summary=f"{display_name} 桌面 App 正在运行；尚未识别具体对话，先作为空闲入口。",
+        updated_at=updated_at,
+        source="process",
+        process_id=process_id,
+        process_name=session.process_name,
+        focus_process_id=process_id,
+        focus_app_name=session.focus_app_name or display_name,
+        status_source="desktop-process",
+        tool_display_name=display_name,
+    )

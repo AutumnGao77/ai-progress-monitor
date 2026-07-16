@@ -50,6 +50,25 @@ class WebUiBehaviorTests(unittest.TestCase):
         self.assertEqual(payload["readableDesktopNoFolderTitles"], ["Codex · hello · 空闲"])
         self.assertEqual(payload["codexGeneratedDesktopFolderTitles"], ["Codex · hello · 空闲"])
         self.assertEqual(payload["codexRealProjectFolderTitles"], ["20260703AIcoding · 进行中"])
+        self.assertEqual(
+            payload["qoderDesktopConversationLabels"],
+            {
+                "qoder-task-alpha": "Qoder 对话 #1 · 待处理",
+                "qoder-task-beta": "Qoder 对话 #2 · 进行中",
+            },
+        )
+        self.assertEqual(
+            sorted(payload["qoderGeneratedConversationLabels"].values()),
+            ["Qoder 对话 #1 · 进行中", "Qoder 对话 #2 · 待处理"],
+        )
+        self.assertFalse(
+            any("task-24613cf92b8f47229b08" in label for label in payload["qoderGeneratedConversationLabels"].values())
+        )
+        self.assertFalse(
+            any("9ab90918-7c7f-4622-b477-94979f445fbd" in label for label in payload["qoderGeneratedConversationLabels"].values())
+        )
+        self.assertEqual(payload["qoderRealProjectConversationTitles"], ["Qoder · StudyCC · 待处理"])
+        self.assertEqual(payload["workbuddyDesktopConversationTitles"], ["WorkBuddy · 需求评审 · 待处理"])
         self.assertNotIn("SECRET", payload["bubbleHtml"])
         self.assertNotIn("Yes", payload["bubbleHtml"])
         self.assertEqual(payload["focusCallCount"], 0)
@@ -435,6 +454,32 @@ def _node_harness(script: str) -> str:
         api.renderBubbles(codexRealProjectFolder);
         const codexRealProjectFolderTitles = elements.bubbleList.children.map(child => child.titleText);
 
+        const qoderDesktopConversations = [
+          {{session_id:"qoder-task-alpha", title:"Qoder Desktop - chat-1", tool:"unknown", tool_display_name:"Qoder", surface:"desktop", status:"needs_action", monitoring_level:"full", cwd:"/Users/Gao/Documents/QoderCN/2026-07-13/chat-1", generated_conversation_path:true}},
+          {{session_id:"qoder-task-beta", title:"Qoder Desktop - chat-2", tool:"unknown", tool_display_name:"Qoder", surface:"desktop", status:"running", monitoring_level:"full", cwd:"/Users/Gao/Documents/QoderCN/2026-07-13/chat-2", generated_conversation_path:true}},
+        ];
+        api.renderBubbles(qoderDesktopConversations);
+        const qoderDesktopConversationLabels = Object.fromEntries(elements.bubbleList.children.map(child => [child.dataset.sessionId, child.titleText]));
+
+        const qoderGeneratedConversations = [
+          {{session_id:"qoder-task-24613cf92b8f47229b08", title:"Qoder Desktop - task-24613cf92b8f47229b08", tool:"unknown", tool_display_name:"Qoder", surface:"desktop", status:"needs_action", monitoring_level:"full"}},
+          {{session_id:"qoder-9ab90918-7c7f-4622-b477-94979f445fbd", title:"Qoder Desktop - 9ab90918-7c7f-4622-b477-94979f445fbd", tool:"unknown", tool_display_name:"Qoder", surface:"desktop", status:"running", monitoring_level:"full"}},
+        ];
+        api.renderBubbles(qoderGeneratedConversations);
+        const qoderGeneratedConversationLabels = Object.fromEntries(elements.bubbleList.children.map(child => [child.dataset.sessionId, child.titleText]));
+
+        const qoderRealProjectConversation = [
+          {{session_id:"qoder-task-hello", title:"Qoder Desktop - Hello", tool:"unknown", tool_display_name:"Qoder", surface:"desktop", status:"needs_action", monitoring_level:"full", cwd:"/Users/Gao/Documents/StudyCC", generated_conversation_path:false}},
+        ];
+        api.renderBubbles(qoderRealProjectConversation);
+        const qoderRealProjectConversationTitles = elements.bubbleList.children.map(child => child.titleText);
+
+        const workbuddyDesktopConversation = [
+          {{session_id:"workbuddy-session-1", title:"WorkBuddy Desktop - 需求评审", tool:"unknown", tool_display_name:"WorkBuddy", surface:"desktop", status:"needs_action", monitoring_level:"full", cwd:"/Users/Gao/Documents/WorkBuddy/2026-07-15-13-12-11"}},
+        ];
+        api.renderBubbles(workbuddyDesktopConversation);
+        const workbuddyDesktopConversationTitles = elements.bubbleList.children.map(child => child.titleText);
+
         api.renderBubbles(sessions);
         elements.bubbleList.children[0].listeners.click();
         const focusCalls = fetchCalls.filter(call => String(call.url).includes("/api/focus"));
@@ -602,7 +647,11 @@ def _node_harness(script: str) -> str:
           readableDesktopNoFolderTitles,
           codexGeneratedDesktopFolderTitles,
           codexRealProjectFolderTitles,
-	          bubbleHtml,
+          qoderDesktopConversationLabels,
+          qoderGeneratedConversationLabels,
+          qoderRealProjectConversationTitles,
+          workbuddyDesktopConversationTitles,
+			          bubbleHtml,
           focusCallCount: focusCalls.length,
           nativeFocusMessageCount: nativeFocusMessages.length,
           actionCallCount: actionCalls.length,

@@ -139,6 +139,37 @@ class DocsPrdAlignmentTests(unittest.TestCase):
         self.assertIn("具体会话优先", combined)
         self.assertIn("工具定义表", combined)
 
+    def test_public_docs_describe_qoder_workbuddy_monitoring_and_generic_focus(self):
+        combined = "\n".join(
+            [
+                (ROOT / "README.md").read_text(),
+                (ROOT / "README.en.md").read_text(),
+                (ROOT / "docs" / "qa" / "2026-07-02-macos-sloth-pet-monitor-acceptance.md").read_text(),
+            ]
+        )
+
+        self.assertIn("Qoder", combined)
+        self.assertIn("WorkBuddy", combined)
+        self.assertIn("Qoder 新增工具 full 监控", combined)
+        self.assertIn("启动后新完成必须待处理", combined)
+        self.assertIn("WorkBuddy 新增工具 full 接入", combined)
+        self.assertIn("monitor_workbuddy.sh", combined)
+        self.assertIn("--tool-display-name WorkBuddy", combined)
+        self.assertIn("AI_PROGRESS_MONITOR_HOME", combined)
+        self.assertIn("临时文件替换方式写入", combined)
+        self.assertIn("codebuddy", combined)
+        self.assertIn("WorkBuddy Desktop 会读取本地 sessions 数据库", combined)
+        self.assertIn("默认 `Pending` 且无活动时间的空白会话不误报", combined)
+        self.assertIn("点击气泡会尝试回到对应 AI 工具窗口", combined)
+        self.assertIn("Clicking a bubble returns to the matching AI tool window", combined)
+        self.assertIn("计数会随真实已配置 AI 工具进程实时变化", combined)
+        self.assertIn("直接已配置 AI CLI 为 `process_only`", combined)
+        self.assertNotIn("点击气泡会尝试回到对应 Claude/Codex 窗口", combined)
+        self.assertNotIn("用户点击气泡后回到原 Claude/Codex 窗口处理", combined)
+        self.assertNotIn("直接 Claude/Codex CLI 进程生成 process-only 气泡", combined)
+        self.assertNotIn("真实 Claude/Codex 进程实时变化", combined)
+        self.assertNotIn("直接 Claude/Codex CLI 为 `process_only`", combined)
+
     def test_docs_define_badge_number_as_total_bubble_count(self):
         combined = "\n".join(
             [

@@ -22,9 +22,9 @@
 | 同文件夹/无文件夹多对话区分 | 已支持；有文件夹时用文件夹名 + 工具名和稳定序号区分；桌面版无真实文件夹时用 `工具名 对话` / `工具名 对话 #1`，不展示不可读 session_id 碎片；自动聊天目录由工具定义表配置识别 |
 | Claude Code / Codex 状态模型 | 已支持 |
 | JSON 事件源 | 已支持，推荐作为可靠接入方式 |
-| 通用 AI 工具识别配置 | 已支持，桌面 App 和 CLI 通过工具定义表接入；配置项包含 `key`、`display_name`、内部工具类型、CLI 可执行名、桌面主程序路径、忽略进程 token、自动聊天目录 pattern。当前覆盖 Claude、Codex、ChatGPT、Gemini、Perplexity、Poe、Cursor Agent、Qwen Code、Aider、OpenCode、Goose、Continue、Kiro 等主流工具的存活入口 |
+| 通用 AI 工具识别配置 | 已支持，桌面 App 和 CLI 通过工具定义表接入；配置项包含 `key`、`display_name`、内部工具类型、CLI 可执行名、桌面主程序路径、忽略进程 token、自动聊天目录 pattern。当前覆盖 Claude、Codex、Qoder、WorkBuddy、ChatGPT、Gemini、Perplexity、Poe、Cursor Agent、Qwen Code、Aider、OpenCode、Goose、Continue、Kiro 等主流工具的存活入口 |
 | Codex 桌面端会话识别 | 已支持，读取 `~/.codex/sessions` 中的会话事件，未完成任务显示为进行中；已查看后转空闲的具体桌面对话保留 15 分钟后移出；如果只有桌面 App 存活且没有具体会话事件，则显示空闲入口 |
-| Claude/Codex CLI 进程检测 | 已支持，直接启动 `claude` / `codex` 时显示 process-only 气泡；Claude CLI 优先读取 Claude 会话状态，明确 idle 时不因短暂 CPU/MCP 活跃翻成进行中，读不到时回退到进程活跃度；Codex CLI 暂按进程活跃度保守判断 |
+| Claude/Codex/Qoder/WorkBuddy CLI 进程检测 | 已支持，直接启动已配置 AI CLI 时显示 process-only 气泡；WorkBuddy 同时识别 `workbuddy` 和 `codebuddy` CLI；Claude CLI 优先读取 Claude 会话状态，明确 idle 时不因短暂 CPU/MCP 活跃翻成进行中，读不到时回退到进程活跃度；Codex、Qoder、WorkBuddy 等其他 CLI 暂按进程活跃度保守判断 |
 | macOS / Windows 窗口扫描 | 已支持基础窗口标题扫描 |
 | 桌面窗口 ID / 进程信息跟踪 | 已支持，用于更可靠地回到原窗口 |
 | 点击气泡回到原窗口 | 已支持，优先用窗口 ID / 进程信息聚焦 |
@@ -98,7 +98,7 @@ scripts/run_macos_floating_dev.sh
 scripts/check_macos_floating_dev.sh
 ```
 
-它读取进程和 `~/Library/Logs/AI Progress Monitor/native-monitor.log`，并访问当前 dev App 的本机资源路由来确认衬衫树懒图与防缓存响应头。它不控制 GUI；用于确认 dev Pet 是否启动、服务 URL 是否出现、本轮是否收到外观切换、隐藏/恢复/退出等 host 消息。输出中的本地访问令牌会脱敏；如果服务已被 Pet 轮询，还会显示类似 `total=4 running=1 idle=3 process_only=4` 的脱敏会话计数，用来确认终端和桌面 Claude/Codex 是否已被识别。
+它读取进程和 `~/Library/Logs/AI Progress Monitor/native-monitor.log`，并访问当前 dev App 的本机资源路由来确认衬衫树懒图与防缓存响应头。它不控制 GUI；用于确认 dev Pet 是否启动、服务 URL 是否出现、本轮是否收到外观切换、隐藏/恢复/退出等 host 消息。输出中的本地访问令牌会脱敏；如果服务已被 Pet 轮询，还会显示类似 `total=4 running=1 idle=3 process_only=4` 的脱敏会话计数，用来确认终端和桌面 AI 工具是否已被识别。
 
 完成真实鼠标验收时使用严格模式：
 
@@ -141,7 +141,7 @@ scripts/check_macos_floating_dev.sh --strict
 
 偏好文件默认位置是 `~/.ai-progress-monitor/preferences.json`。自定义图片支持 PNG、JPG、JPEG、WebP，单个文件最大 8 MB；路径无效、格式不支持或文件过大时会自动回退到内置资源。兼容旧入口的 `sloth-pet.png` 保留为空闲态图片。自定义 `pet_assets.*` 仍会覆盖最终 Pet 图片；APP 头像、菜单栏图标和 favicon 不随外观主题切换。
 
-页面右下角会显示原创树懒 Pet。左键点击 Pet 只负责展开或收起上方气泡列表；右键点击 Pet 会打开菜单，菜单提供“外观”“隐藏 Pet”和“退出程序”。每条气泡只展示文件夹/对话标识和状态；桌面版 AI 对话没有真实项目文件夹时显示为 `工具名 对话` 或安全短标题，工具定义表中声明的自动聊天目录也按无真实项目文件夹处理，例如 Codex 的 `Documents/Codex/YYYY-MM-DD/<对话名>`。后续接入其他 AI 桌面端时，只需补充对应工具配置和自动聊天目录 pattern，不需要改前端命名逻辑；页面不会展示不可读 session_id 碎片。点击气泡会尝试回到对应 Claude/Codex 窗口。
+页面右下角会显示原创树懒 Pet。左键点击 Pet 只负责展开或收起上方气泡列表；右键点击 Pet 会打开菜单，菜单提供“外观”“隐藏 Pet”和“退出程序”。每条气泡只展示文件夹/对话标识和状态；桌面版 AI 对话没有真实项目文件夹时显示为 `工具名 对话` 或安全短标题，工具定义表中声明的自动聊天目录也按无真实项目文件夹处理，例如 Codex 的 `Documents/Codex/YYYY-MM-DD/<对话名>`。后续接入其他 AI 桌面端时，只需补充对应工具配置和自动聊天目录 pattern，不需要改前端命名逻辑；页面不会展示不可读 session_id 碎片。点击气泡会尝试回到对应 AI 工具窗口。
 
 启动失败时，一键启动脚本会写入本地日志。macOS 日志默认在 `~/Library/Logs/AI Progress Monitor/monitor.log`，Windows 日志默认在 `%LOCALAPPDATA%\AI Progress Monitor\monitor.log`。
 
@@ -159,7 +159,7 @@ scripts/check_macos_floating_dev.sh --strict
 | `--no-notifications` | 关闭系统级“需要处理”提醒 |
 | `--cleanup-after-seconds` | 清理旧的完成/未知/疑似卡住会话文件，默认 7 天，设为 `0` 关闭；待处理会话不自动清理 |
 
-终端桥接脚本和 Web 服务都支持 `AI_PROGRESS_MONITOR_HOME`。设置后，sessions 和 responses 会写到同一个根目录下，便于本地试用、便携发布或隔离测试：
+终端桥接脚本、JSON 事件脚本和 Web 服务都支持 `AI_PROGRESS_MONITOR_HOME`。设置后，sessions 和 responses 会写到同一个根目录下，便于本地试用、便携发布或隔离测试：
 
 ```bash
 AI_PROGRESS_MONITOR_HOME=/tmp/ai-monitor \
@@ -211,9 +211,9 @@ python3 scripts/doctor.py
 
 ## 接入真实会话
 
-推荐方式有两种：直接写 JSON 事件，或用终端桥接脚本包装 Claude Code / Codex 命令。
+推荐方式有两种：直接写 JSON 事件，或用终端桥接脚本包装 Claude Code、Codex、Qoder、WorkBuddy 等 AI 命令。
 
-如果用户直接在终端运行已配置的 AI CLI，监控器会通过进程扫描显示 process-only 气泡；气泡本身仍只展示文件夹/对话标识和状态。当前仍处于前台交互终端状态的直接 CLI 会话会显示；即使 CLI 在 App 启动前已经打开，只要进程仍存在，也会显示为空闲或当前状态；退出 CLI 后，即使 IDE、终端或项目窗口还开着，也不应继续保留气泡。Claude CLI 会优先读取 `~/.claude/sessions/<pid>.json` 中 Claude 自己记录的会话状态：运行中显示进行中；明确空闲时保持空闲，不因短暂 CPU/MCP 活跃翻成进行中；回复完成后，或同一会话出现新的空闲完成时间后，先显示待处理，点击气泡成功回到对应系统终端或 IDE 内置终端后标记为已查看并转为空闲；读不到、状态不匹配或过期 running 时再按 CPU、进程运行态和过滤后的活跃子进程做保守判断。Codex CLI 暂按进程活跃度判断。Codex 桌面端会优先读取 `~/.codex/sessions` 的会话事件：App 启动后有未完成任务时显示进行中，有可见回复并完成后显示待处理，点击气泡成功回到窗口后转为空闲；已查看后转为空闲的桌面端具体对话保留 15 分钟后从气泡列表移出；如果只是已配置的 AI 桌面 App 主程序存活，或具体桌面对话都已移出，先显示空闲入口，有具体桌面会话后自动隐藏该入口，避免重复计数。普通系统权限不会读取或展示终端内部文本。
+如果用户直接在终端运行已配置的 AI CLI，监控器会通过进程扫描显示 process-only 气泡；气泡本身仍只展示文件夹/对话标识和状态。当前仍处于前台交互终端状态的直接 CLI 会话会显示；即使 CLI 在 App 启动前已经打开，只要进程仍存在，也会显示为空闲或当前状态；退出 CLI 后，即使 IDE、终端或项目窗口还开着，也不应继续保留气泡。Claude CLI 会优先读取 `~/.claude/sessions/<pid>.json` 中 Claude 自己记录的会话状态：运行中显示进行中；明确空闲时保持空闲，不因短暂 CPU/MCP 活跃翻成进行中；回复完成后，或同一会话出现新的空闲完成时间后，先显示待处理，点击气泡成功回到对应系统终端或 IDE 内置终端后标记为已查看并转为空闲；读不到、状态不匹配或过期 running 时再按 CPU、进程运行态和过滤后的活跃子进程做保守判断。Codex CLI、Qoder CLI、WorkBuddy CLI 和 `codebuddy` CLI 暂按进程活跃度判断。Codex 桌面端会优先读取 `~/.codex/sessions` 的会话事件：App 启动后有未完成任务时显示进行中，有可见回复并完成后显示待处理，点击气泡成功回到窗口后转为空闲；已查看后转为空闲的桌面端具体对话保留 15 分钟后从气泡列表移出；如果只是已配置的 AI 桌面 App 主程序存活，或具体桌面对话都已移出，先显示空闲入口，有具体桌面会话后自动隐藏该入口，避免重复计数。Qoder 桌面端会读取本地 Qoder/Qoder CN 日志；WorkBuddy 桌面端会在本地 sessions 数据库出现明确 Running / Completed / Failed 等状态时生成 full 级具体会话，默认 Pending 且无活动时间的空白会话不会被误报为进行中。普通系统权限不会读取或展示终端内部文本。
 
 ### 方式一：终端桥接脚本
 
@@ -233,6 +233,18 @@ AI_MONITOR_TITLE="Codex - PRD polish" \
 sh scripts/monitor_codex.sh codex
 ```
 
+通用 AI 工具示例：
+
+```bash
+AI_MONITOR_SESSION_ID=workbuddy-product-ops \
+AI_MONITOR_TITLE="WorkBuddy - 产品需求" \
+sh scripts/monitor_workbuddy.sh workbuddy
+
+AI_MONITOR_SESSION_ID=qoder-prd \
+AI_MONITOR_TITLE="Qoder - PRD polish" \
+sh scripts/monitor_qoder.sh qoder
+```
+
 Windows 示例：
 
 ```bat
@@ -248,7 +260,7 @@ scripts\monitor_codex.bat codex
 | 读取终端输出 | 自动识别执行中、需要处理、完成等状态 |
 | 写入 session JSON | Web Companion 会自动展示状态 |
 | 支持窗口定位 | 复杂交互时可尝试激活对应窗口 |
-| 保留原输出 | 终端仍会正常显示 Claude Code / Codex 输出 |
+| 保留原输出 | 终端仍会正常显示原 AI 工具输出 |
 
 ### 方式二：直接写 JSON 事件
 
@@ -257,6 +269,8 @@ scripts\monitor_codex.bat codex
 ```text
 ~/.ai-progress-monitor/sessions
 ```
+
+设置 `AI_PROGRESS_MONITOR_HOME` 后，`emit_event.py` 会默认写入 `$AI_PROGRESS_MONITOR_HOME/sessions`，并通过临时文件替换方式写入，避免监控轮询读到半截 JSON。
 
 示例：
 
@@ -270,7 +284,22 @@ python3 scripts/emit_event.py \
   --summary "需要回到原窗口处理"
 ```
 
-新版 Pet 气泡不会展示 `summary` 或直接回复按钮；用户点击气泡后回到原 Claude/Codex 窗口处理。兼容响应文件目录仍保留给旧集成或外部适配器使用：
+通用 AI 工具示例：
+
+```bash
+python3 scripts/emit_event.py \
+  --session-id workbuddy-demo-1 \
+  --title "WorkBuddy - 产品需求" \
+  --tool unknown \
+  --tool-display-name WorkBuddy \
+  --surface desktop \
+  --status needs_action \
+  --view-ack-required \
+  --focus-app-name WorkBuddy \
+  --summary "需要回到原窗口处理"
+```
+
+新版 Pet 气泡不会展示 `summary` 或直接回复按钮；用户点击气泡后回到原 AI 工具窗口处理。兼容响应文件目录仍保留给旧集成或外部适配器使用：
 
 ```text
 ~/.ai-progress-monitor/responses/<session-id>.response

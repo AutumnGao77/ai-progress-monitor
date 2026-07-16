@@ -265,6 +265,179 @@ class SessionStoreTests(unittest.TestCase):
 
         self.assertEqual(store.sessions()[0].status, SessionStatus.IDLE)
 
+    def test_claude_terminal_prompt_timestamp_refresh_stays_idle(self):
+        store = SessionStore(stuck_after_seconds=60)
+        original_idle = datetime(2026, 7, 2, 9, 0, tzinfo=timezone.utc)
+        prompt_refresh = datetime(2026, 7, 2, 9, 0, 2, tzinfo=timezone.utc)
+        store.apply_updates(
+            [
+                SessionUpdate(
+                    "process-22534",
+                    "Claude Code CLI - StudyCC",
+                    ToolKind.CLAUDE_CODE,
+                    SurfaceKind.TERMINAL,
+                    SessionStatus.IDLE,
+                    "already idle",
+                    original_idle,
+                    source="process",
+                    process_id=22534,
+                    cwd="/Users/Gao/Documents/StudyCC",
+                    status_source="claude-session-prompt",
+                )
+            ]
+        )
+        store.apply_updates(
+            [
+                SessionUpdate(
+                    "process-22534",
+                    "Claude Code CLI - StudyCC",
+                    ToolKind.CLAUDE_CODE,
+                    SurfaceKind.TERMINAL,
+                    SessionStatus.IDLE,
+                    "prompt refreshed",
+                    prompt_refresh,
+                    source="process",
+                    process_id=22534,
+                    cwd="/Users/Gao/Documents/StudyCC",
+                    status_source="claude-session-prompt",
+                )
+            ]
+        )
+
+        session = store.sessions()[0]
+        self.assertEqual(session.status, SessionStatus.IDLE)
+        self.assertFalse(session.view_ack_required)
+
+    def test_claude_terminal_prompt_after_running_still_requires_view_ack(self):
+        store = SessionStore(stuck_after_seconds=60)
+        started = datetime(2026, 7, 2, 9, 0, tzinfo=timezone.utc)
+        prompt_after_run = datetime(2026, 7, 2, 9, 1, tzinfo=timezone.utc)
+        store.apply_updates(
+            [
+                SessionUpdate(
+                    "process-22534",
+                    "Claude Code CLI - StudyCC",
+                    ToolKind.CLAUDE_CODE,
+                    SurfaceKind.TERMINAL,
+                    SessionStatus.RUNNING,
+                    "running",
+                    started,
+                    source="process",
+                    process_id=22534,
+                    cwd="/Users/Gao/Documents/StudyCC",
+                    status_source="claude-session",
+                )
+            ]
+        )
+        store.apply_updates(
+            [
+                SessionUpdate(
+                    "process-22534",
+                    "Claude Code CLI - StudyCC",
+                    ToolKind.CLAUDE_CODE,
+                    SurfaceKind.TERMINAL,
+                    SessionStatus.IDLE,
+                    "prompt after run",
+                    prompt_after_run,
+                    source="process",
+                    process_id=22534,
+                    cwd="/Users/Gao/Documents/StudyCC",
+                    status_source="claude-session-prompt",
+                )
+            ]
+        )
+
+        session = store.sessions()[0]
+        self.assertEqual(session.status, SessionStatus.NEEDS_ACTION)
+        self.assertTrue(session.view_ack_required)
+
+    def test_claude_terminal_initial_idle_after_process_startup_noise_stays_idle(self):
+        store = SessionStore(stuck_after_seconds=60)
+        startup_scan = datetime(2026, 7, 2, 9, 0, tzinfo=timezone.utc)
+        initial_idle = datetime(2026, 7, 2, 9, 0, 1, tzinfo=timezone.utc)
+        store.apply_updates(
+            [
+                SessionUpdate(
+                    "process-22534",
+                    "Claude Code CLI - StudyCC",
+                    ToolKind.CLAUDE_CODE,
+                    SurfaceKind.TERMINAL,
+                    SessionStatus.RUNNING,
+                    "startup process activity",
+                    startup_scan,
+                    source="process",
+                    process_id=22534,
+                    cwd="/Users/Gao/Documents/StudyCC",
+                    status_source="process",
+                )
+            ]
+        )
+        store.apply_updates(
+            [
+                SessionUpdate(
+                    "process-22534",
+                    "Claude Code CLI - StudyCC",
+                    ToolKind.CLAUDE_CODE,
+                    SurfaceKind.TERMINAL,
+                    SessionStatus.IDLE,
+                    "initial idle",
+                    initial_idle,
+                    source="process",
+                    process_id=22534,
+                    cwd="/Users/Gao/Documents/StudyCC",
+                    status_source="claude-session-initial-idle",
+                )
+            ]
+        )
+
+        session = store.sessions()[0]
+        self.assertEqual(session.status, SessionStatus.IDLE)
+        self.assertFalse(session.view_ack_required)
+
+    def test_claude_terminal_initial_idle_replaces_newer_process_startup_noise(self):
+        store = SessionStore(stuck_after_seconds=60)
+        initial_idle = datetime(2026, 7, 2, 9, 0, 1, tzinfo=timezone.utc)
+        startup_scan = datetime(2026, 7, 2, 9, 0, 2, tzinfo=timezone.utc)
+        store.apply_updates(
+            [
+                SessionUpdate(
+                    "process-22534",
+                    "Claude Code CLI - StudyCC",
+                    ToolKind.CLAUDE_CODE,
+                    SurfaceKind.TERMINAL,
+                    SessionStatus.RUNNING,
+                    "startup process activity",
+                    startup_scan,
+                    source="process",
+                    process_id=22534,
+                    cwd="/Users/Gao/Documents/StudyCC",
+                    status_source="process",
+                )
+            ]
+        )
+        store.apply_updates(
+            [
+                SessionUpdate(
+                    "process-22534",
+                    "Claude Code CLI - StudyCC",
+                    ToolKind.CLAUDE_CODE,
+                    SurfaceKind.TERMINAL,
+                    SessionStatus.IDLE,
+                    "initial idle",
+                    initial_idle,
+                    source="process",
+                    process_id=22534,
+                    cwd="/Users/Gao/Documents/StudyCC",
+                    status_source="claude-session-initial-idle",
+                )
+            ]
+        )
+
+        session = store.sessions()[0]
+        self.assertEqual(session.status, SessionStatus.IDLE)
+        self.assertEqual(session.status_source, "claude-session-initial-idle")
+        self.assertFalse(session.view_ack_required)
+
     def test_viewed_claude_terminal_reply_ignores_process_activity_fallback_noise(self):
         store = SessionStore(stuck_after_seconds=60)
         started = datetime(2026, 7, 2, 9, 0, tzinfo=timezone.utc)

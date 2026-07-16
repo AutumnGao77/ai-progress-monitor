@@ -888,7 +888,10 @@ function bubbleLabel(session, allSessions) {
   const group = sequenceGroup(session);
   const sameFolder = allSessions.filter(item => sessionFolderName(item) === folder);
   const status = statusLabel[displayStatus(session)];
-  if (sameFolder.length <= 1) return `${folder} · ${status}`;
+  if (sameFolder.length <= 1) {
+    if (shouldPrefixDesktopToolName(session)) return `${sessionToolName(session)} · ${folder} · ${status}`;
+    return `${folder} · ${status}`;
+  }
   const sequence = stableSequence(group, session.session_id);
   return `${folder} · ${sessionToolName(session)} #${sequence} · ${status}`;
 }
@@ -917,13 +920,30 @@ function sessionFolderName(session) {
   if (session.monitoring_level === "process_only" && session.surface === "desktop") {
     return truncateLabel(session.title || `${sessionToolName(session)} Desktop`, 28);
   }
+  const cwd = String(session.cwd || "").trim();
+  if (isQoderDesktopSession(session) && cwd && session.generated_conversation_path !== true) {
+    const lastPath = cwd.split(/[\\/]/).filter(Boolean).pop();
+    if (lastPath) return truncateLabel(lastPath, 28);
+  }
   return folderName(session.title);
+}
+
+function isQoderDesktopSession(session) {
+  const toolName = String(session.tool_display_name || "").trim().toLowerCase();
+  return session.surface === "desktop" && (toolName === "qoder" || toolName === "qoder cn");
 }
 
 function isDesktopConversationWithoutFolder(session) {
   if (session.surface !== "desktop" || session.monitoring_level === "process_only") return false;
   const cwd = String(session.cwd || "").trim();
   return !cwd || session.generated_conversation_path === true;
+}
+
+function shouldPrefixDesktopToolName(session) {
+  return session.surface === "desktop"
+    && session.monitoring_level !== "process_only"
+    && session.tool === "unknown"
+    && Boolean(String(session.tool_display_name || "").trim());
 }
 
 function desktopConversationBase(session) {
@@ -942,6 +962,9 @@ function readableDesktopConversationTitle(session) {
 function looksLikeGeneratedSessionName(value) {
   const text = String(value || "").trim();
   if (!text) return true;
+  if (/^chat-\\d+$/i.test(text)) return true;
+  if (/^task-[a-z0-9-]{9,}$/i.test(text)) return true;
+  if (/^[a-f0-9-]{6,}…$/i.test(text)) return true;
   if (/^[a-f0-9-]{6,}$/i.test(text)) return true;
   if (/^[a-z0-9]{1,4}-[a-z0-9-]{1,8}$/i.test(text)) return true;
   return false;

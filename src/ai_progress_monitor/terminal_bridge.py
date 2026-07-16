@@ -19,11 +19,13 @@ class TerminalBridge:
         session_dir: Path,
         response_dir: Path,
         surface: str = "terminal",
+        tool_display_name: Optional[str] = None,
     ):
         self.session_id = session_id
         self.title = title
         self.tool = tool
         self.surface = surface
+        self.tool_display_name = tool_display_name
         self.session_dir = session_dir
         self.response_dir = response_dir
         self.process_id: Optional[int] = None
@@ -64,6 +66,8 @@ class TerminalBridge:
             "summary": update.summary,
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
+        if update.status == SessionStatus.NEEDS_ACTION:
+            payload["view_ack_required"] = True
         if update.safe_action is not None:
             payload["safe_action"] = {
                 "kind": update.safe_action.kind.value,
@@ -106,6 +110,8 @@ class TerminalBridge:
             payload["focus_process_id"] = self.focus_process_id
         if self.focus_app_name:
             payload["focus_app_name"] = self.focus_app_name
+        if self.tool_display_name:
+            payload["tool_display_name"] = self.tool_display_name
         path = self.session_dir / f"{self._safe_session_id()}.json"
         temp_path = path.with_suffix(".json.tmp")
         temp_path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")

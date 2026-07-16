@@ -25,10 +25,11 @@ from ai_progress_monitor.terminal_bridge import TerminalBridge
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run a Claude Code or Codex terminal command with monitor integration")
+    parser = argparse.ArgumentParser(description="Run an AI terminal command with monitor integration")
     parser.add_argument("--session-id", required=True)
     parser.add_argument("--title", required=True)
     parser.add_argument("--tool", choices=("claude_code", "codex", "unknown"), required=True)
+    parser.add_argument("--tool-display-name", help="Display name for generic AI tools when --tool unknown is used")
     monitor_home = default_monitor_home()
     parser.add_argument("--session-dir", default=str(default_session_dir(monitor_home)))
     parser.add_argument("--response-dir", default=str(default_response_dir(monitor_home)))
@@ -43,6 +44,7 @@ def main() -> int:
         session_id=args.session_id,
         title=args.title,
         tool=args.tool,
+        tool_display_name=args.tool_display_name,
         session_dir=Path(args.session_dir),
         response_dir=Path(args.response_dir),
     )

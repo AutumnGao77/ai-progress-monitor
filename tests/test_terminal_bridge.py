@@ -1,6 +1,7 @@
 import json
 import contextlib
 import io
+import subprocess
 import sys
 import tempfile
 import threading
@@ -263,6 +264,106 @@ class TerminalBridgeTests(unittest.TestCase):
             self.assertEqual(payload["process_name"], "claude")
             self.assertEqual(payload["focus_process_id"], 75407)
             self.assertEqual(payload["focus_app_name"], "Zed")
+
+    def test_terminal_bridge_writes_generic_tool_display_name_for_full_monitoring(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            bridge = TerminalBridge(
+                session_id="workbuddy-full",
+                title="WorkBuddy - product-ops",
+                tool="unknown",
+                tool_display_name="WorkBuddy",
+                session_dir=root / "sessions",
+                response_dir=root / "responses",
+            )
+            bridge.set_process_metadata(51001, "workbuddy", focus_process_id=51003, focus_app_name="WorkBuddy")
+
+            bridge.process_output("Do you want to continue? (yes/no)")
+
+            payload = json.loads((root / "sessions" / "workbuddy-full.json").read_text())
+            self.assertEqual(payload["tool"], "unknown")
+            self.assertEqual(payload["tool_display_name"], "WorkBuddy")
+            self.assertEqual(payload["status"], SessionStatus.NEEDS_ACTION.value)
+            self.assertTrue(payload["view_ack_required"])
+            self.assertEqual(payload["focus_process_id"], 51003)
+            self.assertEqual(payload["focus_app_name"], "WorkBuddy")
+
+    def test_emit_event_default_session_dir_follows_monitor_home_and_writes_atomically(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            monitor_home = Path(temp_dir) / "monitor-home"
+            env = os.environ.copy()
+            env["AI_PROGRESS_MONITOR_HOME"] = str(monitor_home)
+
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(Path(__file__).resolve().parents[1] / "scripts" / "emit_event.py"),
+                    "--session-id",
+                    "workbuddy-home",
+                    "--title",
+                    "WorkBuddy - product-ops",
+                    "--tool",
+                    "unknown",
+                    "--tool-display-name",
+                    "WorkBuddy",
+                    "--surface",
+                    "desktop",
+                    "--status",
+                    "running",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+
+            self.assertEqual(completed.returncode, 0, completed.stderr + completed.stdout)
+            self.assertTrue((monitor_home / "sessions" / "workbuddy-home.json").exists())
+            self.assertFalse((monitor_home / "sessions" / "workbuddy-home.json.tmp").exists())
+
+    def test_emit_event_can_publish_generic_ai_tool_full_session(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            session_dir = Path(temp_dir) / "sessions"
+
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(Path(__file__).resolve().parents[1] / "scripts" / "emit_event.py"),
+                    "--session-id",
+                    "workbuddy-json",
+                    "--title",
+                    "WorkBuddy - product-ops",
+                    "--tool",
+                    "unknown",
+                    "--tool-display-name",
+                    "WorkBuddy",
+                    "--surface",
+                    "desktop",
+                    "--status",
+                    "needs_action",
+                    "--summary",
+                    "Needs user attention",
+                    "--view-ack-required",
+                    "--focus-app-name",
+                    "WorkBuddy",
+                    "--cwd",
+                    "/Users/Gao/Documents/product-ops",
+                    "--session-dir",
+                    str(session_dir),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(completed.returncode, 0, completed.stderr + completed.stdout)
+            payload = json.loads((session_dir / "workbuddy-json.json").read_text())
+            self.assertEqual(payload["tool"], "unknown")
+            self.assertEqual(payload["tool_display_name"], "WorkBuddy")
+            self.assertEqual(payload["status"], SessionStatus.NEEDS_ACTION.value)
+            self.assertTrue(payload["view_ack_required"])
+            self.assertEqual(payload["focus_app_name"], "WorkBuddy")
+            self.assertEqual(payload["cwd"], "/Users/Gao/Documents/product-ops")
 
     def test_detects_focus_app_from_terminal_process_ancestry(self):
         rows = [

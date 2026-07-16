@@ -47,6 +47,18 @@ PROJECT_EDITOR_APP_PREFIXES = (
     "visual studio code",
     "webstorm",
 )
+AI_DESKTOP_APP_NAMES = {
+    "chatgpt",
+    "claude",
+    "codex",
+    "gemini",
+    "kiro",
+    "perplexity",
+    "poe",
+    "qoder",
+    "qoder cn",
+    "workbuddy",
+}
 SAFE_FOCUS_METHODS = {
     "activated-app",
     "focused-process",
@@ -199,6 +211,8 @@ def focus_fallback_command(target: FocusTarget) -> Optional[List[str]]:
         if target.cwd:
             if _is_project_editor_app(target.app_name):
                 return None
+            if _is_ai_desktop_app(target.app_name):
+                return build_macos_activate_app_command(target.app_name)
             return build_macos_open_path_in_app_command(target.app_name, target.cwd)
         return build_macos_activate_app_command(target.app_name)
     return None
@@ -244,6 +258,10 @@ def _escape_powershell(value: str) -> str:
 def _is_project_editor_app(app_name: str) -> bool:
     normalized = app_name.strip().lower()
     return normalized in PROJECT_EDITOR_APP_NAMES or any(normalized.startswith(prefix) for prefix in PROJECT_EDITOR_APP_PREFIXES)
+
+
+def _is_ai_desktop_app(app_name: str) -> bool:
+    return app_name.strip().lower() in AI_DESKTOP_APP_NAMES
 
 
 def _focus_success_detail(output: str) -> str:

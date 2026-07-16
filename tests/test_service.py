@@ -51,6 +51,156 @@ class MonitorServiceTests(unittest.TestCase):
         self.assertEqual(payload[0]["status_source"], "qoder-log")
         self.assertEqual(payload[0]["tool_display_name"], "Qoder")
 
+    def test_qoder_log_desktop_session_payload_is_full_and_view_acknowledged_after_focus(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = SessionStore(audit_dir=Path(temp_dir))
+            store.apply_updates(
+                [
+                    SessionUpdate(
+                        session_id="qoder-task-alpha",
+                        title="Qoder Desktop - 围棋游戏开发",
+                        tool=ToolKind.UNKNOWN,
+                        surface=SurfaceKind.DESKTOP,
+                        status=SessionStatus.NEEDS_ACTION,
+                        summary="Qoder 任务已完成，等待查看。",
+                        updated_at=datetime(2026, 7, 13, 11, 10, 8, tzinfo=timezone.utc),
+                        source="process",
+                        process_id=51005,
+                        focus_process_id=51005,
+                        focus_app_name="Qoder",
+                        cwd="/Users/Gao/Documents/QoderCN/2026-07-13/chat-1",
+                        view_ack_required=True,
+                        status_source="qoder-log",
+                        tool_display_name="Qoder",
+                        generated_conversation_path=True,
+                    )
+                ]
+            )
+            focus_manager = WindowFocusManager(sender=lambda target: FocusResult(True, "focused-qoder"))
+            service = MonitorService([], store, ActionExecutor(), focus_manager=focus_manager)
+
+            before = service.sessions_payload()[0]
+            result = service.focus_session("qoder-task-alpha")
+            after = service.sessions_payload()[0]
+
+            self.assertEqual(before["monitoring_level"], "full")
+            self.assertEqual(before["status"], "needs_action")
+            self.assertTrue(before["view_ack_required"])
+            self.assertTrue(result.ok)
+            self.assertEqual(after["status"], "idle")
+
+    def test_qoder_view_acknowledged_action_required_stays_idle_after_refresh(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            updated_at = datetime(2026, 7, 15, 10, 18, 54, tzinfo=timezone.utc)
+            clock = FakeDateTimeClock(datetime(2026, 7, 15, 10, 19, 0, tzinfo=timezone.utc))
+            qoder_action_required = SessionUpdate(
+                session_id="qoder-task-hello",
+                title="Qoder Desktop - Hello",
+                tool=ToolKind.UNKNOWN,
+                surface=SurfaceKind.DESKTOP,
+                status=SessionStatus.NEEDS_ACTION,
+                summary="Qoder 任务已完成，等待查看。",
+                updated_at=updated_at,
+                source="process",
+                process_id=51005,
+                focus_process_id=51005,
+                focus_app_name="Qoder",
+                cwd="/Users/Gao/Documents/StudyCC",
+                view_ack_required=True,
+                status_source="qoder-log",
+                tool_display_name="Qoder",
+            )
+            source = VolatileProcessSource([[qoder_action_required], [qoder_action_required]])
+            store = SessionStore(audit_dir=Path(temp_dir))
+            focus_manager = WindowFocusManager(sender=lambda target: FocusResult(True, "focused-qoder"))
+            service = MonitorService(
+                [source],
+                store,
+                ActionExecutor(),
+                focus_manager=focus_manager,
+                now=clock.now,
+            )
+
+            before = service.sessions_payload()[0]
+            result = service.focus_session("qoder-task-hello")
+            after_refresh = service.sessions_payload()[0]
+
+            self.assertEqual(before["status"], "needs_action")
+            self.assertTrue(before["view_ack_required"])
+            self.assertTrue(result.ok)
+            self.assertEqual(after_refresh["status"], "idle")
+
+    def test_generic_full_session_is_view_acknowledged_after_focus(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = SessionStore(audit_dir=Path(temp_dir))
+            store.apply_updates(
+                [
+                    SessionUpdate(
+                        session_id="workbuddy-json",
+                        title="WorkBuddy - product-ops",
+                        tool=ToolKind.UNKNOWN,
+                        surface=SurfaceKind.DESKTOP,
+                        status=SessionStatus.NEEDS_ACTION,
+                        summary="WorkBuddy 需要处理。",
+                        updated_at=datetime(2026, 7, 13, 12, 0, tzinfo=timezone.utc),
+                        source="json",
+                        focus_app_name="WorkBuddy",
+                        view_ack_required=True,
+                        tool_display_name="WorkBuddy",
+                    )
+                ]
+            )
+            focus_manager = WindowFocusManager(sender=lambda target: FocusResult(True, "focused-workbuddy"))
+            service = MonitorService([], store, ActionExecutor(), focus_manager=focus_manager)
+
+            before = service.sessions_payload()[0]
+            result = service.focus_session("workbuddy-json")
+            after = service.sessions_payload()[0]
+
+            self.assertEqual(before["monitoring_level"], "full")
+            self.assertEqual(before["tool_display_name"], "WorkBuddy")
+            self.assertEqual(before["status"], "needs_action")
+            self.assertTrue(result.ok)
+            self.assertEqual(after["status"], "idle")
+
+    def test_workbuddy_db_desktop_session_payload_is_full_and_view_acknowledged_after_focus(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = SessionStore(audit_dir=Path(temp_dir))
+            store.apply_updates(
+                [
+                    SessionUpdate(
+                        session_id="workbuddy-wb-done",
+                        title="WorkBuddy Desktop - 需求复盘",
+                        tool=ToolKind.UNKNOWN,
+                        surface=SurfaceKind.DESKTOP,
+                        status=SessionStatus.NEEDS_ACTION,
+                        summary="WorkBuddy 任务已完成，等待查看。",
+                        updated_at=datetime(2026, 7, 13, 12, 10, tzinfo=timezone.utc),
+                        source="process",
+                        process_id=51007,
+                        focus_process_id=51007,
+                        focus_app_name="WorkBuddy",
+                        cwd="/Users/Gao/Documents/product-ops",
+                        view_ack_required=True,
+                        status_source="workbuddy-db",
+                        tool_display_name="WorkBuddy",
+                    )
+                ]
+            )
+            focus_manager = WindowFocusManager(sender=lambda target: FocusResult(True, "focused-workbuddy"))
+            service = MonitorService([], store, ActionExecutor(), focus_manager=focus_manager)
+
+            before = service.sessions_payload()[0]
+            result = service.focus_session("workbuddy-wb-done")
+            after = service.sessions_payload()[0]
+
+            self.assertEqual(before["monitoring_level"], "full")
+            self.assertEqual(before["status_source"], "workbuddy-db")
+            self.assertEqual(before["tool_display_name"], "WorkBuddy")
+            self.assertTrue(before["view_ack_required"])
+            self.assertTrue(result.ok)
+            self.assertEqual(after["status"], "idle")
+
     def test_execute_demo_yes_action_writes_response_file(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             service = MonitorService(
@@ -476,6 +626,200 @@ class MonitorServiceTests(unittest.TestCase):
             self.assertEqual([session["session_id"] for session in payload], ["process-codex"])
             self.assertEqual(payload[0]["status"], "idle")
             self.assertEqual(payload[0]["monitoring_level"], "process_only")
+
+    def test_viewed_qoder_process_conversation_survives_process_fallback_for_retention_window(self):
+        clock = FakeDateTimeClock(datetime(2026, 7, 14, 9, 0, tzinfo=timezone.utc))
+        qoder_session = SessionUpdate(
+            "qoder-task-alpha",
+            "Qoder CN Desktop - 围棋游戏开发",
+            ToolKind.UNKNOWN,
+            SurfaceKind.DESKTOP,
+            SessionStatus.NEEDS_ACTION,
+            "Qoder 任务已完成，等待查看。",
+            datetime(2026, 7, 14, 9, 0, tzinfo=timezone.utc),
+            source="process",
+            process_id=11063,
+            focus_process_id=11063,
+            focus_app_name="Qoder CN",
+            cwd="/Users/Gao/Documents/QoderCN/2026-07-14/chat-1",
+            view_ack_required=True,
+            status_source="qoder-log",
+            tool_display_name="Qoder CN",
+            generated_conversation_path=True,
+        )
+        qoder_fallback = SessionUpdate(
+            "process-11063",
+            "Qoder CN Desktop",
+            ToolKind.UNKNOWN,
+            SurfaceKind.DESKTOP,
+            SessionStatus.IDLE,
+            "Qoder CN 桌面 App 正在运行；尚未识别具体对话，先作为空闲入口。",
+            datetime(2026, 7, 14, 9, 0, tzinfo=timezone.utc),
+            source="process",
+            process_id=11063,
+            focus_process_id=11063,
+            focus_app_name="Qoder CN",
+            status_source="desktop-process",
+            tool_display_name="Qoder CN",
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = VolatileProcessSource([[qoder_session], [qoder_fallback], [qoder_fallback], [qoder_fallback]])
+            focus_manager = WindowFocusManager(sender=lambda target: FocusResult(True, "focused-qoder"))
+            service = MonitorService(
+                [source],
+                SessionStore(audit_dir=Path(temp_dir)),
+                ActionExecutor(),
+                focus_manager=focus_manager,
+                now=clock.now,
+            )
+
+            self.assertEqual([session["session_id"] for session in service.sessions_payload()], ["qoder-task-alpha"])
+            self.assertTrue(service.focus_session("qoder-task-alpha").ok)
+
+            clock.advance(seconds=60)
+            retained_payload = service.sessions_payload()
+
+            self.assertEqual(
+                [(session["session_id"], session["status"]) for session in retained_payload],
+                [("qoder-task-alpha", "idle")],
+            )
+            self.assertEqual(retained_payload[0]["monitoring_level"], "full")
+
+            clock.advance(seconds=14 * 60 - 1)
+            self.assertEqual([session["session_id"] for session in service.sessions_payload()], ["qoder-task-alpha"])
+
+            clock.advance(seconds=1)
+            expired_payload = service.sessions_payload()
+
+            self.assertEqual([session["session_id"] for session in expired_payload], ["process-11063"])
+            self.assertEqual(expired_payload[0]["monitoring_level"], "process_only")
+
+    def test_viewed_workbuddy_process_conversation_reveals_app_fallback_even_when_db_keeps_reporting_it(self):
+        clock = FakeDateTimeClock(datetime(2026, 7, 15, 13, 0, tzinfo=timezone.utc))
+        workbuddy_session = SessionUpdate(
+            "workbuddy-session-alpha",
+            "WorkBuddy Desktop - 需求评审",
+            ToolKind.UNKNOWN,
+            SurfaceKind.DESKTOP,
+            SessionStatus.NEEDS_ACTION,
+            "WorkBuddy 任务已完成，等待查看。",
+            datetime(2026, 7, 15, 13, 0, tzinfo=timezone.utc),
+            source="process",
+            process_id=22001,
+            focus_process_id=22001,
+            focus_app_name="WorkBuddy",
+            cwd="/Users/Gao/Documents/WorkBuddy/2026-07-15-13-12-11",
+            view_ack_required=True,
+            status_source="workbuddy-db",
+            tool_display_name="WorkBuddy",
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = VolatileProcessSource(
+                [[workbuddy_session], [workbuddy_session], [workbuddy_session], [workbuddy_session]]
+            )
+            focus_manager = WindowFocusManager(sender=lambda target: FocusResult(True, "focused-workbuddy"))
+            service = MonitorService(
+                [source],
+                SessionStore(audit_dir=Path(temp_dir)),
+                ActionExecutor(),
+                focus_manager=focus_manager,
+                now=clock.now,
+            )
+
+            self.assertEqual([session["session_id"] for session in service.sessions_payload()], ["workbuddy-session-alpha"])
+            self.assertTrue(service.focus_session("workbuddy-session-alpha").ok)
+
+            clock.advance(seconds=60)
+            retained_payload = service.sessions_payload()
+
+            self.assertEqual(
+                [(session["session_id"], session["status"]) for session in retained_payload],
+                [("workbuddy-session-alpha", "idle")],
+            )
+            self.assertEqual(retained_payload[0]["monitoring_level"], "full")
+
+            clock.advance(seconds=14 * 60)
+            expired_payload = service.sessions_payload()
+
+            self.assertEqual([session["session_id"] for session in expired_payload], ["process-22001"])
+            self.assertEqual(expired_payload[0]["monitoring_level"], "process_only")
+            self.assertEqual(expired_payload[0]["tool_display_name"], "WorkBuddy")
+            self.assertEqual(expired_payload[0]["status"], "idle")
+
+    def test_qoder_process_conversation_disappears_after_app_exits(self):
+        clock = FakeDateTimeClock(datetime(2026, 7, 14, 9, 0, tzinfo=timezone.utc))
+        process_clock = FakeClock()
+        qoder_session = SessionUpdate(
+            "qoder-task-alpha",
+            "Qoder Desktop - 围棋游戏开发",
+            ToolKind.UNKNOWN,
+            SurfaceKind.DESKTOP,
+            SessionStatus.NEEDS_ACTION,
+            "Qoder 任务已完成，等待查看。",
+            datetime(2026, 7, 14, 9, 0, tzinfo=timezone.utc),
+            source="process",
+            process_id=11063,
+            focus_process_id=11063,
+            focus_app_name="Qoder",
+            view_ack_required=True,
+            status_source="qoder-log",
+            tool_display_name="Qoder",
+        )
+        source = VolatileProcessSource([[qoder_session], [], []])
+        service = MonitorService(
+            [source],
+            SessionStore(),
+            ActionExecutor(),
+            now=clock.now,
+            clock=process_clock.now,
+            process_empty_grace_seconds=0,
+        )
+
+        self.assertEqual([session["session_id"] for session in service.sessions_payload()], ["qoder-task-alpha"])
+        self.assertEqual([session["session_id"] for session in service.sessions_payload()], ["qoder-task-alpha"])
+        process_clock.advance(seconds=1)
+
+        self.assertEqual(service.sessions_payload(), [])
+
+    def test_full_process_desktop_session_hides_matching_process_fallback(self):
+        qoder_session = SessionUpdate(
+            "qoder-task-alpha",
+            "Qoder CN Desktop - 围棋游戏开发",
+            ToolKind.UNKNOWN,
+            SurfaceKind.DESKTOP,
+            SessionStatus.RUNNING,
+            "Qoder 正在处理任务。",
+            datetime(2026, 7, 14, 9, 0, tzinfo=timezone.utc),
+            source="process",
+            process_id=11063,
+            focus_process_id=11063,
+            focus_app_name="Qoder CN",
+            status_source="qoder-log",
+            tool_display_name="Qoder CN",
+        )
+        qoder_fallback = SessionUpdate(
+            "process-11063",
+            "Qoder CN Desktop",
+            ToolKind.UNKNOWN,
+            SurfaceKind.DESKTOP,
+            SessionStatus.IDLE,
+            "Qoder CN 桌面 App 正在运行；尚未识别具体对话，先作为空闲入口。",
+            datetime(2026, 7, 14, 9, 0, tzinfo=timezone.utc),
+            source="process",
+            process_id=11063,
+            focus_process_id=11063,
+            focus_app_name="Qoder CN",
+            status_source="desktop-process",
+            tool_display_name="Qoder CN",
+        )
+        store = SessionStore()
+        store.apply_updates([qoder_session, qoder_fallback])
+        service = MonitorService([], store, ActionExecutor())
+
+        payload = service.sessions_payload()
+
+        self.assertEqual([session["session_id"] for session in payload], ["qoder-task-alpha"])
+        self.assertEqual(payload[0]["monitoring_level"], "full")
 
     def test_unviewed_desktop_idle_conversation_does_not_expire_by_idle_retention(self):
         clock = FakeDateTimeClock(datetime(2026, 7, 2, 9, 16, tzinfo=timezone.utc))
