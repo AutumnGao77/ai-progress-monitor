@@ -446,9 +446,10 @@ python3 scripts/validate_release.py
 | 2026-07-14 | 第 14 章 M-1 至 M-16 手工验收场景 | 通过，当前未发现问题 |
 | 2026-07-14 | PRD 第 15 章 P0 / P1 验收标准逐项对账 | 通过，均有代码实现、自动化测试或手工验收记录覆盖 |
 | 2026-07-14 | Qoder / Qoder CN 生成目录名兜底复查 | 已修复，缺少真实标题时显示泛化 `Qoder 对话 #n`，不展示 `chat-1/chat-2` 或 task id |
-| 2026-07-14 | `PYTHONPATH=src python3 -m unittest discover -s tests` | 通过，399 个测试 OK |
+| 2026-07-14 | `PYTHONPATH=src python3 -m unittest discover -s tests` | 通过，421 个测试 OK |
 | 2026-07-14 | `python3 scripts/validate_release.py` | 通过，输出 `release-validation-ok` |
-| 2026-07-14 | macOS Floating Dev 开发版启动检查 | 通过，开发版已重新构建并启动，有实时会话快照 |
+| 2026-07-14 | `scripts/run_macos_floating_dev.sh --build-only`、`scripts/run_macos_floating_dev.sh --launch-only`、`scripts/check_macos_floating_dev.sh` | 通过，开发版已重新构建并启动，有实时会话快照 |
+| 2026-07-14 | `python3 scripts/build_release.py` | 通过，输出 `release-artifact-ok dist/ai-progress-monitor.pyz` 和 `release-bundle-ok dist/ai-progress-monitor-release.zip` |
 
 ## 19. 不允许 AI 自行扩展的内容
 

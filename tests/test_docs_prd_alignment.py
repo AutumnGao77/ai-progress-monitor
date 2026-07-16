@@ -236,10 +236,12 @@ class DocsPrdAlignmentTests(unittest.TestCase):
         ]
         for phrase in forbidden_phrases:
             self.assertNotIn(phrase, qa)
-        self.assertIn("298 tests OK", qa)
+        self.assertIn("421 tests OK", qa)
         self.assertIn("dist/ai-progress-monitor-release.zip", qa)
-        self.assertIn("2.74 MiB", qa)
-        self.assertIn("12.26 MiB", qa)
+        self.assertIn("release-artifact-ok dist/ai-progress-monitor.pyz", qa)
+        self.assertIn("release-bundle-ok dist/ai-progress-monitor-release.zip", qa)
+        self.assertIn("4.2M", qa)
+        self.assertIn("17M", qa)
 
     def test_release_docs_define_sensitive_company_scan_and_immutable_tags(self):
         combined = "\n".join(

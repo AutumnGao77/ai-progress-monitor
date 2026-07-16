@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-This repository contains a Python desktop app for monitoring Claude Code and Codex progress. Place application source code under `src/`, tests under `tests/`, helper scripts under `scripts/`, and product documents under `docs/`.
+This repository contains a Python desktop app for monitoring Claude Code, Codex, Qoder, WorkBuddy, and other configured AI tool progress. Place application source code under `src/`, tests under `tests/`, helper scripts under `scripts/`, and product documents under `docs/`.
 
 Recommended structure:
 
@@ -40,6 +40,18 @@ macOS bundles must copy `app-avatar.png` into `Contents/Resources/`, generate `A
 
 Candidate/source images can stay under `src/ai_progress_monitor/assets/sloth-candidates/` for local reference, but they are gitignored by default and release packaging must exclude that directory and `.DS_Store` files. CI and public tests must validate the final runtime assets instead of requiring local candidate files.
 
+## AI Tool Monitoring
+
+AI tool detection is configured through `AI_TOOL_DEFINITIONS` in `src/ai_progress_monitor/sources.py`. Each tool definition can declare `key`, `display_name`, CLI executable names, desktop main binaries, ignored helper/daemon command tokens, and generated conversation path patterns. Keep new tool support in that registry and its source-specific parsers instead of hard-coding naming rules in the front end.
+
+The current full desktop monitoring scope includes Codex Desktop session events, Qoder / Qoder CN logs and local cache metadata, and WorkBuddy local session database plus runtime logs. Generic process-only entries are still allowed for configured AI CLI tools and desktop app idle fallbacks, but they must not be treated as proof that AI is running.
+
+User-visible state stays normalized to three states: `needs_action`, `running`, and `idle`. Completed results that only need user review can use `view_ack_required=true` and become idle after a successful focus/view. True user-attention states such as approval, suspended, pending with activity, or waiting for input must use `view_ack_required=false` and remain needs-action until the source state changes.
+
+Desktop full sessions take priority over generic desktop app idle entries. After a viewed desktop session becomes idle, keep the specific conversation visible for 15 minutes; after that, remove it and show the desktop app idle entry if the app is still running. WorkBuddy conversation titles should include project/folder context when available. Qoder and Qoder CN must prefer real conversation titles from cache/project metadata and must not expose generated `chat-1`, `chat-3`, task IDs, UUIDs, or internal session fragments as primary bubble labels.
+
+The AI tool monitoring expansion PRD is `docs/prd/2026-07-14-ai-tool-monitoring-expansion-prd.md`. User-configurable tool discovery / automatic process scanning is not part of this iteration.
+
 ## Build, Test, and Development Commands
 
 Key commands:
@@ -53,6 +65,10 @@ python3 scripts/build_release.py
 ```
 
 The first command launches the demo desktop pet. The second runs the full test suite. The third shows the JSON event helper used by integrations. Run `validate_release.py` before public release, then `build_release.py` to generate `dist/ai-progress-monitor.pyz` and `dist/ai-progress-monitor-release.zip`.
+
+## Development Principles
+
+Feature development and iteration must start from first principles: clarify the real user problem, success criteria, system boundaries, failure modes, and long-term maintenance cost before choosing an implementation. Design and review changes for stable long-running software, including predictable behavior, testability, observability, backward compatibility, safe defaults, and graceful degradation when dependencies or local environments fail.
 
 ## Coding Style & Naming Conventions
 
