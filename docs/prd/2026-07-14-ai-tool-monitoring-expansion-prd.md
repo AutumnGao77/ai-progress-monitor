@@ -4,7 +4,7 @@
 
 本文件是“新增 AI 工具监控”功能迭代的 AI coding 目标文档。相比基础 Pet 体验 PRD，本文件更聚焦 **监控范围扩展、状态一致性、气泡展示一致性、点击跳转一致性和可验收测试**。
 
-本次迭代目标：在现有 Codex / Claude Code 监控基础上，新增 **WorkBuddy、Qoder、Qoder CN** 的桌面 App 与相关会话监控能力。新增工具必须复用现有 Pet + 气泡列表体验：能显示软件名、真实对话标题、三态状态、数字角标，并支持点击气泡回到对应 AI 工具窗口。
+本次迭代目标：在现有 ChatGPT Desktop / Claude Code / Codex CLI 监控基础上，新增 **WorkBuddy、Qoder、Qoder CN** 的桌面 App 与相关会话监控能力。新增工具必须复用现有 Pet + 气泡列表体验：能显示软件名、真实对话标题、三态状态、数字角标，并支持点击气泡回到对应 AI 工具窗口。
 
 | 判断项 | 结论 |
 |---|---|
@@ -18,7 +18,7 @@
 
 | 当前问题 | 为什么影响用户 | 新 PRD 要求 |
 |---|---|---|
-| 只重点支持 Codex / Claude Code | 用户同时使用 WorkBuddy、Qoder、Qoder CN 时，Pet 无法形成统一任务视图 | 新增工具必须进入同一气泡列表和角标统计 |
+| 只重点支持 ChatGPT Desktop / Claude Code / Codex CLI | 用户同时使用 WorkBuddy、Qoder、Qoder CN 时，Pet 无法形成统一任务视图 | 新增工具必须进入同一气泡列表和角标统计 |
 | 仅识别 App 进程会显示空闲入口 | 有真实对话运行或等待操作时，用户仍看到“空闲” | 对支持深度监控的工具读取其会话数据源，输出具体对话气泡 |
 | Qoder 自动目录名不可读 | `chat-1`、`chat-3` 不能代表真实对话 | 优先读取 Qoder 本地缓存中的真实会话标题 |
 | WorkBuddy / Qoder 状态语义不一致 | `needs_action` 一会儿显示进行中，一会儿显示空闲，用户无法信任 Pet | 所有 AI 工具统一三态映射和 view ack 规则 |
@@ -41,7 +41,7 @@
 
 | 原则 | 要求 |
 |---|---|
-| 与现有工具一致 | WorkBuddy、Qoder、Qoder CN 的气泡、角标、状态、跳转能力必须和 Codex / Claude Code 保持一致 |
+| 与现有工具一致 | WorkBuddy、Qoder、Qoder CN 的气泡、角标、状态、跳转能力必须和 ChatGPT Desktop / Claude Code 保持一致 |
 | 先识别具体对话 | 能读取具体会话时，展示具体对话气泡；只有无法识别具体会话时才显示桌面 App 空闲入口 |
 | 软件名必须可见 | 气泡中必须能看出是 WorkBuddy、Qoder 还是 Qoder CN |
 | 标题优先可读 | 优先使用真实对话标题；不得把 `chat-1`、`chat-3`、UUID、task id 当作最终标题 |
@@ -55,7 +55,7 @@
 
 | 编号 | 用户故事 | 验收结果 |
 |---|---|---|
-| US-1 | 作为同时使用多个 AI 工具的用户，我想在一个 Pet 中看到所有 AI 工具状态 | WorkBuddy、Qoder、Qoder CN 与 Codex / Claude Code 一起进入气泡列表 |
+| US-1 | 作为同时使用多个 AI 工具的用户，我想在一个 Pet 中看到所有 AI 工具状态 | WorkBuddy、Qoder、Qoder CN 与 ChatGPT Desktop / Claude Code / Codex CLI 一起进入气泡列表 |
 | US-2 | 作为 Qoder CN 用户，我想看到真实对话标题，而不是 `chat-1` | Qoder CN 气泡显示真实标题，例如“围棋游戏开发” |
 | US-3 | 作为 Qoder 用户，我想多个对话都显示出来 | 多个 Qoder 会话分别形成独立气泡，不合并成一个 App 空闲入口 |
 | US-4 | 作为 WorkBuddy 用户，我想气泡里能看出软件名称 | WorkBuddy 具体会话气泡显示 `WorkBuddy Desktop - 对话标题` 或等价标签 |
@@ -79,7 +79,8 @@
 
 | 工具 | 本次要求 |
 |---|---|
-| Codex | 桌面会话、CLI 进程、Plan 模式待用户输入状态不回归 |
+| ChatGPT Desktop | 兼容读取 `~/.codex/sessions` 会话事件；运行、完成待查看、Plan 模式待用户输入、点击聚焦与 15 分钟收口能力不回归 |
+| Codex CLI | 继续按直接 CLI 进程或桥接事件监控，不再把已退役的 `Codex.app` 当作桌面产品 |
 | Claude Code | CLI 会话状态、待处理查看清除、进程级聚焦不回归 |
 | 其他已配置 AI CLI | 继续按进程级保守监控，不因新增工具改坏 |
 
@@ -110,6 +111,16 @@
 | Qoder App 进程 | 只读取 Qoder 日志和缓存 |
 | 两者同时运行 | 两者各自产生气泡，不互相覆盖 |
 | 识别不到具体产品 | 可回退所有 Qoder 日志目录，但不得错误合并显示名称 |
+
+### 7.4 ChatGPT Desktop 兼容分流
+
+| 场景 | 要求 |
+|---|---|
+| ChatGPT Desktop 继续写入 `~/.codex/sessions` | 复用成熟的会话事件状态机，不复制或迁移用户数据 |
+| `originator` 为 `Codex Desktop` 或 `ChatGPT Desktop` | 作为 ChatGPT Desktop 完整会话处理 |
+| `originator` 为 Codex CLI 或其他来源 | 不生成 ChatGPT Desktop 气泡，Codex CLI 继续走进程级监控 |
+| `originator` 缺失或不可识别 | 安全降级为 App 空闲入口，不猜测、不伪报完整状态 |
+| 单个来源解析异常 | 隔离该来源并保留其他工具会话，输出不含会话内容的错误类型诊断 |
 
 ## 8. 状态映射
 
@@ -216,6 +227,7 @@
 | 能匹配具体窗口 | Raise 对应窗口 |
 | 有 `focus_process_id` | 尝试激活对应进程 |
 | AI 桌面 App 有 `focus_app_name` 但窗口标题匹配失败 | `open -a <AppName>` 激活 App |
+| ChatGPT 已运行但未授予辅助功能权限 | 跳过精确窗口 Raise，直接激活 ChatGPT；不得把权限不足误报为无法跳转 |
 | 项目编辑器有 cwd 但匹配失败 | 不自动激活所有窗口，避免跳到错误项目 |
 | Qoder / WorkBuddy 有 cwd 但匹配失败 | 激活 App，而不是打开 cwd |
 
@@ -237,6 +249,15 @@
 | App 启动后产生的 Qoder / WorkBuddy 会话 | 纳入监控 |
 | App 启动后出现用户注意状态 | 必须显示待处理，不能自动消失 |
 | 已查看的完成态桌面对话 | 可转为空闲，并按现有可见时间规则收口 |
+
+### 12.1 长期运行与恢复
+
+| 故障 | 要求 |
+|---|---|
+| 会话文件扫描期间被轮转或删除 | 跳过单个文件，不能中断整轮刷新 |
+| 任一数据源抛出异常 | 其他来源继续刷新，Pet 保持可用 |
+| 原生 App 内嵌 Python 服务意外退出 | 1、2、4 秒指数退避重启，最长等待 30 秒；新服务启动后加载新令牌 URL |
+| 用户主动退出 App | 取消待执行重启，不残留 Python 子进程 |
 
 ## 13. 自动化测试用例
 
@@ -308,9 +329,9 @@ python3 scripts/validate_release.py
 | M-10 | 多个 Qoder 对话 | 同时存在两个 Qoder / Qoder CN task | 气泡列表显示多个具体对话，不只显示一个 App 空闲入口 |
 | M-11 | Qoder 与 Qoder CN 共存 | 同时打开 Qoder 和 Qoder CN | 两者显示名称正确，状态不串 |
 | M-12 | 气泡跳转 | 点击 Qoder CN 气泡 | 能激活 Qoder CN App；不再提示无法定位窗口 |
-| M-13 | 角标统计 | WorkBuddy、Qoder、Codex 同时有气泡 | 角标数字等于全部可见气泡数，颜色按最高优先级 |
+| M-13 | 角标统计 | WorkBuddy、Qoder、ChatGPT 同时有气泡 | 角标数字等于全部可见气泡数，颜色按最高优先级 |
 | M-14 | 隐私检查 | 对话包含 prompt / summary / 命令输出 | 气泡不展示这些内容 |
-| M-15 | 旧工具回归 | Codex Plan 模式等待用户输入 | 仍显示待处理，不误显示进行中 |
+| M-15 | 旧工具回归 | ChatGPT Plan 模式等待用户输入 | 仍显示待处理，不误显示进行中 |
 | M-16 | Claude Code 回归 | Claude Code 运行、完成、点击查看 | 状态与原逻辑一致 |
 
 ### 14.1 手工验收结果
@@ -337,7 +358,7 @@ python3 scripts/validate_release.py
 | AC-10 | Qoder 与 Qoder CN 同时存在时不串日志、不串标题、不串显示名称 | 自动化测试 + 手工验收 |
 | AC-11 | Qoder / WorkBuddy 气泡点击可聚焦或激活对应 App | 自动化测试 + 手工验收 |
 | AC-12 | 不展示 prompt、summary、命令输出、完整回复 | 自动化测试 + 手工验收 |
-| AC-13 | Codex / Claude Code 既有监控能力不回归 | 回归测试 |
+| AC-13 | ChatGPT Desktop / Claude Code / Codex CLI 既有监控能力不回归 | 回归测试 |
 
 ### 15.2 P1 应满足
 
@@ -436,7 +457,7 @@ python3 scripts/validate_release.py
 | 跳转可用 | 点击新增工具气泡能聚焦具体窗口或至少激活对应 App |
 | 产品分流正确 | Qoder 与 Qoder CN 不串日志、不串标题 |
 | 隐私完成 | 不展示 prompt、summary、命令输出、完整回复 |
-| 回归完成 | Codex / Claude Code 现有监控不回归 |
+| 回归完成 | ChatGPT Desktop / Claude Code / Codex CLI 现有监控不回归 |
 | 测试完成 | 相关自动化测试、全量测试、发布校验通过 |
 
 ### 18.1 完成检查结果

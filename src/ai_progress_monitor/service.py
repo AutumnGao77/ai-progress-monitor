@@ -64,7 +64,18 @@ class MonitorService:
             return []
         with ThreadPoolExecutor(max_workers=len(self.sources)) as executor:
             futures = [executor.submit(source.poll) for source in self.sources]
-            return [(source, future.result()) for source, future in zip(self.sources, futures)]
+            results: List[tuple[object, Optional[List[SessionUpdate]]]] = []
+            for source, future in zip(self.sources, futures):
+                try:
+                    updates = future.result()
+                except Exception as error:
+                    print(
+                        f"AI Progress Monitor source failed: {source.__class__.__name__} ({error.__class__.__name__})",
+                        flush=True,
+                    )
+                    updates = None
+                results.append((source, updates))
+            return results
 
     def _replace_volatile_source_updates(self, source: str, updates: Optional[List[SessionUpdate]]) -> None:
         if updates is None:

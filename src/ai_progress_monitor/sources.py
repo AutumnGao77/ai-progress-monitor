@@ -20,7 +20,8 @@ from .terminal_bridge import clean_terminal_text
 
 SOURCE_COMMAND_TIMEOUT_SECONDS = 4.0
 DEFAULT_CLAUDE_SESSIONS_DIR = Path.home() / ".claude" / "sessions"
-DEFAULT_CODEX_SESSIONS_DIR = Path.home() / ".codex" / "sessions"
+# ChatGPT Desktop 继续沿用 Codex 会话事件目录；这里只迁移产品身份，不复制数据。
+DEFAULT_CHATGPT_SESSIONS_DIR = Path.home() / ".codex" / "sessions"
 DEFAULT_QODER_LOGS_DIRS: Tuple[Path, ...] = (
     Path.home() / "Library" / "Application Support" / "QoderCN" / "logs",
     Path.home() / "Library" / "Application Support" / "QoderCN" / "SharedClientCache" / "logs",
@@ -236,8 +237,8 @@ class ProcessSource:
         )
 
 
-class CodexSessionSource:
-    volatile_source = "codex-session"
+class ChatGPTSessionSource:
+    volatile_source = "chatgpt-session"
 
     def __init__(
         self,
@@ -247,7 +248,7 @@ class CodexSessionSource:
         completed_visible_seconds: float = CODEX_SESSION_COMPLETED_VISIBLE_SECONDS,
         source_started_at: Optional[datetime] = None,
     ):
-        self.directory = directory or DEFAULT_CODEX_SESSIONS_DIR
+        self.directory = directory or DEFAULT_CHATGPT_SESSIONS_DIR
         self.now = now or (lambda: datetime.now(timezone.utc))
         self.running_stale_seconds = running_stale_seconds
         self.completed_visible_seconds = completed_visible_seconds
@@ -258,9 +259,15 @@ class CodexSessionSource:
             return []
         current = self.now()
         updates: List[SessionUpdate] = []
-        paths = sorted(self.directory.glob("**/*.jsonl"), key=lambda path: path.stat().st_mtime, reverse=True)
+        paths_with_mtime = []
+        for path in self.directory.glob("**/*.jsonl"):
+            try:
+                paths_with_mtime.append((path.stat().st_mtime, path))
+            except OSError:
+                continue
+        paths = [path for _mtime, path in sorted(paths_with_mtime, key=lambda item: item[0], reverse=True)]
         for path in paths[:80]:
-            update = _read_codex_session_update(
+            update = _read_chatgpt_session_update(
                 path,
                 current,
                 self.running_stale_seconds,
@@ -282,7 +289,7 @@ def _classify_window_rows(rows: Iterable[str]) -> Iterable[SessionUpdate]:
         window_id = metadata.get("window_id")
         process_id = _optional_int(metadata.get("process_id"))
         lower = f"{process_name or ''} {title}".lower()
-        if not any(token in lower for token in ("claude", "codex")):
+        if not any(token in lower for token in ("claude", "codex", "chatgpt")):
             continue
         source_id = f"window-{window_id or process_id or index}"
         update = classify_session_text(title=title.strip(), text=title.strip(), source_id=source_id)
@@ -365,9 +372,7 @@ AI_TOOL_DEFINITIONS: Tuple[AiToolDefinition, ...] = (
         display_name="Codex",
         tool=ToolKind.CODEX,
         cli_executables=("codex", "codex.exe"),
-        desktop_main_binaries=("/codex.app/contents/macos/codex",),
-        ignored_command_tokens=(" app-server", " sandbox"),
-        generated_conversation_path_patterns=(r"(^|/|\\)Documents(/|\\)Codex(/|\\)\d{4}-\d{2}-\d{2}(/|\\)[^/\\]+$",),
+        ignored_command_tokens=(" app-server", " sandbox", "/codex.app/contents/macos/"),
     ),
     AiToolDefinition(
         key="claude",
@@ -379,8 +384,12 @@ AI_TOOL_DEFINITIONS: Tuple[AiToolDefinition, ...] = (
     AiToolDefinition(
         key="chatgpt",
         display_name="ChatGPT",
+        tool=ToolKind.CHATGPT,
         cli_executables=("chatgpt", "chatgpt.exe"),
         desktop_main_binaries=("/chatgpt.app/contents/macos/chatgpt",),
+        generated_conversation_path_patterns=(
+            r"(^|/|\\)Documents(/|\\)(Codex|ChatGPT)(/|\\)\d{4}-\d{2}-\d{2}(/|\\)[^/\\]+$",
+        ),
     ),
     AiToolDefinition(
         key="gemini",
@@ -470,6 +479,8 @@ def _classify_process_rows(
         cwd = metadata.get("cwd") or ""
         cpu_percent = _optional_float(metadata.get("cpu_percent"))
         stat = metadata.get("stat") or ""
+        if _is_terminating_process(stat):
+            continue
         active_child_count = _optional_int(metadata.get("active_child_count"))
         focus_process_id = _optional_int(metadata.get("focus_process_id"))
         focus_app_name = _optional_str(metadata.get("focus_app_name"))
@@ -2294,7 +2305,14 @@ def _is_detached_terminal_process(stat: str) -> bool:
     return bool(text) and "+" not in text
 
 
-def _read_codex_session_update(
+def _is_terminating_process(stat: str) -> bool:
+    text = stat.strip().upper()
+    if not text:
+        return False
+    return text.startswith("Z") or "E" in text[1:]
+
+
+def _read_chatgpt_session_update(
     path: Path,
     now: datetime,
     running_stale_seconds: float,
@@ -2307,6 +2325,7 @@ def _read_codex_session_update(
     session_id = _codex_session_id_from_path(path)
     cwd: Optional[str] = None
     user_thread = True
+    chatgpt_desktop_thread = False
     latest_at: Optional[datetime] = None
     last_started_index = -1
     last_completed_index = -1
@@ -2322,6 +2341,7 @@ def _read_codex_session_update(
         if record.get("type") == "session_meta":
             session_id = _optional_str(payload.get("id")) or _optional_str(payload.get("session_id")) or session_id
             cwd = _optional_str(payload.get("cwd")) or cwd
+            chatgpt_desktop_thread = chatgpt_desktop_thread or _is_chatgpt_desktop_originator(payload)
             if _is_codex_internal_thread(payload):
                 user_thread = False
         if record.get("type") == "turn_context":
@@ -2351,13 +2371,13 @@ def _read_codex_session_update(
             latest_running_signal_index = index
     fallback_at = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
     updated_at = latest_at or fallback_at
-    if not user_thread:
+    if not user_thread or not chatgpt_desktop_thread:
         return None
     effective_needs_action_index = max(
         last_needs_action_index,
         max(pending_user_input_call_indices.values(), default=-1),
     )
-    status = _codex_session_status(
+    status = _chatgpt_session_status(
         last_started_index,
         last_completed_index,
         effective_needs_action_index,
@@ -2368,7 +2388,7 @@ def _read_codex_session_update(
         return None
     if source_started_at is not None and updated_at < source_started_at:
         return None
-    view_ack_required = _codex_session_requires_view_ack(
+    view_ack_required = _chatgpt_session_requires_view_ack(
         status,
         last_started_index,
         last_completed_index,
@@ -2381,24 +2401,25 @@ def _read_codex_session_update(
     if status == SessionStatus.RUNNING and age_seconds > running_stale_seconds:
         return None
     folder = Path(cwd).name if cwd else session_id
-    title = f"Codex Desktop - {folder}" if folder else "Codex Desktop"
+    title = f"ChatGPT Desktop - {folder}" if folder else "ChatGPT Desktop"
     return SessionUpdate(
-        session_id=f"codex-session-{session_id}",
+        session_id=f"chatgpt-session-{session_id}",
         title=title,
-        tool=ToolKind.CODEX,
+        tool=ToolKind.CHATGPT,
         surface=SurfaceKind.DESKTOP,
         status=status,
-        summary="Codex 桌面端会话状态",
+        summary="ChatGPT 桌面端会话状态",
         updated_at=updated_at,
-        source="codex-session",
-        focus_app_name="Codex",
+        source="chatgpt-session",
+        focus_app_name="ChatGPT",
         cwd=cwd,
         view_ack_required=view_ack_required,
-        generated_conversation_path=_is_generated_conversation_path(ToolKind.CODEX, cwd),
+        tool_display_name="ChatGPT",
+        generated_conversation_path=_is_generated_conversation_path(ToolKind.CHATGPT, cwd),
     )
 
 
-def _codex_session_status(
+def _chatgpt_session_status(
     last_started_index: int,
     last_completed_index: int,
     last_needs_action_index: int,
@@ -2416,7 +2437,7 @@ def _codex_session_status(
     return None
 
 
-def _codex_session_requires_view_ack(
+def _chatgpt_session_requires_view_ack(
     status: SessionStatus,
     last_started_index: int,
     last_completed_index: int,
@@ -2484,6 +2505,11 @@ def _is_codex_internal_thread(payload: dict) -> bool:
     if isinstance(source, dict) and "subagent" in source:
         return True
     return False
+
+
+def _is_chatgpt_desktop_originator(payload: dict) -> bool:
+    originator = str(payload.get("originator") or "").strip().casefold()
+    return originator in {"codex desktop", "chatgpt desktop"}
 
 
 def _parse_codex_timestamp(value) -> Optional[datetime]:
@@ -2744,6 +2770,7 @@ def _posix_process_command() -> List[str]:
         "esac; }; "
         "all_process_rows=$(ps -axo pid=,ppid=,pgid=,stat=,%cpu=,comm=,args= 2>/dev/null); "
         "printf '%s\\n' \"$all_process_rows\" | while read -r pid ppid pgid stat cpu comm args; do "
+        "case \"$stat\" in Z*|?*E*) continue ;; esac; "
         "exe_raw=${comm##*/}; "
         "case \"$exe_raw\" in sh|bash|zsh|fish) shell_process=1 ;; *) shell_process=0 ;; esac; "
         "desktop_process=0; "
@@ -2768,7 +2795,7 @@ def _posix_process_command() -> List[str]:
         f"case \"$exe\" in {cli_process_case_patterns}) ;; "
         "*) continue ;; "
         "esac; "
-        "case \"$exe\" in claude|claude.exe) ;; *) cwd=$(lsof -a -p \"$pid\" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -n 1) ;; esac; "
+        "cwd=; case \"$exe\" in claude|claude.exe) ;; *) cwd=$(lsof -a -p \"$pid\" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -n 1) ;; esac; "
         "case \"$exe\" in claude|claude.exe) active_children=0 ;; *) active_children=$(printf '%s\\n' \"$all_process_rows\" | awk -v pgid=\"$pgid\" -v pid=\"$pid\" '"
         "function background_ai_helper(text) { "
         "text=tolower(text); "

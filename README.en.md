@@ -20,7 +20,7 @@ The current stable delivery focus is the local Web Companion plus the validated 
 | Bubble list | Shows session/tool labels and status without exposing content |
 | Click to focus | Clicking a bubble returns to the matching AI tool window when possible |
 | Direct CLI detection | Detects configured AI CLI sessions conservatively, including Claude Code, Codex, Qoder, WorkBuddy, and `codebuddy` |
-| Codex Desktop session detection | Reads local Codex session events when available |
+| ChatGPT Desktop session detection | Reads explicitly identified ChatGPT/Codex Desktop-originated events from the compatible local `~/.codex/sessions` store; Codex CLI remains separate |
 | Qoder desktop status detection | Reads local Qoder/Qoder CN logs when available and falls back to a desktop idle entry when only the app is running |
 | WorkBuddy desktop status detection | Reads explicit local WorkBuddy session database states when available and falls back to a desktop idle entry when only the app is running |
 | JSON event source | Supported for reliable integrations |
@@ -74,6 +74,8 @@ During development on macOS, you can build and launch a local dev app without cr
 ```bash
 scripts/run_macos_floating_dev.sh
 ```
+
+ChatGPT Desktop sessions are read compatibly from `~/.codex/sessions`, but only records explicitly marked with the `Codex Desktop` or `ChatGPT Desktop` originator are accepted. Codex CLI and unidentified records remain separate and cannot appear as ChatGPT bubbles. When accessibility permission is unavailable, clicking a ChatGPT bubble still falls back to activating the ChatGPT app instead of reporting a false navigation failure.
 
 Check the dev app state and manual acceptance evidence:
 
@@ -258,7 +260,7 @@ Header: x-monitor-token: <startup-token>
 | Limitation | Notes |
 |---|---|
 | Window detection depends on OS permissions | The app prefers window IDs and process metadata, then falls back to titles |
-| Direct `claude` / `codex` sessions are conservative | Wrapper scripts or JSON events are more reliable for fine-grained status |
+| Direct `claude` / `codex` sessions are conservative | Claude uses only the matching PID session state and real working directory; Codex remains CLI-only; wrapper scripts or JSON events are more reliable for fine-grained status |
 | Windows floating entry is not yet a stable delivery target | The current path is a lightweight WinForms/PowerShell preview and still needs a dedicated Windows acceptance pass |
 | Linux is not the first release target | The architecture leaves room for later support |
 

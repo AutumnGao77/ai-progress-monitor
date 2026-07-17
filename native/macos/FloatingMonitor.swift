@@ -10,6 +10,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     private var stdoutPipe: Pipe?
     private var stderrPipe: Pipe?
     private var logHandle: FileHandle?
+    private var monitorRestartWorkItem: DispatchWorkItem?
+    private var monitorRestartAttempt = 0
+    private var isTerminating = false
     private var dragTimer: Timer?
     private var lastDragMouseLocation: NSPoint?
     private let compactWindowWidth: CGFloat = 170
@@ -52,8 +55,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        isTerminating = true
+        monitorRestartWorkItem?.cancel()
+        monitorRestartWorkItem = nil
         stopWindowDrag()
+        stdoutPipe?.fileHandleForReading.readabilityHandler = nil
+        stderrPipe?.fileHandleForReading.readabilityHandler = nil
+        monitorProcess?.terminationHandler = nil
         monitorProcess?.terminate()
+        monitorProcess = nil
         logHandle?.closeFile()
     }
 
@@ -220,13 +230,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     }
 
     private func focusTargetWindow(windowID: String, title: String, processID: Int32?, appName: String, cwd: String) -> (ok: Bool, detail: String) {
-        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
-        guard AXIsProcessTrustedWithOptions(options) else {
-            return (false, "accessibility-permission-required")
-        }
         let apps = runningApplications(processID: processID, appName: appName)
         guard !apps.isEmpty else {
             return (false, "application-not-found")
+        }
+        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+        if !AXIsProcessTrustedWithOptions(options) {
+            if isDesktopAIApp(appName), let app = apps.first {
+                return activateRunningApplication(app)
+            }
+            return (false, "accessibility-permission-required")
         }
         let cleanWindowID = windowID.trimmingCharacters(in: .whitespacesAndNewlines)
         var sawWindowListFailure = false
@@ -567,8 +580,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     }
 
     private func startMonitor() {
+        guard !isTerminating else { return }
+        if monitorProcess?.isRunning == true {
+            return
+        }
+        monitorRestartWorkItem?.cancel()
+        monitorRestartWorkItem = nil
         guard let pyz = Bundle.main.resourceURL?.appendingPathComponent("ai-progress-monitor.pyz") else {
             writeLog("ai-progress-monitor.pyz not found")
+            scheduleMonitorRestart()
             return
         }
         let process = Process()
@@ -587,13 +607,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         err.fileHandleForReading.readabilityHandler = { [weak self] handle in
             self?.writeLog(String(data: handle.availableData, encoding: .utf8) ?? "")
         }
+        process.terminationHandler = { [weak self] terminatedProcess in
+            DispatchQueue.main.async {
+                self?.handleMonitorTermination(terminatedProcess)
+            }
+        }
 
         do {
             try process.run()
             monitorProcess = process
+            writeLog("Monitor service started pid=\(process.processIdentifier)")
         } catch {
+            out.fileHandleForReading.readabilityHandler = nil
+            err.fileHandleForReading.readabilityHandler = nil
+            process.terminationHandler = nil
             writeLog("Failed to start monitor: \(error)")
+            scheduleMonitorRestart()
         }
+    }
+
+    private func handleMonitorTermination(_ process: Process) {
+        guard monitorProcess === process else { return }
+        stdoutPipe?.fileHandleForReading.readabilityHandler = nil
+        stderrPipe?.fileHandleForReading.readabilityHandler = nil
+        stdoutPipe = nil
+        stderrPipe = nil
+        monitorProcess = nil
+        writeLog("Monitor service exited status=\(process.terminationStatus)")
+        if !isTerminating {
+            scheduleMonitorRestart()
+        }
+    }
+
+    private func scheduleMonitorRestart() {
+        guard !isTerminating, monitorRestartWorkItem == nil else { return }
+        monitorRestartAttempt += 1
+        let delay = min(pow(2.0, Double(max(0, monitorRestartAttempt - 1))), 30.0)
+        writeLog("Scheduling monitor service restart attempt=\(monitorRestartAttempt) delay=\(delay)s")
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self = self else { return }
+            self.monitorRestartWorkItem = nil
+            self.startMonitor()
+        }
+        monitorRestartWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
     }
 
     private func handleOutput(_ text: String) {
@@ -605,6 +662,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
             let urlText = String(line[range.lowerBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
             guard let url = URL(string: urlText) else { continue }
             DispatchQueue.main.async { [weak self] in
+                self?.monitorRestartAttempt = 0
                 self?.webView.load(URLRequest(url: url))
                 self?.showMonitor()
             }

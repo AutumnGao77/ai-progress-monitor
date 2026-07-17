@@ -11,7 +11,7 @@ from typing import Iterable, List, Optional
 from .actions import ActionExecutor, is_low_risk_action
 from .demo import DemoSource
 from .models import SessionStatus, SessionUpdate
-from .sources import CodexSessionSource, JsonSessionSource, OsWindowSource
+from .sources import ChatGPTSessionSource, JsonSessionSource, OsWindowSource
 from .store import SessionStore
 
 
@@ -130,7 +130,7 @@ class ProgressPetApp:
         ttk.Button(header, text="隐藏", command=self.panel.destroy).pack(side="right", padx=6)
 
         if not sessions:
-            tk.Label(self.panel, text="暂无 Claude Code / Codex 会话", bg="#f8fafc", fg="#6b7280").pack(pady=40)
+            tk.Label(self.panel, text="暂无 AI 会话", bg="#f8fafc", fg="#6b7280").pack(pady=40)
             return
 
         for session in sessions:
@@ -190,15 +190,15 @@ def build_sources(args) -> List:
         sources.append(DemoSource())
     session_dir = Path(args.session_dir or os.environ.get("AI_PROGRESS_MONITOR_HOME", Path.home() / ".ai-progress-monitor" / "sessions"))
     sources.append(JsonSessionSource(session_dir, source_started_at=source_started_at))
-    sources.append(CodexSessionSource(source_started_at=source_started_at))
+    sources.append(ChatGPTSessionSource(source_started_at=source_started_at))
     if not args.no_windows:
         sources.append(OsWindowSource())
     return sources
 
 
 def main(argv: Optional[List[str]] = None) -> int:
-    parser = argparse.ArgumentParser(description="Low-intrusion Claude Code and Codex progress monitor")
-    parser.add_argument("--demo", action="store_true", help="Show sample Claude Code and Codex sessions")
+    parser = argparse.ArgumentParser(description="Low-intrusion Claude Code and ChatGPT progress monitor")
+    parser.add_argument("--demo", action="store_true", help="Show sample Claude Code and ChatGPT sessions")
     parser.add_argument("--session-dir", help="Directory containing JSON session files")
     parser.add_argument("--no-windows", action="store_true", help="Disable OS window scanning")
     parser.add_argument("--poll-ms", type=int, default=3000, help="Refresh interval in milliseconds")

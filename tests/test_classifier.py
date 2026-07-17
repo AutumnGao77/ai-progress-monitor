@@ -41,6 +41,17 @@ class ClassifierTests(unittest.TestCase):
         self.assertEqual(result.status, SessionStatus.RUNNING)
         self.assertIsNone(result.safe_action)
 
+    def test_detects_chatgpt_desktop_running_from_title(self):
+        result = classify_session_text(
+            title="ChatGPT Desktop - running command",
+            text="Executing tests...",
+            source_id="chatgpt-1",
+        )
+
+        self.assertEqual(result.tool, ToolKind.CHATGPT)
+        self.assertEqual(result.status, SessionStatus.RUNNING)
+        self.assertIsNone(result.safe_action)
+
     def test_detects_completed_state(self):
         result = classify_session_text(
             title="Claude Code",

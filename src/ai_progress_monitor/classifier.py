@@ -44,6 +44,8 @@ def classify_session_text(title: str, text: str, source_id: str) -> SessionUpdat
 def _detect_tool(text: str) -> ToolKind:
     if "claude" in text:
         return ToolKind.CLAUDE_CODE
+    if "chatgpt" in text:
+        return ToolKind.CHATGPT
     if "codex" in text:
         return ToolKind.CODEX
     return ToolKind.UNKNOWN
@@ -51,7 +53,7 @@ def _detect_tool(text: str) -> ToolKind:
 
 def _detect_surface(text: str) -> SurfaceKind:
     terminal_markers = ("terminal", "iterm", "powershell", "cmd", "windows terminal", "bash", "zsh")
-    desktop_markers = ("desktop", "app", "codex")
+    desktop_markers = ("desktop", "app", "codex", "chatgpt")
     if any(marker in text for marker in terminal_markers):
         return SurfaceKind.TERMINAL
     if any(marker in text for marker in desktop_markers):
