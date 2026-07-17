@@ -25,6 +25,7 @@ python3 scripts/validate_release.py
 | 三态 Pet 资源与外观切换 | `PYTHONPATH=src python3 -m unittest tests.test_web_ui tests.test_web_launch tests.test_web_ui_behavior tests.test_preferences` | 三态图片路由、衬衫树懒外观路由、APP 头像、可配置资源、透明角、状态切图和右键外观子菜单均通过；运行时 APP 头像为透明圆形，无水印和圆外方框背景 |
 | 原生透明背景 | `PYTHONPATH=src python3 -m unittest tests.test_web_ui` | `.pet` 不添加 `drop-shadow`；WebView 背景保持透明 |
 | 发布包构建 | `python3 scripts/build_release.py` | 生成 `dist/ai-progress-monitor.pyz` 和 `dist/ai-progress-monitor-release.zip` |
+| 版本一致性 | `PYTHONPATH=src python3 -m unittest tests.test_macos_app_bundle` | `ai_progress_monitor.__version__`、`pyproject.toml`、两个 macOS App 的 `CFBundleVersion` / `CFBundleShortVersionString` 一致；正式 Tag 使用对应的 `v<版本号>`，已发布 Tag 不移动 |
 | macOS App 外壳 | 解压 release zip | 包含 `AI Progress Monitor.app` 和 `AI Progress Monitor Floating.app` |
 | macOS App 图标 | 检查两个 `.app/Contents/Resources/` 和 `Info.plist` | 包含 `app-avatar.png`、`AppIcon.icns`，且 `CFBundleIconFile` 为 `AppIcon` |
 | 发布包视觉资源 | 检查 `dist/ai-progress-monitor.pyz` 内容 | 包含 `sloth-pet-idle.png`、`sloth-pet-running.png`、`sloth-pet-needs-action.png`、`sloth-pet-shirt.png`、`app-avatar.png` |

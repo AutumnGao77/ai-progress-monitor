@@ -48,6 +48,18 @@ class MacOSAppBundleTests(unittest.TestCase):
                     self.assertEqual(icon.read_bytes()[:4], b"icns")
                     self.assertIn("<key>CFBundleIconFile</key>", plist)
                     self.assertIn("<string>AppIcon</string>", plist)
+                    self.assertEqual(
+                        plist.count(f"<string>{build_release.RELEASE_VERSION}</string>"),
+                        2,
+                    )
+
+    def test_release_version_matches_python_and_project_metadata(self):
+        from ai_progress_monitor import __version__
+
+        pyproject = (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text()
+
+        self.assertEqual(build_release.RELEASE_VERSION, __version__)
+        self.assertIn(f'version = "{__version__}"', pyproject)
 
     def test_launcher_opens_pyz_with_open_flag(self):
         with tempfile.TemporaryDirectory() as temp_dir:
