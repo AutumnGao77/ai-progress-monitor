@@ -3,6 +3,7 @@ import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest import mock
 
 from ai_progress_monitor.actions import ActionExecutor
 from ai_progress_monitor.demo import DemoSource
@@ -327,6 +328,22 @@ class MonitorServiceTests(unittest.TestCase):
         self.assertLess(elapsed, 0.35)
         self.assertTrue(all(source.polled for source in sources))
 
+    def test_refresh_isolates_one_failed_source_and_keeps_other_sessions_visible(self):
+        class BrokenSource:
+            def poll(self):
+                raise RuntimeError("private source detail")
+
+        service = MonitorService([BrokenSource(), DemoSource()], SessionStore(), ActionExecutor())
+
+        with mock.patch("builtins.print") as printer:
+            payload = service.sessions_payload()
+
+        self.assertEqual(len(payload), 3)
+        printer.assert_called_once_with(
+            "AI Progress Monitor source failed: BrokenSource (RuntimeError)",
+            flush=True,
+        )
+
     def test_visible_sessions_hide_process_only_duplicate_when_full_session_has_same_process_id(self):
         full = SessionUpdate(
             "json-claude",
@@ -427,6 +444,50 @@ class MonitorServiceTests(unittest.TestCase):
 
         self.assertEqual([session["session_id"] for session in payload], ["codex-session-1"])
         self.assertEqual(payload[0]["monitoring_level"], "full")
+
+    def test_chatgpt_full_session_replaces_idle_fallback_and_focuses_chatgpt(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            full_session = SessionUpdate(
+                "chatgpt-session-1",
+                "ChatGPT Desktop - 20260703AIcoding",
+                ToolKind.CHATGPT,
+                SurfaceKind.DESKTOP,
+                SessionStatus.NEEDS_ACTION,
+                "ChatGPT 回复已完成，等待查看。",
+                SessionUpdate.now(),
+                source="chatgpt-session",
+                focus_app_name="ChatGPT",
+                tool_display_name="ChatGPT",
+                view_ack_required=True,
+            )
+            app_fallback = SessionUpdate(
+                "process-40001",
+                "ChatGPT Desktop",
+                ToolKind.CHATGPT,
+                SurfaceKind.DESKTOP,
+                SessionStatus.IDLE,
+                "desktop fallback",
+                SessionUpdate.now(),
+                source="process",
+                process_id=40001,
+                focus_process_id=40001,
+                focus_app_name="ChatGPT",
+                tool_display_name="ChatGPT",
+            )
+            store = SessionStore(audit_dir=Path(temp_dir))
+            store.apply_updates([app_fallback, full_session])
+            focused = []
+            focus_manager = WindowFocusManager(sender=lambda target: focused.append(target) or FocusResult(True, "focused"))
+            service = MonitorService([], store, ActionExecutor(), focus_manager=focus_manager)
+
+            payload = service.sessions_payload()
+            result = service.focus_session("chatgpt-session-1")
+
+            self.assertEqual([session["session_id"] for session in payload], ["chatgpt-session-1"])
+            self.assertEqual(payload[0]["monitoring_level"], "full")
+            self.assertTrue(result.ok)
+            self.assertEqual(focused[0].app_name, "ChatGPT")
+            self.assertEqual(service.sessions_payload()[0]["status"], "idle")
 
     def test_process_only_payload_includes_focus_metadata_for_bubble_navigation(self):
         source = VolatileProcessSource(

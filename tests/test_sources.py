@@ -11,7 +11,7 @@ from unittest import mock
 from ai_progress_monitor.models import SessionStatus, SurfaceKind, ToolKind
 from ai_progress_monitor.sources import (
     AiToolDefinition,
-    CodexSessionSource,
+    ChatGPTSessionSource,
     SOURCE_COMMAND_TIMEOUT_SECONDS,
     JsonSessionSource,
     _classify_process_rows,
@@ -40,7 +40,15 @@ def write_json_session(path: Path, status: str, updated_at: datetime) -> None:
 
 
 def write_codex_jsonl(path: Path, events: list) -> None:
-    path.write_text("\n".join(json.dumps(event) for event in events) + "\n", encoding="utf-8")
+    normalized_events = []
+    for event in events:
+        normalized = dict(event)
+        payload = normalized.get("payload")
+        if normalized.get("type") == "session_meta" and isinstance(payload, dict):
+            normalized["payload"] = dict(payload)
+            normalized["payload"].setdefault("originator", "Codex Desktop")
+        normalized_events.append(normalized)
+    path.write_text("\n".join(json.dumps(event) for event in normalized_events) + "\n", encoding="utf-8")
 
 
 class SourceTests(unittest.TestCase):
@@ -311,6 +319,16 @@ class SourceTests(unittest.TestCase):
 
         self.assertEqual(updates, [])
 
+    def test_ignores_exiting_or_zombie_cli_processes_even_with_attached_terminal(self):
+        rows = [
+            "process_id=27876\tprocess_name=codex\tcommand=codex\tcwd=/Users/Gao/Documents/checkout-flow\tcpu_percent=0.0\tstat=UEs+\tactive_child_count=0",
+            "process_id=27877\tprocess_name=claude\tcommand=claude\tcwd=/Users/Gao/Documents/docs\tcpu_percent=0.0\tstat=Z+\tactive_child_count=0",
+        ]
+
+        updates = list(_classify_process_rows(rows))
+
+        self.assertEqual(updates, [])
+
     def test_classifies_direct_claude_process_as_running_when_cpu_or_child_is_active(self):
         rows = [
             "process_id=27876\tprocess_name=claude\tcommand=claude\tcwd=/Users/Gao/Documents/checkout-flow\tcpu_percent=2.4\tstat=S+\tactive_child_count=0",
@@ -343,6 +361,53 @@ class SourceTests(unittest.TestCase):
             self.assertEqual(updates[0].status, SessionStatus.IDLE)
             self.assertEqual(updates[0].cwd, "/Users/Gao/Documents/projects/网点清场")
             self.assertEqual(updates[0].status_source, "claude-session")
+
+    def test_claude_process_without_scanned_cwd_uses_its_own_pid_session_cwd(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            Path(temp_dir, "27876.json").write_text(
+                json.dumps(
+                    {
+                        "pid": 27876,
+                        "cwd": "/Users/Gao/Documents/StudyCC",
+                        "status": "idle",
+                        "updatedAt": int(time() * 1000),
+                    }
+                )
+            )
+            rows = [
+                "process_id=27876\tprocess_name=claude\tcommand=claude\tcwd=\tcpu_percent=0.0\tstat=S+\tactive_child_count=0"
+            ]
+
+            updates = list(_classify_process_rows(rows, claude_sessions_dir=Path(temp_dir)))
+
+            self.assertEqual(len(updates), 1)
+            self.assertEqual(updates[0].title, "Claude Code CLI - StudyCC")
+            self.assertEqual(updates[0].cwd, "/Users/Gao/Documents/StudyCC")
+            self.assertEqual(updates[0].status_source, "claude-session")
+
+    def test_claude_session_from_different_cwd_cannot_override_live_process(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            Path(temp_dir, "27876.json").write_text(
+                json.dumps(
+                    {
+                        "pid": 27876,
+                        "cwd": "/Users/Gao/Documents/wrong-project",
+                        "status": "waiting",
+                        "updatedAt": int(time() * 1000),
+                    }
+                )
+            )
+            rows = [
+                "process_id=27876\tprocess_name=claude\tcommand=claude\tcwd=/Users/Gao/Documents/StudyCC\tcpu_percent=0.0\tstat=S+\tactive_child_count=0"
+            ]
+
+            updates = list(_classify_process_rows(rows, claude_sessions_dir=Path(temp_dir)))
+
+            self.assertEqual(len(updates), 1)
+            self.assertEqual(updates[0].title, "Claude Code CLI - StudyCC")
+            self.assertEqual(updates[0].cwd, "/Users/Gao/Documents/StudyCC")
+            self.assertEqual(updates[0].status, SessionStatus.IDLE)
+            self.assertEqual(updates[0].status_source, "process")
 
     def test_claude_prompt_session_file_is_idle_for_quiet_process(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -554,21 +619,164 @@ class SourceTests(unittest.TestCase):
                 ],
             )
 
-            updates = CodexSessionSource(
+            updates = ChatGPTSessionSource(
                 Path(temp_dir),
                 now=lambda: datetime(2026, 7, 2, 14, 1, 5, tzinfo=timezone.utc),
             ).poll()
 
             self.assertEqual(len(updates), 1)
-            self.assertEqual(updates[0].session_id, "codex-session-codex-active")
-            self.assertEqual(updates[0].title, "Codex Desktop - 20260703AIcoding")
-            self.assertEqual(updates[0].tool, ToolKind.CODEX)
+            self.assertEqual(updates[0].session_id, "chatgpt-session-codex-active")
+            self.assertEqual(updates[0].title, "ChatGPT Desktop - 20260703AIcoding")
+            self.assertEqual(updates[0].tool, ToolKind.CHATGPT)
             self.assertEqual(updates[0].status, SessionStatus.RUNNING)
             self.assertEqual(updates[0].surface.value, "desktop")
-            self.assertEqual(updates[0].source, "codex-session")
-            self.assertEqual(updates[0].focus_app_name, "Codex")
+            self.assertEqual(updates[0].source, "chatgpt-session")
+            self.assertEqual(updates[0].focus_app_name, "ChatGPT")
+            self.assertEqual(updates[0].tool_display_name, "ChatGPT")
             self.assertEqual(updates[0].cwd, "/Users/Gao/Documents/20260703AIcoding")
             self.assertFalse(updates[0].generated_conversation_path)
+
+    def test_chatgpt_session_source_accepts_future_chatgpt_desktop_originator(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            session_file = Path(temp_dir) / "rollout-chatgpt-desktop.jsonl"
+            write_codex_jsonl(
+                session_file,
+                [
+                    {
+                        "type": "session_meta",
+                        "timestamp": "2026-07-02T14:00:00+00:00",
+                        "payload": {
+                            "id": "chatgpt-desktop",
+                            "cwd": "/Users/Gao/Documents/20260703AIcoding",
+                            "originator": "ChatGPT Desktop",
+                        },
+                    },
+                    {
+                        "type": "event_msg",
+                        "timestamp": "2026-07-02T14:01:00+00:00",
+                        "payload": {"type": "task_started", "turn_id": "turn-1"},
+                    },
+                ],
+            )
+
+            updates = ChatGPTSessionSource(
+                Path(temp_dir),
+                now=lambda: datetime(2026, 7, 2, 14, 1, 5, tzinfo=timezone.utc),
+            ).poll()
+
+            self.assertEqual(len(updates), 1)
+            self.assertEqual(updates[0].tool, ToolKind.CHATGPT)
+
+    def test_chatgpt_session_source_keeps_multiple_sessions_in_same_folder(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            for session_id, minute in (("chatgpt-first", 1), ("chatgpt-second", 2)):
+                write_codex_jsonl(
+                    Path(temp_dir) / f"rollout-{session_id}.jsonl",
+                    [
+                        {
+                            "type": "session_meta",
+                            "timestamp": "2026-07-02T14:00:00+00:00",
+                            "payload": {
+                                "id": session_id,
+                                "cwd": "/Users/Gao/Documents/20260703AIcoding",
+                                "originator": "ChatGPT Desktop",
+                            },
+                        },
+                        {
+                            "type": "event_msg",
+                            "timestamp": f"2026-07-02T14:0{minute}:00+00:00",
+                            "payload": {"type": "task_started", "turn_id": "turn-1"},
+                        },
+                    ],
+                )
+
+            updates = ChatGPTSessionSource(
+                Path(temp_dir),
+                now=lambda: datetime(2026, 7, 2, 14, 2, 5, tzinfo=timezone.utc),
+            ).poll()
+
+            self.assertCountEqual(
+                [update.session_id for update in updates],
+                ["chatgpt-session-chatgpt-first", "chatgpt-session-chatgpt-second"],
+            )
+            self.assertTrue(all(update.tool == ToolKind.CHATGPT for update in updates))
+            self.assertTrue(all(update.cwd == "/Users/Gao/Documents/20260703AIcoding" for update in updates))
+
+    def test_chatgpt_session_source_ignores_codex_cli_originator(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            session_file = Path(temp_dir) / "rollout-codex-cli.jsonl"
+            write_codex_jsonl(
+                session_file,
+                [
+                    {
+                        "type": "session_meta",
+                        "timestamp": "2026-07-02T14:00:00+00:00",
+                        "payload": {
+                            "id": "codex-cli",
+                            "cwd": "/Users/Gao/Documents/20260703AIcoding",
+                            "originator": "codex_cli_rs",
+                        },
+                    },
+                    {
+                        "type": "event_msg",
+                        "timestamp": "2026-07-02T14:01:00+00:00",
+                        "payload": {"type": "task_started", "turn_id": "turn-1"},
+                    },
+                ],
+            )
+
+            updates = ChatGPTSessionSource(
+                Path(temp_dir),
+                now=lambda: datetime(2026, 7, 2, 14, 1, 5, tzinfo=timezone.utc),
+            ).poll()
+
+            self.assertEqual(updates, [])
+
+    def test_chatgpt_session_source_ignores_unidentified_session_originator(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            session_file = Path(temp_dir) / "rollout-unknown-originator.jsonl"
+            write_codex_jsonl(
+                session_file,
+                [
+                    {
+                        "type": "session_meta",
+                        "timestamp": "2026-07-02T14:00:00+00:00",
+                        "payload": {
+                            "id": "unknown-originator",
+                            "cwd": "/Users/Gao/Documents/20260703AIcoding",
+                            "originator": None,
+                        },
+                    },
+                    {
+                        "type": "event_msg",
+                        "timestamp": "2026-07-02T14:01:00+00:00",
+                        "payload": {"type": "task_started", "turn_id": "turn-1"},
+                    },
+                ],
+            )
+
+            updates = ChatGPTSessionSource(
+                Path(temp_dir),
+                now=lambda: datetime(2026, 7, 2, 14, 1, 5, tzinfo=timezone.utc),
+            ).poll()
+
+            self.assertEqual(updates, [])
+
+    def test_chatgpt_session_source_skips_file_removed_during_directory_scan(self):
+        class RemovedSessionPath:
+            def stat(self):
+                raise FileNotFoundError("session rotated")
+
+        class SessionDirectory:
+            def exists(self):
+                return True
+
+            def glob(self, _pattern):
+                return [RemovedSessionPath()]
+
+        updates = ChatGPTSessionSource(SessionDirectory()).poll()
+
+        self.assertEqual(updates, [])
 
     def test_codex_session_source_marks_plan_user_input_function_call_as_needs_action(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -598,7 +806,7 @@ class SourceTests(unittest.TestCase):
                 ],
             )
 
-            updates = CodexSessionSource(
+            updates = ChatGPTSessionSource(
                 Path(temp_dir),
                 now=lambda: datetime(2026, 7, 2, 14, 1, 35, tzinfo=timezone.utc),
             ).poll()
@@ -640,7 +848,7 @@ class SourceTests(unittest.TestCase):
                 ],
             )
 
-            updates = CodexSessionSource(
+            updates = ChatGPTSessionSource(
                 Path(temp_dir),
                 now=lambda: datetime(2026, 7, 2, 14, 1, 50, tzinfo=timezone.utc),
             ).poll()
@@ -671,7 +879,7 @@ class SourceTests(unittest.TestCase):
                 ],
             )
 
-            updates = CodexSessionSource(
+            updates = ChatGPTSessionSource(
                 Path(temp_dir),
                 now=lambda: datetime(2026, 7, 2, 14, 1, 5, tzinfo=timezone.utc),
             ).poll()
@@ -703,7 +911,7 @@ class SourceTests(unittest.TestCase):
                 ],
             )
 
-            updates = CodexSessionSource(
+            updates = ChatGPTSessionSource(
                 Path(temp_dir),
                 now=lambda: datetime(2026, 7, 2, 14, 5, 1, tzinfo=timezone.utc),
                 completed_visible_seconds=120,
@@ -740,7 +948,7 @@ class SourceTests(unittest.TestCase):
                 ],
             )
 
-            updates = CodexSessionSource(
+            updates = ChatGPTSessionSource(
                 Path(temp_dir),
                 now=lambda: datetime(2026, 7, 2, 14, 1, 35, tzinfo=timezone.utc),
             ).poll()
@@ -778,7 +986,7 @@ class SourceTests(unittest.TestCase):
                 ],
             )
 
-            updates = CodexSessionSource(
+            updates = ChatGPTSessionSource(
                 Path(temp_dir),
                 now=lambda: datetime(2026, 7, 2, 14, 30, tzinfo=timezone.utc),
                 source_started_at=datetime(2026, 7, 2, 14, 30, tzinfo=timezone.utc),
@@ -815,7 +1023,7 @@ class SourceTests(unittest.TestCase):
                 ],
             )
 
-            updates = CodexSessionSource(
+            updates = ChatGPTSessionSource(
                 Path(temp_dir),
                 now=lambda: datetime(2026, 7, 2, 14, 30, tzinfo=timezone.utc),
                 running_stale_seconds=600,
@@ -850,7 +1058,7 @@ class SourceTests(unittest.TestCase):
                 ],
             )
 
-            updates = CodexSessionSource(
+            updates = ChatGPTSessionSource(
                 Path(temp_dir),
                 now=lambda: datetime(2026, 7, 2, 14, 30, tzinfo=timezone.utc),
                 running_stale_seconds=600,
@@ -886,7 +1094,7 @@ class SourceTests(unittest.TestCase):
                 ],
             )
 
-            updates = CodexSessionSource(
+            updates = ChatGPTSessionSource(
                 Path(temp_dir),
                 now=lambda: datetime(2026, 7, 2, 14, 41, 35, tzinfo=timezone.utc),
             ).poll()
@@ -906,22 +1114,14 @@ class SourceTests(unittest.TestCase):
         self.assertEqual(updates[0].focus_process_id, 38434)
         self.assertEqual(updates[0].focus_app_name, "Codex")
 
-    def test_configured_desktop_ai_app_process_creates_idle_fallback_entry(self):
+    def test_retired_codex_desktop_app_is_not_treated_as_active_product(self):
         rows = [
             "process_id=38434\tprocess_name=/Applications/Codex.app/Contents/MacOS/Codex\tcommand=/Applications/Codex.app/Contents/MacOS/Codex"
         ]
 
         updates = list(_classify_process_rows(rows))
 
-        self.assertEqual(len(updates), 1)
-        self.assertEqual(updates[0].session_id, "process-38434")
-        self.assertEqual(updates[0].title, "Codex Desktop")
-        self.assertEqual(updates[0].tool, ToolKind.CODEX)
-        self.assertEqual(updates[0].surface.value, "desktop")
-        self.assertEqual(updates[0].status, SessionStatus.IDLE)
-        self.assertEqual(updates[0].focus_process_id, 38434)
-        self.assertEqual(updates[0].focus_app_name, "Codex")
-        self.assertEqual(updates[0].tool_display_name, "Codex")
+        self.assertEqual(updates, [])
 
     def test_configured_desktop_ai_app_uses_generic_tool_display_name(self):
         rows = [
@@ -933,7 +1133,7 @@ class SourceTests(unittest.TestCase):
         self.assertEqual(len(updates), 1)
         self.assertEqual(updates[0].session_id, "process-40001")
         self.assertEqual(updates[0].title, "ChatGPT Desktop")
-        self.assertEqual(updates[0].tool, ToolKind.UNKNOWN)
+        self.assertEqual(updates[0].tool, ToolKind.CHATGPT)
         self.assertEqual(updates[0].surface.value, "desktop")
         self.assertEqual(updates[0].status, SessionStatus.IDLE)
         self.assertEqual(updates[0].focus_app_name, "ChatGPT")
@@ -3320,7 +3520,7 @@ class SourceTests(unittest.TestCase):
         self.assertIn("codex|codex.exe", script)
         self.assertIn("focus_process_id=%s", script)
         self.assertIn("focus_app_name=%s", script)
-        self.assertIn("/codex.app/contents/macos/codex", script)
+        self.assertNotIn("/codex.app/contents/macos/codex", script)
         self.assertIn("/claude.app/contents/macos/claude", script)
         self.assertIn("/Zed.app/", script)
         self.assertIn("/Cursor.app/", script)
@@ -3370,6 +3570,20 @@ class SourceTests(unittest.TestCase):
         script = _posix_process_command()[-1]
 
         self.assertIn('case "$exe" in claude|claude.exe) ;; *) cwd=$(lsof -a -p', script)
+
+    def test_posix_process_command_skips_terminating_rows_before_expensive_lookup(self):
+        script = _posix_process_command()[-1]
+
+        terminating_filter = 'case "$stat" in Z*|?*E*) continue ;; esac;'
+        self.assertIn(terminating_filter, script)
+        self.assertLess(script.index(terminating_filter), script.index("lsof -a -p"))
+
+    def test_posix_process_command_resets_cwd_before_each_cli_lookup(self):
+        script = _posix_process_command()[-1]
+
+        reset_index = script.index('cwd=; case "$exe" in claude|claude.exe)')
+        emit_index = script.index("printf 'process_id=%s\\tprocess_name=%s\\tcommand=%s\\tcwd=%s")
+        self.assertLess(reset_index, emit_index)
 
     def test_posix_process_command_samples_process_table_once_for_child_activity(self):
         script = _posix_process_command()[-1]

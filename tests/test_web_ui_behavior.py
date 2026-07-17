@@ -92,7 +92,7 @@ class WebUiBehaviorTests(unittest.TestCase):
         self.assertEqual(payload["emptyBadgeText"], "")
         self.assertNotIn("show", payload["emptyBadgeClass"])
         self.assertIn("idle", payload["emptyPetClass"])
-        self.assertIn("暂无 Claude/Codex 会话", payload["emptyBubbleHtml"])
+        self.assertIn("暂无 AI 会话", payload["emptyBubbleHtml"])
         self.assertEqual(payload["runningBadgeText"], "1")
         self.assertIn("badge-running", payload["runningBadgeClass"])
         self.assertIn("running", payload["runningPetClass"])

@@ -162,7 +162,7 @@ def build_release_bundle() -> None:
                 "  If you run a configured AI CLI directly, the monitor shows a process-only bubble while the CLI is still interactive.",
                 "  Claude Code prefers its local session state: running stays running, quiet idle stays idle, and a freshly completed reply becomes needs-action until you click its bubble.",
                 "  Codex, Qoder, WorkBuddy, codebuddy, and other generic CLI tools are currently classified conservatively by process activity unless they use a wrapper or JSON event source.",
-                "  Codex Desktop sessions are read from local session events when available.",
+                "  ChatGPT Desktop sessions are read from the compatible ~/.codex/sessions event directory when available.",
                 "  Qoder Desktop sessions are read from local Qoder/Qoder CN logs when available.",
                 "  WorkBuddy Desktop sessions are read from explicit local WorkBuddy session database states when available; ambiguous blank Pending sessions stay as the desktop idle entry.",
                 "  A viewed desktop conversation stays idle for 15 minutes, then leaves the bubble list; if the desktop app is still alive, the app idle entry remains.",

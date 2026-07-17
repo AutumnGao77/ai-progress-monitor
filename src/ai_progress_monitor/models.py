@@ -9,6 +9,7 @@ from typing import Optional, Tuple
 class ToolKind(str, Enum):
     CLAUDE_CODE = "claude_code"
     CODEX = "codex"
+    CHATGPT = "chatgpt"
     UNKNOWN = "unknown"
 
 

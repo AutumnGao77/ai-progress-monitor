@@ -1,5 +1,7 @@
 # 原创树懒 Pet 监控助手迭代 PRD
 
+> 历史迭代说明：本文件记录 2026-07-01 的基础 Pet 体验。当前右键菜单已由 `2026-07-11-pet-appearance-theme-switching-prd.md` 扩展为“外观 / 隐藏 Pet / 退出程序”；2026-07-17 起桌面完整会话统一显示为 ChatGPT Desktop，Codex 仅保留 CLI 监控。当前执行口径以 `2026-07-01-ai-sloth-pet-monitor-ai-coding-prd.md`、后续增量 PRD 和最新 QA 为准。
+
 ## 1. 结论
 
 本次迭代建议将 AI Progress Monitor 从“工具窗口式监控器”升级为 **原创树懒桌面 Pet**：默认以动画人物常驻桌面，通过树懒动作、气泡列表和右上角数字角标表达 Claude Code、Codex 及后续通过工具定义表配置的 AI 工具并行工作状态。

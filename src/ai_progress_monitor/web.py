@@ -21,7 +21,7 @@ from .doctor import run_diagnostics
 from .notifier import NotificationManager
 from .preferences import normalize_pet_appearance
 from .service import MonitorService
-from .sources import CodexSessionSource, JsonSessionSource, OsWindowSource, ProcessSource
+from .sources import ChatGPTSessionSource, JsonSessionSource, OsWindowSource, ProcessSource
 from .store import SessionStore
 
 
@@ -216,7 +216,7 @@ def build_sources(args) -> List:
             source_started_at=source_started_at,
         )
     )
-    sources.append(CodexSessionSource(source_started_at=source_started_at))
+    sources.append(ChatGPTSessionSource(source_started_at=source_started_at))
     sources.append(ProcessSource(source_started_at=source_started_at))
     if not args.no_windows:
         sources.append(OsWindowSource())
@@ -494,8 +494,8 @@ def pet_appearance_snapshot_line(theme: str) -> str:
 
 
 def main(argv: Optional[List[str]] = None) -> int:
-    parser = argparse.ArgumentParser(description="Web companion for Claude Code and Codex progress")
-    parser.add_argument("--demo", action="store_true", help="Show sample Claude Code and Codex sessions")
+    parser = argparse.ArgumentParser(description="Web companion for Claude Code and ChatGPT progress")
+    parser.add_argument("--demo", action="store_true", help="Show sample Claude Code and ChatGPT sessions")
     parser.add_argument("--session-dir", help="Directory containing JSON session files")
     parser.add_argument("--response-dir", help="Directory where pet actions write response files")
     parser.add_argument("--no-windows", action="store_true", help="Disable OS window scanning")
@@ -624,7 +624,7 @@ window.PET_APPEARANCE = __PET_APPEARANCE__;
 const statusLabel = {needs_action:"待处理", running:"进行中", idle:"空闲"};
 const statusRank = {needs_action:1, running:2, idle:3};
 const badgeClass = {needs_action:"badge-needs-action", running:"badge-running", idle:"badge-idle"};
-const toolLabel = {claude_code:"Claude", codex:"Codex", unknown:"AI"};
+const toolLabel = {claude_code:"Claude", codex:"Codex", chatgpt:"ChatGPT", unknown:"AI"};
 const pet = document.getElementById("pet");
 const petArt = document.getElementById("petArt");
 const petBadge = document.getElementById("petBadge");
@@ -833,7 +833,7 @@ function renderBubbles(sessions) {
   prepareBubbleSequences(sessions);
   const sorted = sessions.slice().sort((a, b) => statusRank[displayStatus(a)] - statusRank[displayStatus(b)]);
   if (!sorted.length) {
-    bubbleList.innerHTML = '<button class="session-bubble idle" type="button"><span class="bubble-title">暂无 Claude/Codex 会话</span><span class="bubble-meta">空闲</span></button>';
+    bubbleList.innerHTML = '<button class="session-bubble idle" type="button"><span class="bubble-title">暂无 AI 会话</span><span class="bubble-meta">空闲</span></button>';
     return;
   }
   bubbleList.innerHTML = sorted.map(session => sessionBubbleHtml(session, sessions)).join("");
@@ -977,6 +977,8 @@ function sessionToolName(session) {
 function folderName(title) {
   const normalized = String(title || "")
     .replace(/claude code/ig, "")
+    .replace(/chatgpt desktop/ig, "")
+    .replace(/chatgpt/ig, "")
     .replace(/codex desktop/ig, "")
     .replace(/codex/ig, "")
     .replace(/terminal/ig, "")

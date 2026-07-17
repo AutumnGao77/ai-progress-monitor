@@ -2,7 +2,7 @@
 
 结论：每次交付前必须先证明核心逻辑、事件接入、原生悬浮入口、进程探测边界、Pet 左键/右键边界和隐私减负主路径都可用。
 
-Pet 外观主题切换的执行 PRD 是 `docs/prd/2026-07-11-pet-appearance-theme-switching-prd.md`；新增 AI 工具监控的执行 PRD 是 `docs/prd/2026-07-14-ai-tool-monitoring-expansion-prd.md`。发布前需确认 PRD、README、QA 报告和本清单中的菜单、资源、偏好、API、App 验收描述一致。
+Pet 外观主题切换的执行 PRD 是 `docs/prd/2026-07-11-pet-appearance-theme-switching-prd.md`；新增 AI 工具监控的执行 PRD 是 `docs/prd/2026-07-14-ai-tool-monitoring-expansion-prd.md`；ChatGPT 迁移与多工具回归记录是 `docs/qa/2026-07-17-chatgpt-and-multi-tool-regression-test-cases.md`。发布前需确认 PRD、README、QA 报告和本清单中的菜单、资源、偏好、API、App 验收描述一致。
 
 ## 必跑检查
 
@@ -35,7 +35,7 @@ python3 scripts/validate_release.py
 | 会话清理 | `python3 dist/ai-progress-monitor.pyz --help` | 参数包含 `--cleanup-after-seconds` |
 | 响应目录 | `python3 dist/ai-progress-monitor.pyz --help` | 参数包含 `--response-dir` |
 | 环境诊断 | `python3 scripts/doctor.py` | 输出 Python、平台、目录、通知、窗口适配检查 |
-| 进程探测边界 | `PYTHONPATH=src python3 -m unittest tests.test_sources tests.test_service tests.test_web_ui` | 直接 CLI 标记为 `process_only`；Claude 终端回复完成后显示待处理，点击气泡成功回到系统终端或 IDE 内置终端后转空闲；Codex、Qoder、WorkBuddy CLI 按进程活跃度保守判断；桌面端具体对话已查看后转空闲并保留 15 分钟后移出；不展示终端内容 |
+| 进程探测边界 | `PYTHONPATH=src python3 -m unittest tests.test_sources tests.test_service tests.test_web_ui` | 直接 CLI 标记为 `process_only`；POSIX 扫描在 `lsof`、子进程和父进程查询前丢弃 `Z/E` 退出态进程，避免单个残留进程耗尽全局扫描预算；Claude 每轮扫描先重置进程级 `cwd`，只使用当前进程或同 PID 且目录一致的状态记录，不虚构其他项目会话；Claude 终端回复完成后显示待处理，点击气泡成功回到系统终端或 IDE 内置终端后转空闲；Codex、Qoder、WorkBuddy CLI 按进程活跃度保守判断；桌面端具体对话已查看后转空闲并保留 15 分钟后移出；不展示终端内容 |
 | Qoder / WorkBuddy 监控 | `PYTHONPATH=src python3 -m unittest tests.test_sources tests.test_service tests.test_store tests.test_web_ui_behavior tests.test_window_focus` | Qoder、Qoder CN、WorkBuddy 均支持桌面空闲入口、具体会话气泡、统一三态、真实标题、点击聚焦、15 分钟收口和退出后清理；用户注意状态不能因点击气泡变空闲 |
 | 原生浮窗 | `PYTHONPATH=src python3 -m unittest tests.test_macos_native_companion tests.test_windows_native_companion` | macOS 已验收路径和 Windows 轻量预览入口的代码级边界被覆盖；Windows 稳定交付仍需单独人工验收 |
 | 端到端冒烟 | `python3 scripts/e2e_smoke.py --artifact dist/ai-progress-monitor.pyz` | 临时启动 Web 服务和 Claude/Codex wrapper，验证服务、事件接入和状态更新链路；新版 Pet 主界面不展示直接回复按钮 |
@@ -57,7 +57,8 @@ python3 scripts/validate_release.py
 | 菜单栏图标 | macOS 菜单栏状态项显示 APP 头像图标，不显示文字 `AI` |
 | 终端桥接 | 用 `scripts/monitor_codex.*` 或 `scripts/monitor_claude.*` 包装命令后，输出能进入 Web Companion |
 | 直接 CLI 探测 | 直接运行 `claude` / `codex` | 显示 process-only 气泡；Claude 终端回复完成后进入“待处理”，点击气泡跳回对应终端后转“空闲”；Codex CLI 活跃为“进行中”、静默为“空闲”；气泡不展示终端内容或技术说明 |
-| 桌面端已查看收口 | Codex 桌面端具体对话进入待处理后点击气泡查看 | 转为空闲后保留 15 分钟；超过 15 分钟具体对话从气泡列表移出，桌面 App 仍存活时显示 App 空闲入口 |
+| ChatGPT 桌面端监控与已查看收口 | ChatGPT 具体对话进入运行中、待处理后点击气泡查看 | 仅接收明确桌面 `originator`；显示真实状态；无辅助功能权限也能激活 ChatGPT；完成待查看转为空闲并保留 15 分钟；超过 15 分钟具体对话移出，ChatGPT 仍存活时显示 App 空闲入口 |
+| App 长期运行恢复 | 终止 Dev.app 的内嵌 Python 子服务 | 原生 App 按指数退避自动拉起新服务、加载新令牌 URL 并恢复会话轮询；退出 App 时不重启 |
 | Qoder / Qoder CN | 打开 Qoder 或 Qoder CN，发起任务或触发 Action Required | App 存活但无具体会话时显示桌面空闲入口；具体任务显示产品名和真实标题；运行中为进行中；完成待查看为待处理且可点击后转空闲；Action Required / suspended / requiresApproval 保持待处理 |
 | WorkBuddy | 打开 WorkBuddy，分别验证空闲、运行中、完成、等待用户操作、项目/文件夹下对话 | App 存活但无具体会话时显示 `WorkBuddy Desktop · 空闲`；具体会话显示软件名和项目/文件夹上下文；运行中为进行中；完成待查看可点击后转空闲；用户注意状态点击后仍待处理 |
 | process-only 去重 | 同一个进程已被桥接脚本监控 | 只显示完整监控项，不再显示重复的 process-only 项 |
@@ -73,7 +74,7 @@ python3 scripts/validate_release.py
 |---|---|
 | 默认界面 | 本地 Web Companion；桌面宠物体验当前推荐已验收的 macOS 原生悬浮入口，Windows 轻量入口保留为预览路径 |
 | 实验界面 | Tkinter 悬浮窗，受系统 Tk 版本影响，暂不作为默认交付入口 |
-| 数据接入 | 推荐终端桥接脚本或 JSON 事件源；直接 Claude CLI 可用本地会话状态识别回复后待处理，Codex / Qoder / WorkBuddy CLI 仍保守判断活跃/空闲；Qoder / Qoder CN / WorkBuddy 桌面端可读取本地日志、缓存或会话库生成具体对话 |
+| 数据接入 | 推荐终端桥接脚本或 JSON 事件源；直接 Claude CLI 可用本地会话状态识别回复后待处理，Codex / Qoder / WorkBuddy CLI 仍保守判断活跃/空闲；ChatGPT Desktop 兼容读取 `~/.codex/sessions`，Qoder / Qoder CN / WorkBuddy 桌面端读取本地日志、缓存或会话库生成具体对话 |
 | GitHub 公开发布 | `dist/` 产物不提交源码仓库；release zip 作为 GitHub Release 附件上传；当前 macOS `.app` 未 notarized |
 | 版本 tag 策略 | 已发布 tag 不移动；发布后 CI、测试边界或文档修复留在 `main`，下一次用户可见改动再发新的补丁版本 |
 | 隐私策略 | 本地运行，不上传会话内容 |

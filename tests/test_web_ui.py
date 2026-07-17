@@ -291,6 +291,11 @@ class WebUiTests(unittest.TestCase):
         self.assertNotIn("session.summary", HTML)
         self.assertNotIn('class="summary"', HTML)
 
+    def test_chatgpt_has_first_class_bubble_labels(self):
+        self.assertIn('chatgpt:"ChatGPT"', HTML)
+        self.assertIn('.replace(/chatgpt desktop/ig, "")', HTML)
+        self.assertIn("暂无 AI 会话", HTML)
+
     def test_session_bubbles_only_render_title_line_in_main_path(self):
         self.assertNotIn("processOnlyMeta(session)", HTML)
         self.assertNotIn("const metaHtml = meta ?", HTML)

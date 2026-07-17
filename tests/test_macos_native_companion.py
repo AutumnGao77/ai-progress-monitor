@@ -190,6 +190,17 @@ class MacOSNativeCompanionTests(unittest.TestCase):
         self.assertIn('return (true, "activated-app")', source)
         self.assertIn("if isDesktopAIApp(appName), let app = apps.first", source)
 
+    def test_native_focus_activates_ai_app_without_accessibility_permission(self):
+        source = native_sources()
+        focus_body = source[source.index("private func focusTargetWindow") :]
+        focus_body = focus_body[: focus_body.index("private func runningApplications")]
+
+        self.assertLess(focus_body.index("let apps = runningApplications"), focus_body.index("AXIsProcessTrustedWithOptions"))
+        self.assertIn("if !AXIsProcessTrustedWithOptions(options)", focus_body)
+        self.assertIn("if isDesktopAIApp(appName), let app = apps.first", focus_body)
+        self.assertIn("return activateRunningApplication(app)", focus_body)
+        self.assertIn('return (false, "accessibility-permission-required")', focus_body)
+
     def test_native_focus_matches_qoder_cn_when_payload_uses_qoder_display_name(self):
         source = native_sources()
 
@@ -361,6 +372,19 @@ class MacOSNativeCompanionTests(unittest.TestCase):
         self.assertIn("AI Progress Monitor running at", source)
         self.assertIn("webView.load", source)
         self.assertIn("ai-progress-monitor.pyz", source)
+
+    def test_native_companion_restarts_monitor_service_after_unexpected_exit(self):
+        source = native_sources()
+
+        self.assertIn("process.terminationHandler", source)
+        self.assertIn("scheduleMonitorRestart", source)
+        self.assertIn("monitorRestartAttempt", source)
+        self.assertIn("monitorRestartWorkItem", source)
+        self.assertIn("isTerminating", source)
+        self.assertIn("min(pow(2.0", source)
+        self.assertIn("monitorRestartWorkItem?.cancel()", source)
+        self.assertIn("out.fileHandleForReading.readabilityHandler = nil", source)
+        self.assertIn("err.fileHandleForReading.readabilityHandler = nil", source)
 
     def test_native_companion_keeps_window_scanning_enabled_by_default(self):
         source = native_sources()
