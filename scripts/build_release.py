@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import os
+import re
 import shutil
+import struct
 import subprocess
 import sys
-import zipfile
 import zipapp
-import os
-import struct
+import zipfile
 from pathlib import Path
 
 
@@ -17,6 +18,7 @@ ARTIFACT = DIST / "ai-progress-monitor.pyz"
 RELEASE_DIR = DIST / "ai-progress-monitor"
 RELEASE_ZIP = DIST / "ai-progress-monitor-release.zip"
 APP_AVATAR = ROOT / "src" / "ai_progress_monitor" / "assets" / "app-avatar.png"
+VERSION_FILE = ROOT / "src" / "ai_progress_monitor" / "__init__.py"
 RELEASE_FILES = (
     "scripts/emit_event.py",
     "scripts/e2e_smoke.py",
@@ -37,6 +39,20 @@ RELEASE_FILES = (
     "scripts/start_floating_monitor.bat",
     "native/windows/FloatingMonitor.ps1",
 )
+
+
+def load_release_version(version_file: Path = VERSION_FILE) -> str:
+    match = re.search(
+        r'^__version__\s*=\s*["\']([^"\']+)["\']\s*$',
+        version_file.read_text(encoding="utf-8"),
+        re.MULTILINE,
+    )
+    if match is None:
+        raise RuntimeError(f"release version not found in {version_file}")
+    return match.group(1)
+
+
+RELEASE_VERSION = load_release_version()
 
 
 def include_pyz_path(path: Path) -> bool:
@@ -122,6 +138,7 @@ def build_release_bundle() -> None:
         "\n".join(
             [
                 "AI Progress Monitor",
+                f"Version: {RELEASE_VERSION}",
                 "",
                 "Requirements:",
                 "  Python 3.9+ is required for this release package.",
@@ -273,7 +290,7 @@ def create_macos_app_bundle(app_path: Path) -> None:
     )
     launcher.chmod(0o755)
     (contents / "Info.plist").write_text(
-        """<?xml version="1.0" encoding="UTF-8"?>
+        f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
@@ -284,9 +301,9 @@ def create_macos_app_bundle(app_path: Path) -> None:
   <key>CFBundleIdentifier</key>
   <string>local.ai-progress-monitor</string>
   <key>CFBundleVersion</key>
-  <string>0.1.0</string>
+  <string>{RELEASE_VERSION}</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.1.0</string>
+  <string>{RELEASE_VERSION}</string>
   <key>CFBundleExecutable</key>
   <string>AI Progress Monitor</string>
   <key>CFBundleIconFile</key>
@@ -359,7 +376,7 @@ def create_macos_floating_app_bundle(app_path: Path) -> None:
                 encoding="utf-8",
             )
     (contents / "Info.plist").write_text(
-        """<?xml version="1.0" encoding="UTF-8"?>
+        f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
@@ -370,9 +387,9 @@ def create_macos_floating_app_bundle(app_path: Path) -> None:
   <key>CFBundleIdentifier</key>
   <string>local.ai-progress-monitor.floating</string>
   <key>CFBundleVersion</key>
-  <string>0.1.0</string>
+  <string>{RELEASE_VERSION}</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.1.0</string>
+  <string>{RELEASE_VERSION}</string>
   <key>CFBundleExecutable</key>
   <string>AI Progress Monitor Floating</string>
   <key>CFBundleIconFile</key>
