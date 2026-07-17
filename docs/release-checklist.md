@@ -2,7 +2,7 @@
 
 结论：每次交付前必须先证明核心逻辑、事件接入、原生悬浮入口、进程探测边界、Pet 左键/右键边界和隐私减负主路径都可用。
 
-Pet 外观主题切换的执行 PRD 是 `docs/prd/2026-07-11-pet-appearance-theme-switching-prd.md`；新增 AI 工具监控的执行 PRD 是 `docs/prd/2026-07-14-ai-tool-monitoring-expansion-prd.md`；ChatGPT 迁移与多工具回归记录是 `docs/qa/2026-07-17-chatgpt-and-multi-tool-regression-test-cases.md`。发布前需确认 PRD、README、QA 报告和本清单中的菜单、资源、偏好、API、App 验收描述一致。
+Pet 外观主题切换的执行 PRD 是 `docs/prd/2026-07-11-pet-appearance-theme-switching-prd.md`；新增 AI 工具监控的执行 PRD 是 `docs/prd/2026-07-14-ai-tool-monitoring-expansion-prd.md`；ChatGPT 迁移与多工具回归记录是 `docs/qa/2026-07-17-chatgpt-and-multi-tool-regression-test-cases.md`；v0.2.1 双包验包记录是 `docs/qa/2026-07-17-v0.2.1-release-packaging-validation.md`。发布前需确认 PRD、README、QA 报告和本清单中的菜单、资源、偏好、API、App 验收描述一致。
 
 ## 必跑检查
 
@@ -24,10 +24,12 @@ python3 scripts/validate_release.py
 | API 安全冒烟 | 不带令牌请求 `/api/sessions` | 返回 403 |
 | 三态 Pet 资源与外观切换 | `PYTHONPATH=src python3 -m unittest tests.test_web_ui tests.test_web_launch tests.test_web_ui_behavior tests.test_preferences` | 三态图片路由、衬衫树懒外观路由、APP 头像、可配置资源、透明角、状态切图和右键外观子菜单均通过；运行时 APP 头像为透明圆形，无水印和圆外方框背景 |
 | 原生透明背景 | `PYTHONPATH=src python3 -m unittest tests.test_web_ui` | `.pet` 不添加 `drop-shadow`；WebView 背景保持透明 |
-| 发布包构建 | `python3 scripts/build_release.py` | 生成 `dist/ai-progress-monitor.pyz` 和 `dist/ai-progress-monitor-release.zip` |
-| 版本一致性 | `PYTHONPATH=src python3 -m unittest tests.test_macos_app_bundle` | `ai_progress_monitor.__version__`、`pyproject.toml`、两个 macOS App 的 `CFBundleVersion` / `CFBundleShortVersionString` 一致；正式 Tag 使用对应的 `v<版本号>`，已发布 Tag 不移动 |
-| macOS App 外壳 | 解压 release zip | 包含 `AI Progress Monitor.app` 和 `AI Progress Monitor Floating.app` |
-| macOS App 图标 | 检查两个 `.app/Contents/Resources/` 和 `Info.plist` | 包含 `app-avatar.png`、`AppIcon.icns`，且 `CFBundleIconFile` 为 `AppIcon` |
+| 发布包构建 | `python3 scripts/build_release.py` | 生成 `dist/ai-progress-monitor.pyz`、`dist/AI-Progress-Monitor-v<版本>-macOS-arm64.zip` 和 `dist/ai-progress-monitor-v<版本>-portable.zip` |
+| 版本一致性 | `PYTHONPATH=src python3 -m unittest tests.test_macos_app_bundle` | `ai_progress_monitor.__version__`、`pyproject.toml`、macOS App 的 `CFBundleVersion` / `CFBundleShortVersionString` 一致；正式 Tag 使用对应的 `v<版本号>`，已发布 Tag 不移动 |
+| macOS 用户包 | 解压 macOS ZIP | 根目录只包含一个 `AI Progress Monitor.app`、`README.txt` 和 `LICENSE`；App 为 arm64、最低 macOS 13，不出现 `Floating` 后缀、根目录 `.pyz`、`scripts/` 或 `native/` |
+| portable 包 | 解压 portable ZIP | 包含 `.pyz`、`scripts/`、`native/windows/`、`README.txt` 和 `LICENSE`；不包含任何 macOS `.app` |
+| macOS App 编译门禁 | `PYTHONPATH=src python3 -m unittest tests.test_macos_app_bundle` | 缺少 `swiftc`、Swift 编译失败或未生成可执行文件时发布构建必须失败；不得生成占位 App，不嵌入 Swift 构建源码 |
+| macOS App 图标 | 检查 `.app/Contents/Resources/` 和 `Info.plist` | 包含 `app-avatar.png`、`AppIcon.icns`，且 `CFBundleIconFile` 为 `AppIcon` |
 | 发布包视觉资源 | 检查 `dist/ai-progress-monitor.pyz` 内容 | 包含 `sloth-pet-idle.png`、`sloth-pet-running.png`、`sloth-pet-needs-action.png`、`sloth-pet-shirt.png`、`app-avatar.png` |
 | 发布包资源收口 | 检查 `dist/ai-progress-monitor.pyz` 内容 | 不包含 `assets/sloth-candidates/` 或 `.DS_Store` |
 | 终端桥接 | `python3 scripts/monitor_command.py --help` | 正常显示参数 |
@@ -46,18 +48,17 @@ python3 scripts/validate_release.py
 | 场景 | 期望结果 |
 |---|---|
 | Demo 模式启动 | 浏览器访问 `http://127.0.0.1:8765` 能看到 3 个会话 |
-| macOS 双击启动 | 双击 `AI Progress Monitor.app` | 自动启动服务并打开浏览器 |
-| macOS 悬浮入口 | 双击 `AI Progress Monitor Floating.app` | 小窗置顶；关闭只隐藏；菜单栏头像图标可恢复/退出 |
-| Windows 轻量预览入口 | 双击 `scripts\start_floating_monitor.bat` | 小窗置顶；关闭只隐藏；托盘可恢复/退出；作为预览路径记录，稳定交付需单独验收 |
+| macOS 用户入口 | 解压 macOS arm64 ZIP 后双击唯一的 `AI Progress Monitor.app`；原生 Pet 小窗置顶；关闭只隐藏；菜单栏头像图标可恢复/退出；无需在两个 App 之间选择 |
+| Windows 轻量预览入口 | 解压 portable ZIP 后双击 `scripts\start_floating_monitor.bat`；小窗置顶；关闭只隐藏；托盘可恢复/退出；作为预览路径记录，稳定交付需单独验收 |
 | API 令牌 | 页面能读取启动令牌并请求会话 API |
 | 系统通知 | needs_action 触发通知，重复刷新不反复弹 |
 | 需要处理状态 | 页面右下角宠物显示“待处理” |
 | 三态换图 | 空闲、进行中、待处理分别显示对应 Pet 图片；右上角数字角标仍显示总气泡数 |
-| 外观子菜单 | 右键 Pet → 外观 | 展开“背带裤树懒 / 衬衫树懒”；当前项显示对勾；切换衬衫树懒后三态共用衬衫图，切回背带裤树懒后三态恢复 |
+| 外观子菜单 | 右键 Pet → 外观，展开“背带裤树懒 / 衬衫树懒”；当前项显示对勾；切换衬衫树懒后三态共用衬衫图，切回背带裤树懒后三态恢复 |
 | 悬浮窗透明 | 原生悬浮入口只显示 Pet、角标和气泡，不出现灰底、白底或额外阴影边 |
 | 菜单栏图标 | macOS 菜单栏状态项显示 APP 头像图标，不显示文字 `AI` |
 | 终端桥接 | 用 `scripts/monitor_codex.*` 或 `scripts/monitor_claude.*` 包装命令后，输出能进入 Web Companion |
-| 直接 CLI 探测 | 直接运行 `claude` / `codex` | 显示 process-only 气泡；Claude 终端回复完成后进入“待处理”，点击气泡跳回对应终端后转“空闲”；Codex CLI 活跃为“进行中”、静默为“空闲”；气泡不展示终端内容或技术说明 |
+| 直接 CLI 探测 | 直接运行 `claude` / `codex`；显示 process-only 气泡；Claude 终端回复完成后进入“待处理”，点击气泡跳回对应终端后转“空闲”；Codex CLI 活跃为“进行中”、静默为“空闲”；气泡不展示终端内容或技术说明 |
 | ChatGPT 桌面端监控与已查看收口 | ChatGPT 具体对话进入运行中、待处理后点击气泡查看 | 仅接收明确桌面 `originator`；显示真实状态；无辅助功能权限也能激活 ChatGPT；完成待查看转为空闲并保留 15 分钟；超过 15 分钟具体对话移出，ChatGPT 仍存活时显示 App 空闲入口 |
 | App 长期运行恢复 | 终止 Dev.app 的内嵌 Python 子服务 | 原生 App 按指数退避自动拉起新服务、加载新令牌 URL 并恢复会话轮询；退出 App 时不重启 |
 | Qoder / Qoder CN | 打开 Qoder 或 Qoder CN，发起任务或触发 Action Required | App 存活但无具体会话时显示桌面空闲入口；具体任务显示产品名和真实标题；运行中为进行中；完成待查看为待处理且可点击后转空闲；Action Required / suspended / requiresApproval 保持待处理 |
@@ -76,9 +77,9 @@ python3 scripts/validate_release.py
 | 默认界面 | 本地 Web Companion；桌面宠物体验当前推荐已验收的 macOS 原生悬浮入口，Windows 轻量入口保留为预览路径 |
 | 实验界面 | Tkinter 悬浮窗，受系统 Tk 版本影响，暂不作为默认交付入口 |
 | 数据接入 | 推荐终端桥接脚本或 JSON 事件源；直接 Claude CLI 可用本地会话状态识别回复后待处理，Codex / Qoder / WorkBuddy CLI 仍保守判断活跃/空闲；ChatGPT Desktop 兼容读取 `~/.codex/sessions`，Qoder / Qoder CN / WorkBuddy 桌面端读取本地日志、缓存或会话库生成具体对话 |
-| GitHub 公开发布 | `dist/` 产物不提交源码仓库；release zip 作为 GitHub Release 附件上传；当前 macOS `.app` 未 notarized |
+| GitHub 公开发布 | `dist/` 产物不提交源码仓库；macOS arm64 ZIP 与 portable ZIP 同时作为 GitHub Release 附件上传；当前 macOS `.app` 未 notarized |
 | 版本 tag 策略 | 已发布 tag 不移动；发布后 CI、测试边界或文档修复留在 `main`，下一次用户可见改动再发新的补丁版本 |
 | 隐私策略 | 本地运行，不上传会话内容 |
-| 当前发布包 | `ai-progress-monitor-release.zip`，包含 Python 3.9+ Web Companion、macOS 已验收 `.app`、Windows 轻量预览脚本 |
+| 当前发布包 | macOS 13+ Apple Silicon 用户包只含一个正式 App、README 和 LICENSE；portable 包承载 Python 3.9+ Web Companion、CLI 集成、诊断和 Windows 轻量预览脚本 |
 | 诊断工具 | `scripts/doctor.py` 可用于定位权限、目录和平台适配问题 |
 | Pet 外观配置 | `~/.ai-progress-monitor/preferences.json` 支持 `pet_appearance` 选择背带裤/衬衫树懒，并支持 `pet_assets.idle`、`pet_assets.running`、`pet_assets.needs_action`、`pet_assets.app_avatar` 本地路径；无效值或无效路径自动回退内置资源 |

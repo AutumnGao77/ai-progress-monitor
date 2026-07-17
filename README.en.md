@@ -62,12 +62,14 @@ scripts\run_web_demo.bat
 
 ## Native Floating Companion
 
-For a more desktop-pet-like experience, use the packaged floating companion entries:
+Use the platform-scoped packages so desktop users see one clear entry point:
 
 | Platform | Entry | Behavior |
 |---|---|---|
-| macOS | `AI Progress Monitor Floating.app` | Validated desktop Pet entry; always-on-top floating Pet; closing hides it; restore/quit from the menu bar avatar icon |
-| Windows | `scripts\start_floating_monitor.bat` | Lightweight preview entry; WinForms/PowerShell always-on-top Pet; closing hides it; restore/quit from the tray icon; requires a separate Windows acceptance pass |
+| macOS 13+ (Apple silicon) | Extract `AI-Progress-Monitor-v<version>-macOS-arm64.zip`, then double-click `AI Progress Monitor.app` | Validated native desktop Pet; always on top; closing hides it; restore/quit from the menu bar avatar; requires Python 3.9+ |
+| Windows | Extract `ai-progress-monitor-v<version>-portable.zip`, then run `scripts\start_floating_monitor.bat` | Lightweight preview entry; WinForms/PowerShell always-on-top Pet; closing hides it; restore/quit from the tray icon; requires a separate Windows acceptance pass |
+
+The macOS App is currently ad-hoc signed and not Apple-notarized. If macOS blocks it, Control-click the App and choose Open, or allow it in System Settings > Privacy & Security. Do not disable Gatekeeper globally.
 
 During development on macOS, you can build and launch a local dev app without creating a release package:
 
@@ -230,12 +232,13 @@ Generated artifacts:
 
 | Artifact | Purpose |
 |---|---|
-| `dist/ai-progress-monitor.pyz` | Single-file Web Companion runtime package |
-| `dist/ai-progress-monitor-release.zip` | Recommended distribution bundle with scripts, macOS app bundles, and Windows preview scripts |
+| `dist/ai-progress-monitor.pyz` | Build intermediate and the single-file Web Companion runtime included in the portable package |
+| `dist/AI-Progress-Monitor-v<version>-macOS-arm64.zip` | macOS 13+ Apple silicon user package containing one `AI Progress Monitor.app`, `README.txt`, and `LICENSE` |
+| `dist/ai-progress-monitor-v<version>-portable.zip` | CLI integration, diagnostics, and Windows preview package containing `.pyz`, `scripts/`, `native/windows/`, `README.txt`, and `LICENSE`; no macOS App |
 
-For public GitHub releases, upload `dist/ai-progress-monitor-release.zip` as a Release artifact instead of committing it to the source repository. Published version tags should remain immutable: keep an already published tag in place, and use the next patch version such as `v0.1.1` for later user-visible changes.
+For public GitHub releases, upload both platform-scoped ZIPs instead of committing them to the source repository. Published version tags should remain immutable: keep an already published tag in place, and use the next patch version such as `v0.1.1` for later user-visible changes.
 
-The current macOS app bundles are locally built and ad-hoc signed. They are not Apple-notarized yet, so users may need to allow the app in macOS system settings.
+The current macOS App requires Python 3.9+, is locally built and ad-hoc signed, and is not Apple-notarized yet.
 
 ## Privacy and Security
 

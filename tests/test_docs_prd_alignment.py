@@ -243,6 +243,25 @@ class DocsPrdAlignmentTests(unittest.TestCase):
         self.assertIn("4.2M", qa)
         self.assertIn("17M", qa)
 
+    def test_current_release_docs_define_platform_scoped_packages(self):
+        current_docs = "\n".join(
+            [
+                (ROOT / "AGENTS.md").read_text(),
+                (ROOT / "README.md").read_text(),
+                (ROOT / "README.en.md").read_text(),
+                (ROOT / "docs" / "release-checklist.md").read_text(),
+                (ROOT / "scripts" / "build_release.py").read_text(),
+            ]
+        )
+
+        self.assertIn("AI-Progress-Monitor-v<version>-macOS-arm64.zip", current_docs)
+        self.assertIn("ai-progress-monitor-v<version>-portable.zip", current_docs)
+        self.assertIn("macOS 13", current_docs)
+        self.assertIn("Apple Silicon", current_docs)
+        self.assertIn("LICENSE", current_docs)
+        self.assertIn("Do not disable Gatekeeper globally", current_docs)
+        self.assertNotIn("dist/ai-progress-monitor-release.zip", current_docs)
+
     def test_release_docs_define_sensitive_company_scan_and_immutable_tags(self):
         combined = "\n".join(
             [
