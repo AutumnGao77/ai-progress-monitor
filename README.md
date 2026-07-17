@@ -63,7 +63,7 @@ Windows:
 scripts\run_web_demo.bat
 ```
 
-发布包内推荐使用一键启动脚本，会自动打开浏览器：
+便携/集成包内可使用一键启动脚本，会自动打开浏览器：
 
 ```bash
 sh scripts/start_monitor.sh --demo --no-windows
@@ -75,14 +75,14 @@ Windows:
 scripts\start_monitor.bat --demo --no-windows
 ```
 
-macOS 用户也可以双击发布包内的 `AI Progress Monitor.app` 启动。
-
-如果需要更接近桌面宠物的体验，优先使用发布包中的原生悬浮入口：
+普通 macOS 用户应下载单独的 Apple Silicon 用户包，解压后只需双击 `AI Progress Monitor.app`：
 
 | 系统 | 启动方式 | 行为 |
 |---|---|---|
-| macOS | 双击 `AI Progress Monitor Floating.app` | 当前已验收的桌面 Pet 入口；原生置顶窗口；点击关闭只隐藏，可从菜单栏头像图标恢复或退出 |
-| Windows | 双击 `scripts\start_floating_monitor.bat` | 轻量预览入口；WinForms/PowerShell 置顶窗口；点击关闭只隐藏，可从托盘图标恢复或退出；后续需单独验收 |
+| macOS 13+（Apple Silicon） | 解压 `AI-Progress-Monitor-v<版本>-macOS-arm64.zip`，双击 `AI Progress Monitor.app` | 当前已验收的原生桌面 Pet；窗口置顶；点击关闭只隐藏，可从菜单栏头像图标恢复或退出；需要 Python 3.9+ |
+| Windows | 解压 `ai-progress-monitor-v<版本>-portable.zip`，双击 `scripts\start_floating_monitor.bat` | 轻量预览入口；WinForms/PowerShell 置顶窗口；点击关闭只隐藏，可从托盘图标恢复或退出；后续需单独验收 |
+
+macOS App 当前为本地 ad-hoc 签名且未 Apple notarized。如果系统阻止打开，优先右键 App 选择“打开”，或在“系统设置 → 隐私与安全性”中允许；不要全局关闭 Gatekeeper。
 
 开发阶段不需要先打发布包，可以在 macOS 上生成临时试用版：
 
@@ -358,10 +358,11 @@ python3 scripts/e2e_smoke.py --artifact dist/ai-progress-monitor.pyz
 
 | 产物 | 用途 |
 |---|---|
-| `dist/ai-progress-monitor.pyz` | 单文件 Web Companion 运行包 |
-| `dist/ai-progress-monitor-release.zip` | 推荐分发包，包含运行包、macOS `.app`、桥接脚本、一键启动脚本、Windows 预览脚本和说明 |
+| `dist/ai-progress-monitor.pyz` | 构建中间产物，也是便携包内的单文件 Web Companion 运行包 |
+| `dist/AI-Progress-Monitor-v<版本>-macOS-arm64.zip` | 面向普通 macOS 用户；只包含一个 `AI Progress Monitor.app`、`README.txt` 和 `LICENSE`；支持 macOS 13+ Apple Silicon |
+| `dist/ai-progress-monitor-v<版本>-portable.zip` | 面向 CLI 集成、诊断和 Windows 预览；包含 `.pyz`、`scripts/`、`native/windows/`、`README.txt` 和 `LICENSE`，不包含 macOS App |
 
-公开发布到 GitHub 时，建议把 `dist/ai-progress-monitor-release.zip` 作为 Release 附件上传，不提交到源码仓库。已发布的版本 tag 应保持不可变；如果发布后只修 CI、文档或测试边界，保留原 tag 不动，后续用户可见变更再发新的补丁版本，例如 `v0.1.1`。当前 macOS `.app` 是本地构建产物，未做 Apple notarization；下载用户可能需要在系统设置中允许打开。
+公开发布到 GitHub 时，应同时上传上述两个平台范围明确的 ZIP，不提交到源码仓库。已发布的版本 tag 应保持不可变；如果发布后只修 CI、文档或测试边界，保留原 tag 不动，后续用户可见变更再发新的补丁版本，例如 `v0.1.1`。当前 macOS App 需要 Python 3.9+，采用本地 ad-hoc 签名，未做 Apple notarization。
 
 如果用户反馈“打不开、没有提醒、无法回到窗口”，优先让用户运行：
 

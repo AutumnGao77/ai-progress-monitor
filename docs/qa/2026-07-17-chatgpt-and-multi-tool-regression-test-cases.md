@@ -24,7 +24,7 @@ AI 验证和 6 条最小功能验收均已通过，可判断本次“ChatGPT 修
 | 验证项 | 当前证据 | 结论 |
 |---|---|---|
 | 核心监控回归 | Sources、Service、Store、状态分类、窗口聚焦、Web 行为、原生 App、启动脚本；Sources 专项 128 项 | 通过 |
-| 全量功能回归 | 在允许本机临时端口的真实条件下，437 项均得到通过结果 | 通过 |
+| 全量功能回归 | 在允许本机临时端口的真实条件下，445 项均得到通过结果 | 通过 |
 | 发布校验 | 单元测试、编译、App/Event/E2E/Bridge/Doctor/通知入口、JavaScript 与敏感信息扫描 | 通过（`release-validation-ok`） |
 | 开发 App 构建 | 最新源码生成开发态 `.app`；不生成 `dist` 或 release 包 | 通过 |
 | App 签名与清单 | `codesign --verify --deep --strict`、`Info.plist` | 通过 |

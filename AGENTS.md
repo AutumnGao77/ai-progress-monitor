@@ -36,7 +36,9 @@ Visual replacements should preserve the current shape contract: three Pet state 
 
 Pet appearance switching is documented in `docs/prd/2026-07-11-pet-appearance-theme-switching-prd.md`. The right-click Pet menu is `外观`, `隐藏 Pet`, and `退出程序`; the `外观` submenu contains `背带裤树懒` and `衬衫树懒`, with a checkmark on the active choice. `pet_appearance` accepts `default` or `shirt`; missing or invalid values fall back to `default`. The token-protected local preference API is `GET /api/preferences` and `POST /api/preferences/pet-appearance`. `pet_assets.*` overrides still apply to the final Pet image after the selected theme is resolved.
 
-macOS bundles must copy `app-avatar.png` into `Contents/Resources/`, generate `AppIcon.icns`, declare `CFBundleIconFile=AppIcon`, and use the avatar image for the menu bar status item instead of the literal `AI` text.
+The public macOS package contains one user-facing `AI Progress Monitor.app`, built from the validated native floating companion. It must target Apple silicon arm64 and macOS 13+, copy `app-avatar.png` into `Contents/Resources/`, generate `AppIcon.icns`, declare `CFBundleIconFile=AppIcon`, and use the avatar image for the menu bar status item instead of the literal `AI` text. Release builds must fail when Swift compilation fails; never ship a placeholder launcher or embed Swift build sources in the App bundle.
+
+Keep advanced CLI integrations and the Windows preview in the separate portable package. Both public ZIPs must include `README.txt` and `LICENSE`; the macOS package must not contain `.pyz` at its root, `scripts/`, or `native/`, while the portable package must not contain a macOS `.app`.
 
 Candidate/source images can stay under `src/ai_progress_monitor/assets/sloth-candidates/` for local reference, but they are gitignored by default and release packaging must exclude that directory and `.DS_Store` files. CI and public tests must validate the final runtime assets instead of requiring local candidate files.
 
@@ -68,7 +70,7 @@ python3 scripts/validate_release.py
 python3 scripts/build_release.py
 ```
 
-The first command launches the demo desktop pet. The second runs the full test suite. The third shows the JSON event helper used by integrations. Run `validate_release.py` before public release, then `build_release.py` to generate `dist/ai-progress-monitor.pyz` and `dist/ai-progress-monitor-release.zip`.
+The first command launches the demo desktop pet. The second runs the full test suite. The third shows the JSON event helper used by integrations. Run `validate_release.py` before public release, then `build_release.py` to generate `dist/ai-progress-monitor.pyz`, `dist/AI-Progress-Monitor-v<version>-macOS-arm64.zip`, and `dist/ai-progress-monitor-v<version>-portable.zip`.
 
 ## Development Principles
 
@@ -98,4 +100,4 @@ When documents need a person placeholder, use `Gao` instead of any real local na
 
 Treat the local login username, machine names, real local paths, old personal/company email fragments, and any company workspace identifiers as sensitive. Public code, docs, tests, release notes, GitHub issues, and release artifacts must not expose them; use `Gao`, placeholder paths, or GitHub noreply identity where needed.
 
-Keep `build/`, `dist/`, local agent folders, logs, and generated packages out of source control. For GitHub releases, upload `dist/ai-progress-monitor-release.zip` as a Release artifact instead of committing it. Current macOS app bundles are locally built and not Apple-notarized unless a future release process explicitly adds notarization.
+Keep `build/`, `dist/`, local agent folders, logs, and generated packages out of source control. For GitHub releases, upload both platform-scoped ZIPs from `dist/` instead of committing them. The current macOS App is locally built and ad-hoc signed, requires Python 3.9+, and is not Apple-notarized unless a future release process explicitly adds Developer ID signing and notarization.

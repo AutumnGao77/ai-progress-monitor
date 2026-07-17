@@ -11,6 +11,50 @@ from scripts import build_release
 from scripts import validate_release
 
 
+def write_archive(path: Path, names: set[str]) -> None:
+    with zipfile.ZipFile(path, "w") as archive:
+        for name in sorted(names):
+            archive.writestr(name, "")
+
+
+def required_macos_names() -> set[str]:
+    root = build_release.MACOS_RELEASE_DIR.name
+    app = f"{root}/AI Progress Monitor.app/Contents"
+    return {
+        f"{root}/README.txt",
+        f"{root}/LICENSE",
+        f"{app}/Info.plist",
+        f"{app}/MacOS/AI Progress Monitor",
+        f"{app}/Resources/ai-progress-monitor.pyz",
+        f"{app}/Resources/app-avatar.png",
+        f"{app}/Resources/AppIcon.icns",
+    }
+
+
+def required_portable_names() -> set[str]:
+    root = build_release.PORTABLE_RELEASE_DIR.name
+    return {
+        f"{root}/ai-progress-monitor.pyz",
+        f"{root}/README.txt",
+        f"{root}/LICENSE",
+        f"{root}/native/windows/FloatingMonitor.ps1",
+        f"{root}/scripts/doctor.py",
+        f"{root}/scripts/e2e_smoke.py",
+        f"{root}/scripts/monitor_command.py",
+        f"{root}/scripts/monitor_claude.sh",
+        f"{root}/scripts/monitor_codex.sh",
+        f"{root}/scripts/monitor_qoder.sh",
+        f"{root}/scripts/monitor_workbuddy.sh",
+        f"{root}/scripts/monitor_claude.bat",
+        f"{root}/scripts/monitor_codex.bat",
+        f"{root}/scripts/monitor_qoder.bat",
+        f"{root}/scripts/monitor_workbuddy.bat",
+        f"{root}/scripts/start_floating_monitor.bat",
+        f"{root}/scripts/start_monitor.sh",
+        f"{root}/scripts/start_monitor.bat",
+    }
+
+
 class ReleaseBundleTests(unittest.TestCase):
     def test_validate_release_js_syntax_accepts_rendered_html_template(self):
         env = os.environ.copy()
@@ -103,7 +147,10 @@ class ReleaseBundleTests(unittest.TestCase):
         self.assertIn("pet_assets.idle", source)
         self.assertIn("pet_assets.needs_action", source)
         self.assertIn("Pet image backgrounds transparent", source)
-        self.assertIn("This package is built locally and is not notarized by Apple", source)
+        self.assertIn("ad-hoc signed and is not notarized by Apple", source)
+        self.assertIn("Do not disable Gatekeeper globally", source)
+        self.assertIn("macOS desktop users should download the separate macOS arm64 package", source)
+        self.assertNotIn("Double-click AI Progress Monitor Floating.app", source)
         self.assertIn("does not upload session content", source)
         self.assertNotIn("/Users/", source)
         self.assertNotIn("infer needs-action prompts", source)
@@ -129,53 +176,58 @@ class ReleaseBundleTests(unittest.TestCase):
         )
         self.assertFalse(build_release.include_pyz_path(src / ".DS_Store"))
 
-    def test_verify_release_bundle_requires_bridge_scripts(self):
+    def test_verify_macos_release_bundle_accepts_only_primary_app_and_documents(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            release_zip = Path(temp_dir) / "release.zip"
-            with zipfile.ZipFile(release_zip, "w") as archive:
-                archive.writestr("ai-progress-monitor/ai-progress-monitor.pyz", "")
-                archive.writestr("ai-progress-monitor/README.txt", "")
-                archive.writestr("ai-progress-monitor/AI Progress Monitor.app/Contents/Info.plist", "")
-                archive.writestr("ai-progress-monitor/AI Progress Monitor.app/Contents/MacOS/AI Progress Monitor", "")
-                archive.writestr("ai-progress-monitor/AI Progress Monitor.app/Contents/Resources/ai-progress-monitor.pyz", "")
-                archive.writestr("ai-progress-monitor/AI Progress Monitor.app/Contents/Resources/app-avatar.png", "")
-                archive.writestr("ai-progress-monitor/AI Progress Monitor.app/Contents/Resources/AppIcon.icns", "")
-                archive.writestr("ai-progress-monitor/AI Progress Monitor Floating.app/Contents/Info.plist", "")
-                archive.writestr("ai-progress-monitor/AI Progress Monitor Floating.app/Contents/MacOS/AI Progress Monitor Floating", "")
-                archive.writestr("ai-progress-monitor/AI Progress Monitor Floating.app/Contents/Resources/ai-progress-monitor.pyz", "")
-                archive.writestr("ai-progress-monitor/AI Progress Monitor Floating.app/Contents/Resources/app-avatar.png", "")
-                archive.writestr("ai-progress-monitor/AI Progress Monitor Floating.app/Contents/Resources/AppIcon.icns", "")
-                archive.writestr("ai-progress-monitor/AI Progress Monitor Floating.app/Contents/Resources/FloatingMonitor.swift", "")
-                archive.writestr("ai-progress-monitor/AI Progress Monitor Floating.app/Contents/Resources/FloatingMonitorGeometry.swift", "")
-                archive.writestr("ai-progress-monitor/native/windows/FloatingMonitor.ps1", "")
-                archive.writestr("ai-progress-monitor/scripts/doctor.py", "")
-                archive.writestr("ai-progress-monitor/scripts/e2e_smoke.py", "")
-                archive.writestr("ai-progress-monitor/scripts/monitor_command.py", "")
-                archive.writestr("ai-progress-monitor/scripts/monitor_claude.sh", "")
-                archive.writestr("ai-progress-monitor/scripts/monitor_codex.sh", "")
-                archive.writestr("ai-progress-monitor/scripts/monitor_qoder.sh", "")
-                archive.writestr("ai-progress-monitor/scripts/monitor_workbuddy.sh", "")
-                archive.writestr("ai-progress-monitor/scripts/monitor_claude.bat", "")
-                archive.writestr("ai-progress-monitor/scripts/monitor_codex.bat", "")
-                archive.writestr("ai-progress-monitor/scripts/monitor_qoder.bat", "")
-                archive.writestr("ai-progress-monitor/scripts/monitor_workbuddy.bat", "")
-                archive.writestr("ai-progress-monitor/scripts/start_floating_monitor.bat", "")
-                archive.writestr("ai-progress-monitor/scripts/start_monitor.sh", "")
-                archive.writestr("ai-progress-monitor/scripts/start_monitor.bat", "")
+            release_zip = Path(temp_dir) / "macos.zip"
+            write_archive(release_zip, required_macos_names())
 
-            with mock.patch.object(build_release, "RELEASE_ZIP", release_zip):
-                build_release.verify_release_bundle()
+            with mock.patch.object(build_release, "MACOS_RELEASE_ZIP", release_zip):
+                build_release.verify_macos_release_bundle()
 
-    def test_verify_release_bundle_fails_when_bridge_script_missing(self):
+    def test_verify_macos_release_bundle_rejects_portable_files(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            release_zip = Path(temp_dir) / "release.zip"
-            with zipfile.ZipFile(release_zip, "w") as archive:
-                archive.writestr("ai-progress-monitor/ai-progress-monitor.pyz", "")
-                archive.writestr("ai-progress-monitor/README.txt", "")
+            release_zip = Path(temp_dir) / "macos.zip"
+            root = build_release.MACOS_RELEASE_DIR.name
+            names = required_macos_names() | {f"{root}/scripts/doctor.py"}
+            write_archive(release_zip, names)
 
-            with mock.patch.object(build_release, "RELEASE_ZIP", release_zip):
+            with mock.patch.object(build_release, "MACOS_RELEASE_ZIP", release_zip):
                 with self.assertRaises(SystemExit):
-                    build_release.verify_release_bundle()
+                    build_release.verify_macos_release_bundle()
+
+    def test_verify_macos_release_bundle_rejects_build_sources(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            release_zip = Path(temp_dir) / "macos.zip"
+            root = build_release.MACOS_RELEASE_DIR.name
+            names = required_macos_names() | {
+                f"{root}/AI Progress Monitor.app/Contents/Resources/FloatingMonitor.swift"
+            }
+            write_archive(release_zip, names)
+
+            with mock.patch.object(build_release, "MACOS_RELEASE_ZIP", release_zip):
+                with self.assertRaises(SystemExit):
+                    build_release.verify_macos_release_bundle()
+
+    def test_verify_portable_release_bundle_requires_integration_files(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            release_zip = Path(temp_dir) / "portable.zip"
+            write_archive(release_zip, required_portable_names())
+
+            with mock.patch.object(build_release, "PORTABLE_RELEASE_ZIP", release_zip):
+                build_release.verify_portable_release_bundle()
+
+    def test_verify_portable_release_bundle_rejects_macos_apps(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            release_zip = Path(temp_dir) / "portable.zip"
+            root = build_release.PORTABLE_RELEASE_DIR.name
+            names = required_portable_names() | {
+                f"{root}/AI Progress Monitor.app/Contents/Info.plist"
+            }
+            write_archive(release_zip, names)
+
+            with mock.patch.object(build_release, "PORTABLE_RELEASE_ZIP", release_zip):
+                with self.assertRaises(SystemExit):
+                    build_release.verify_portable_release_bundle()
 
 
 if __name__ == "__main__":
