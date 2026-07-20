@@ -72,6 +72,8 @@ python3 scripts/build_release.py
 
 The first command launches the demo desktop pet. The second runs the full test suite. The third shows the JSON event helper used by integrations. Run `validate_release.py` before public release, then `build_release.py` to generate `dist/ai-progress-monitor.pyz`, `dist/AI-Progress-Monitor-v<version>-macOS-arm64.zip`, and `dist/ai-progress-monitor-v<version>-portable.zip`.
 
+The current public release baseline is `v0.2.1`, published and manually accepted on 2026-07-20. Its annotated tag resolves to commit `0deab62144d4c16e780b8aaa7cafe6fbbe9c5175`, and its two public assets are `AI-Progress-Monitor-v0.2.1-macOS-arm64.zip` and `ai-progress-monitor-v0.2.1-portable.zip`. The authoritative package hashes and post-download acceptance evidence are recorded in `docs/qa/2026-07-17-v0.2.1-release-packaging-validation.md`. For later releases, rebuild and recompute hashes; never reuse this release's checksums or move the published tag.
+
 ## Development Principles
 
 Feature development and iteration must start from first principles: clarify the real user problem, success criteria, system boundaries, failure modes, and long-term maintenance cost before choosing an implementation. Design and review changes for stable long-running software, including predictable behavior, testability, observability, backward compatibility, safe defaults, and graceful degradation when dependencies or local environments fail.

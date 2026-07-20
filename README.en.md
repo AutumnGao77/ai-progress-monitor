@@ -8,6 +8,15 @@ AI Progress Monitor is a local-first, low-interruption desktop companion for tra
 
 The current stable delivery focus is the local Web Companion plus the validated macOS floating companion app. A lightweight Windows floating entry is kept as a preview path, but it has not been accepted as a stable delivery target yet.
 
+## Current Release
+
+| Item | Details |
+|---|---|
+| Stable release | [v0.2.1](https://github.com/AutumnGao77/ai-progress-monitor/releases/tag/v0.2.1), published on 2026-07-20 |
+| macOS package | [Download for macOS 13+ on Apple silicon](https://github.com/AutumnGao77/ai-progress-monitor/releases/download/v0.2.1/AI-Progress-Monitor-v0.2.1-macOS-arm64.zip); Python 3.9+ required |
+| Portable package | [Download the portable package](https://github.com/AutumnGao77/ai-progress-monitor/releases/download/v0.2.1/ai-progress-monitor-v0.2.1-portable.zip) for Web/CLI integrations, diagnostics, and the Windows preview |
+| Release acceptance | The v0.2.1 baseline passed 445 automated tests; GitHub re-download, first launch, Pet, menu, bubbles, and window focus were manually accepted on 2026-07-20 |
+
 ## Features
 
 | Feature | Status |
@@ -236,7 +245,7 @@ Generated artifacts:
 | `dist/AI-Progress-Monitor-v<version>-macOS-arm64.zip` | macOS 13+ Apple silicon user package containing one `AI Progress Monitor.app`, `README.txt`, and `LICENSE` |
 | `dist/ai-progress-monitor-v<version>-portable.zip` | CLI integration, diagnostics, and Windows preview package containing `.pyz`, `scripts/`, `native/windows/`, `README.txt`, and `LICENSE`; no macOS App |
 
-For public GitHub releases, upload both platform-scoped ZIPs instead of committing them to the source repository. Published version tags should remain immutable: keep an already published tag in place, and use the next patch version such as `v0.1.1` for later user-visible changes.
+For public GitHub releases, upload both platform-scoped ZIPs instead of committing them to the source repository. Published version tags should remain immutable: keep an already published tag in place, and use a new patch version for later user-visible changes.
 
 The current macOS App requires Python 3.9+, is locally built and ad-hoc signed, and is not Apple-notarized yet.
 

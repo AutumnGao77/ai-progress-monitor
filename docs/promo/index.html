@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>树懒守望</title>
-  <meta name="description" content="树懒守望是一款 macOS 桌面悬浮助手。它把 Claude Code 与 Codex 的多个会话进度收在桌边，用树懒桌宠、状态角标和气泡列表提醒你谁还在跑、谁在等你回来。">
+  <meta name="description" content="树懒守望是一款本地优先的 macOS 桌面悬浮助手。它聚合 ChatGPT Desktop、Claude Code、Codex CLI、Qoder、WorkBuddy 等 AI 工具状态，用树懒桌宠、状态角标和气泡列表提醒你谁还在跑、谁在等你回来。">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='18' fill='%23247452'/%3E%3Ctext x='32' y='41' text-anchor='middle' font-family='Arial,sans-serif' font-size='24' font-weight='800' fill='white'%3EAI%3C/text%3E%3C/svg%3E">
   <style>
     :root {
@@ -167,19 +167,14 @@
       flex-wrap: wrap;
     }
 
-    .soon-link {
+    .secondary-link {
       display: inline-flex;
       align-items: center;
       min-height: 42px;
       padding: 0 14px;
       color: var(--muted);
       font-weight: 760;
-      cursor: default;
-    }
-
-    .soon-cta {
-      cursor: default;
-      pointer-events: none;
+      cursor: pointer;
     }
 
     .status-float {
@@ -689,25 +684,25 @@
       <a href="#features">功能</a>
       <a href="#product">说明</a>
       <a href="#privacy">隐私</a>
-      <span class="nav-cta soon-cta">GitHub 链接敬请期待</span>
+      <a class="nav-cta" href="https://github.com/AutumnGao77/ai-progress-monitor">GitHub</a>
     </nav>
   </header>
 
   <section class="hero" id="top">
     <div class="hero-content">
       <h1><span class="line">AI 在跑，</span><span class="line">树懒在桌边守着。</span></h1>
-      <p class="hero-copy">树懒守望是一款 macOS 桌面悬浮助手。它把 Claude Code 与 Codex 的多个会话进度收在桌边，用树懒桌宠、数字角标和气泡列表提醒你：谁还在跑，谁在等你回来。</p>
+      <p class="hero-copy">树懒守望是一款本地优先的 macOS 桌面悬浮助手。它把 ChatGPT Desktop、Claude Code、Codex CLI、Qoder、WorkBuddy 等 AI 工具的状态收在桌边，用树懒桌宠、数字角标和气泡列表提醒你：谁还在跑，谁在等你回来。</p>
       <div class="hero-actions">
-        <a class="hero-cta" href="#product">看它怎么工作</a>
-        <span class="soon-link">GitHub 链接敬请期待</span>
+        <a class="hero-cta" href="https://github.com/AutumnGao77/ai-progress-monitor/releases/tag/v0.2.1">下载 v0.2.1</a>
+        <a class="secondary-link" href="https://github.com/AutumnGao77/ai-progress-monitor">查看源码</a>
       </div>
     </div>
 
     <div class="status-float" aria-label="会话状态示例">
       <div class="session-count"><span class="count-dot">3</span><span>3 个会话，1 个待处理</span></div>
-      <div class="bubble"><span>prd-polish · Codex #1</span><span class="dot red" aria-label="待处理"></span></div>
-      <div class="bubble"><span>checkout-flow · Claude #1</span><span class="dot green" aria-label="进行中"></span></div>
-      <div class="bubble"><span>release-note · 空闲</span><span class="dot blue" aria-label="空闲"></span></div>
+      <div class="bubble"><span>产品规划 · ChatGPT #1</span><span class="dot red" aria-label="待处理"></span></div>
+      <div class="bubble"><span>sample-project · Claude #1</span><span class="dot green" aria-label="进行中"></span></div>
+      <div class="bubble"><span>需求复盘 · WorkBuddy</span><span class="dot blue" aria-label="空闲"></span></div>
     </div>
   </section>
 
@@ -715,7 +710,7 @@
     <section id="story">
       <div class="section-inner">
         <h2 class="section-title">多个 AI 同时跑，最容易漏掉等你处理的那一个。</h2>
-        <p class="section-copy">Claude Code 和 Codex 常常分散在不同窗口。你转去写文档、查资料或开会时，最难发现的不是进度慢，而是某个会话已经停在确认、选择或查看结果的位置。</p>
+        <p class="section-copy">ChatGPT、Claude Code、Codex CLI、Qoder 和 WorkBuddy 常常分散在不同窗口。你转去写文档、查资料或开会时，最难发现的不是进度慢，而是某个会话已经停在确认、选择或查看结果的位置。</p>
         <div class="pain-grid">
           <article class="card">
             <span class="card-number">1</span>
@@ -761,14 +756,14 @@
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M14 4h6v6"/><path d="M10 14 20 4"/><path d="M20 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h5"/></svg>
             </div>
             <h3>点击气泡尝试回窗口</h3>
-            <p>点击某条会话气泡后，会尝试回到对应 Claude Code 或 Codex 窗口；能否成功取决于系统权限和窗口信息。</p>
+            <p>点击某条会话气泡后，会尝试回到对应的 ChatGPT、终端、IDE、Qoder 或 WorkBuddy 窗口；能否精确定位取决于系统权限和窗口信息。</p>
           </article>
           <article class="card feature-card">
             <div class="feature-icon" aria-hidden="true">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4 7h16M7 7v10h10V7"/><path d="M9 17v3h6v-3"/></svg>
             </div>
             <h3>macOS 悬浮入口</h3>
-            <p>当前提供已验收的 macOS 悬浮 `.app`，Windows 轻量入口作为预览路径保留；GitHub 链接敬请期待。</p>
+            <p>当前已发布并验收 macOS 13+ Apple Silicon 用户包；Windows 轻量入口作为 portable 包内的预览路径保留。</p>
           </article>
         </div>
       </div>
@@ -777,7 +772,7 @@
     <section class="product-band" id="product">
       <div class="section-inner">
         <h2 class="section-title">平时是一只树懒，需要时才展开气泡。</h2>
-        <p class="section-copy">你能看到状态、数量和对应会话，也可以尝试点气泡回到原窗口；右键只保留隐藏和退出。它不是任务看板，也不会把对话内容搬到桌面上。</p>
+        <p class="section-copy">你能看到状态、数量和对应会话，也可以尝试点气泡回到原窗口；右键菜单只保留外观、隐藏 Pet 和退出程序。它不是任务看板，也不会把对话内容搬到桌面上。</p>
 
         <div class="demo-shell" aria-label="产品界面示意">
           <div class="demo-left">
@@ -787,22 +782,22 @@
           <div class="demo-right">
             <div class="session-row">
               <span class="dot red"></span>
-              <strong>docs-prd · Codex #2</strong>
+              <strong>产品规划 · ChatGPT #1</strong>
               <span>待处理</span>
             </div>
             <div class="session-row">
               <span class="dot green"></span>
-              <strong>ai-monitor · Claude #1</strong>
+              <strong>sample-project · Claude #1</strong>
               <span>进行中</span>
             </div>
             <div class="session-row">
               <span class="dot green"></span>
-              <strong>release-pack · Codex #1</strong>
+              <strong>围棋游戏开发 · Qoder CN</strong>
               <span>进行中</span>
             </div>
             <div class="session-row">
               <span class="dot blue"></span>
-              <strong>web-demo · 空闲</strong>
+              <strong>需求复盘 · WorkBuddy</strong>
               <span>空闲</span>
             </div>
           </div>
@@ -859,8 +854,8 @@
             <ul class="trust-list">
               <li><span class="check">✓</span><span>默认在本机运行，监听 127.0.0.1。</span></li>
               <li><span class="check">✓</span><span>主界面不展示完整 summary、命令输出、用户输入或对话正文。</span></li>
-              <li><span class="check">✓</span><span>需要判断和输入时，仍回到原来的 Claude Code 或 Codex 窗口。</span></li>
-              <li><span class="check">✓</span><span>右键只保留隐藏树懒和退出程序，日常使用尽量少打扰。</span></li>
+              <li><span class="check">✓</span><span>需要判断和输入时，仍回到原来的 AI 工具窗口。</span></li>
+              <li><span class="check">✓</span><span>右键只保留外观、隐藏 Pet 和退出程序，日常使用尽量少打扰。</span></li>
             </ul>
           </article>
         </div>
@@ -870,9 +865,10 @@
     <section class="launch" id="launch">
       <div class="section-inner">
         <h2 class="section-title">先从桌面悬浮入口开始。</h2>
-        <p class="section-copy">树懒守望当前稳定体验聚焦 macOS 悬浮 `.app`，Windows 轻量入口作为预览路径保留；GitHub 链接敬请期待。</p>
+        <p class="section-copy">v0.2.1 已发布并完成 GitHub 回下载与首次打开验收。macOS 13+ Apple Silicon 用户可直接下载单 App 用户包；Web/CLI 集成和 Windows 轻量预览使用 portable 包。</p>
         <div class="launch-links">
-          <span class="hero-cta soon-cta">GitHub 链接敬请期待</span>
+          <a class="hero-cta" href="https://github.com/AutumnGao77/ai-progress-monitor/releases/tag/v0.2.1">打开 v0.2.1 Release</a>
+          <a class="secondary-link" href="https://github.com/AutumnGao77/ai-progress-monitor">查看 GitHub 仓库</a>
         </div>
       </div>
     </section>
@@ -881,7 +877,7 @@
   <footer class="footer">
     <div class="footer-inner">
       <span>树懒守望</span>
-      <span>为 Claude Code 与 Codex 并行工作流设计的桌面状态提醒</span>
+      <span>为 ChatGPT Desktop、Claude Code 与其他 AI 工具并行工作流设计的桌面状态提醒</span>
     </div>
   </footer>
 </body>

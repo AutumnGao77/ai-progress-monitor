@@ -8,6 +8,16 @@
 
 产品规则：打开这个 App 之后，才开始监控所有 AI 对话的进度并按状态反馈；打开前已经沉淀在历史文件里的桌面/JSON 会话不纳入本轮气泡列表。当前仍存活的 CLI 和桌面 App 属于现场，可显示为空闲入口或当前状态，后续活动继续更新；有具体会话时，具体会话优先于通用存活入口。桌面端具体对话被用户点击查看并转为空闲后，在气泡列表保留 15 分钟；15 分钟后自动移出，如果该桌面 App 仍存活，则保留 App 空闲入口。
 
+## 当前发布
+
+| 项目 | 内容 |
+|---|---|
+| 当前稳定版 | [v0.2.1](https://github.com/AutumnGao77/ai-progress-monitor/releases/tag/v0.2.1)，发布于 2026-07-20 |
+| macOS 用户包 | [下载 macOS 13+ Apple Silicon 版本](https://github.com/AutumnGao77/ai-progress-monitor/releases/download/v0.2.1/AI-Progress-Monitor-v0.2.1-macOS-arm64.zip)；需要 Python 3.9+ |
+| 新手使用说明 | [查看 v0.2.1 macOS 使用说明](docs/ai-progress-monitor-v0.2.1-user-guide.md)；包含下载、首次打开、常用操作和使用限制 |
+| 便携/集成包 | [下载 portable 版本](https://github.com/AutumnGao77/ai-progress-monitor/releases/download/v0.2.1/ai-progress-monitor-v0.2.1-portable.zip)；用于 Web/CLI 集成、诊断和 Windows 轻量预览 |
+| 发布验收 | v0.2.1 基线 445 项自动化测试通过；GitHub 回下载、首次打开、Pet、菜单、气泡和窗口跳转已于 2026-07-20 人工验收通过 |
+
 ## 当前能力
 
 | 能力 | 状态 |
@@ -362,7 +372,7 @@ python3 scripts/e2e_smoke.py --artifact dist/ai-progress-monitor.pyz
 | `dist/AI-Progress-Monitor-v<版本>-macOS-arm64.zip` | 面向普通 macOS 用户；只包含一个 `AI Progress Monitor.app`、`README.txt` 和 `LICENSE`；支持 macOS 13+ Apple Silicon |
 | `dist/ai-progress-monitor-v<版本>-portable.zip` | 面向 CLI 集成、诊断和 Windows 预览；包含 `.pyz`、`scripts/`、`native/windows/`、`README.txt` 和 `LICENSE`，不包含 macOS App |
 
-公开发布到 GitHub 时，应同时上传上述两个平台范围明确的 ZIP，不提交到源码仓库。已发布的版本 tag 应保持不可变；如果发布后只修 CI、文档或测试边界，保留原 tag 不动，后续用户可见变更再发新的补丁版本，例如 `v0.1.1`。当前 macOS App 需要 Python 3.9+，采用本地 ad-hoc 签名，未做 Apple notarization。
+公开发布到 GitHub 时，应同时上传上述两个平台范围明确的 ZIP，不提交到源码仓库。已发布的版本 tag 应保持不可变；如果发布后只修 CI、文档或测试边界，保留原 tag 不动，后续用户可见变更再发布新的补丁版本。当前 macOS App 需要 Python 3.9+，采用本地 ad-hoc 签名，未做 Apple notarization。
 
 如果用户反馈“打不开、没有提醒、无法回到窗口”，优先让用户运行：
 

@@ -4,6 +4,17 @@
 
 Pet 外观主题切换的执行 PRD 是 `docs/prd/2026-07-11-pet-appearance-theme-switching-prd.md`；新增 AI 工具监控的执行 PRD 是 `docs/prd/2026-07-14-ai-tool-monitoring-expansion-prd.md`；ChatGPT 迁移与多工具回归记录是 `docs/qa/2026-07-17-chatgpt-and-multi-tool-regression-test-cases.md`；v0.2.1 双包验包记录是 `docs/qa/2026-07-17-v0.2.1-release-packaging-validation.md`。发布前需确认 PRD、README、QA 报告和本清单中的菜单、资源、偏好、API、App 验收描述一致。
 
+## 当前已发布基线
+
+| 项目 | 结果 |
+|---|---|
+| Release | [v0.2.1](https://github.com/AutumnGao77/ai-progress-monitor/releases/tag/v0.2.1)，2026-07-20 发布，非 Draft / Prerelease |
+| Tag 固定点 | annotated tag `v0.2.1` → `0deab62144d4c16e780b8aaa7cafe6fbbe9c5175` |
+| 附件 | `AI-Progress-Monitor-v0.2.1-macOS-arm64.zip`、`ai-progress-monitor-v0.2.1-portable.zip` |
+| 自动化门 | 445 项全量测试、发布校验和双包结构检查通过 |
+| 下载后人工门 | GitHub 回下载、解压、首次打开、Pet、菜单、气泡和窗口跳转于 2026-07-20 通过 |
+| 权威证据 | 最终 SHA-256 与逐项结果见 `docs/qa/2026-07-17-v0.2.1-release-packaging-validation.md`；后续版本必须重新构建、重新计算校验和，不能沿用 v0.2.1 数值 |
+
 ## 必跑检查
 
 推荐直接运行：
@@ -59,11 +70,11 @@ python3 scripts/validate_release.py
 | 菜单栏图标 | macOS 菜单栏状态项显示 APP 头像图标，不显示文字 `AI` |
 | 终端桥接 | 用 `scripts/monitor_codex.*` 或 `scripts/monitor_claude.*` 包装命令后，输出能进入 Web Companion |
 | 直接 CLI 探测 | 直接运行 `claude` / `codex`；显示 process-only 气泡；Claude 终端回复完成后进入“待处理”，点击气泡跳回对应终端后转“空闲”；Codex CLI 活跃为“进行中”、静默为“空闲”；气泡不展示终端内容或技术说明 |
-| ChatGPT 桌面端监控与已查看收口 | ChatGPT 具体对话进入运行中、待处理后点击气泡查看 | 仅接收明确桌面 `originator`；显示真实状态；无辅助功能权限也能激活 ChatGPT；完成待查看转为空闲并保留 15 分钟；超过 15 分钟具体对话移出，ChatGPT 仍存活时显示 App 空闲入口 |
-| App 长期运行恢复 | 终止 Dev.app 的内嵌 Python 子服务 | 原生 App 按指数退避自动拉起新服务、加载新令牌 URL 并恢复会话轮询；退出 App 时不重启 |
-| Qoder / Qoder CN | 打开 Qoder 或 Qoder CN，发起任务或触发 Action Required | App 存活但无具体会话时显示桌面空闲入口；具体任务显示产品名和真实标题；运行中为进行中；完成待查看为待处理且可点击后转空闲；Action Required / suspended / requiresApproval 保持待处理 |
-| WorkBuddy | 打开 WorkBuddy，分别验证空闲、运行中、完成、等待用户操作、项目/文件夹下对话 | App 存活但无具体会话时显示 `WorkBuddy Desktop · 空闲`；具体会话显示软件名和项目/文件夹上下文；运行中为进行中；完成待查看可点击后转空闲；用户注意状态点击后仍待处理 |
-| process-only 去重 | 同一个进程已被桥接脚本监控 | 只显示完整监控项，不再显示重复的 process-only 项 |
+| ChatGPT 桌面端监控与已查看收口 | 让 ChatGPT 具体对话进入运行中、待处理后点击气泡查看；仅接收明确桌面 `originator`，显示真实状态；无辅助功能权限也能激活 ChatGPT；完成待查看转为空闲并保留 15 分钟；超过 15 分钟具体对话移出，ChatGPT 仍存活时显示 App 空闲入口 |
+| App 长期运行恢复 | 精确终止 Dev.app 的内嵌 Python 子服务；原生 App 应按指数退避自动拉起新服务、加载新令牌 URL 并恢复会话轮询，退出 App 时不重启 |
+| Qoder / Qoder CN | 打开 Qoder 或 Qoder CN，发起任务或触发 Action Required；App 存活但无具体会话时显示桌面空闲入口，具体任务显示产品名和真实标题，完成待查看可点击后转空闲，Action Required / suspended / requiresApproval 保持待处理 |
+| WorkBuddy | 打开 WorkBuddy，分别验证空闲、运行中、完成、等待用户操作、项目/文件夹下对话；空闲入口显示 `WorkBuddy Desktop · 空闲`，具体会话显示软件名和项目/文件夹上下文，完成待查看可点击后转空闲，用户注意状态点击后仍待处理 |
+| process-only 去重 | 同一个进程已被桥接脚本监控时，只显示完整监控项，不再显示重复的 process-only 项 |
 | 复杂交互 | 不展示直接回复按钮，引导回原窗口 |
 | 窗口定位 | 点击气泡后尝试激活对应窗口；直接 CLI 优先聚焦父 GUI 应用 |
 | 左键 Pet | 只展开/收起气泡列表，不隐藏 Pet |
