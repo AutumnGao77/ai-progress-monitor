@@ -33,7 +33,7 @@ The current stable delivery focus is the local Web Companion plus the validated 
 | Qoder desktop status detection | Reads local Qoder/Qoder CN logs when available and falls back to a desktop idle entry when only the app is running |
 | WorkBuddy desktop status detection | Reads explicit local WorkBuddy session database states when available and falls back to a desktop idle entry when only the app is running |
 | JSON event source | Supported for reliable integrations |
-| Local notifications | Optional needs-action notifications |
+| Local notifications | User-controllable system notifications with a persistent Pet menu toggle |
 | Asset overrides | Configurable Pet and app avatar images |
 
 ## Requirements
@@ -120,6 +120,7 @@ To override the built-in visual assets without changing code, create `~/.ai-prog
 
 ```json
 {
+  "notifications_enabled": false,
   "pet_assets": {
     "idle": "/path/to/idle.png",
     "running": "/path/to/running.png",
@@ -131,7 +132,10 @@ To override the built-in visual assets without changing code, create `~/.ai-prog
 
 Right-click the Pet, open Appearance, and choose either the default overall sloth or the shirt sloth. The current choice is checked in the submenu. The default theme uses the three state images; the shirt theme currently uses `/assets/pet/shirt.png` for idle, running, and needs-action states. The selected theme is stored as `pet_appearance`; missing or invalid values fall back to the default theme.
 
+The right-click `System Notifications` submenu contains mutually exclusive `Enable / Disable` choices and checks the active choice. Disabling notifications does not disable Pet states, badges, bubbles, or click-to-focus. The boolean preference is stored as `notifications_enabled` and survives restarts. When launched with `--no-notifications`, the submenu shows `Disable` as checked and disables both choices for that process without changing the saved preference.
+
 The Pet appearance theme-switching PRD is `docs/prd/2026-07-11-pet-appearance-theme-switching-prd.md`.
+The system-notification toggle PRD is `docs/prd/2026-07-14-notification-preference-toggle-prd.md`.
 
 Custom image paths fall back to built-in assets if the file is missing, unsupported, or too large. Existing `pet_assets.*` overrides still apply to the final Pet images. The app avatar, menu bar icon, and favicon do not change with the Pet appearance theme.
 

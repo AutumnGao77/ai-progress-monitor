@@ -10,6 +10,7 @@ from typing import Optional
 from unittest import mock
 
 from ai_progress_monitor.actions import ActionExecutor
+from ai_progress_monitor.notifier import NotificationManager
 from ai_progress_monitor.service import MonitorService
 from ai_progress_monitor.store import SessionStore
 from ai_progress_monitor.preferences import MonitorPreferences
@@ -217,6 +218,12 @@ class WebLaunchTests(unittest.TestCase):
 
         self.assertIn('window.PET_APPEARANCE = "shirt"', html)
 
+    def test_render_html_injects_system_notification_state(self):
+        html = render_html("secret", notifications_enabled=False, notifications_locked=True)
+
+        self.assertIn("window.NOTIFICATIONS_ENABLED = false", html)
+        self.assertIn("window.NOTIFICATIONS_LOCKED = true", html)
+
     def test_preferences_api_requires_token(self):
         with _running_server() as base_url:
             with self.assertRaises(HTTPError) as error:
@@ -271,6 +278,83 @@ class WebLaunchTests(unittest.TestCase):
             print_mock.assert_any_call("AI Progress Monitor pet appearance: shirt", flush=True)
             second = _json_request(f"{base_url}/api/preferences?token=secret")
             self.assertEqual(second["pet_appearance"], "shirt")
+
+    def test_preferences_api_reads_and_updates_system_notifications(self):
+        with _running_server() as base_url:
+            first = _json_request(f"{base_url}/api/preferences?token=secret")
+            self.assertTrue(first["notifications_enabled"])
+            self.assertFalse(first["notifications_locked"])
+
+            updated = _json_request(
+                f"{base_url}/api/preferences/notifications?token=secret",
+                data={"enabled": False},
+            )
+
+            self.assertEqual(
+                updated,
+                {"ok": True, "notifications_enabled": False, "notifications_locked": False},
+            )
+            second = _json_request(f"{base_url}/api/preferences?token=secret")
+            self.assertFalse(second["notifications_enabled"])
+
+    def test_preferences_api_rejects_system_notification_update_without_token(self):
+        with _running_server() as base_url:
+            with self.assertRaises(HTTPError) as error:
+                _json_request(
+                    f"{base_url}/api/preferences/notifications",
+                    data={"enabled": False},
+                )
+
+            self.assertEqual(error.exception.code, 403)
+            self.assertEqual(json.loads(error.exception.read()), {"error": "forbidden"})
+
+    def test_preferences_api_rejects_invalid_system_notification_value(self):
+        with _running_server() as base_url:
+            for payload in [
+                {},
+                {"enabled": "false"},
+                {"enabled": 0},
+                {"enabled": None},
+                {"enabled": False, "unexpected": True},
+                [],
+                True,
+            ]:
+                with self.subTest(payload=payload):
+                    with self.assertRaises(HTTPError) as error:
+                        _json_request(
+                            f"{base_url}/api/preferences/notifications?token=secret",
+                            data=payload,
+                        )
+
+                    self.assertEqual(error.exception.code, 400)
+                    self.assertEqual(json.loads(error.exception.read()), {"ok": False, "error": "invalid_notifications_enabled"})
+
+    def test_preferences_api_rejects_system_notification_update_when_forced_off(self):
+        with _running_server({"notifications_enabled": True}, notifications_forced_off=True) as base_url:
+            current = _json_request(f"{base_url}/api/preferences?token=secret")
+            self.assertFalse(current["notifications_enabled"])
+            self.assertTrue(current["notifications_locked"])
+
+            with self.assertRaises(HTTPError) as error:
+                _json_request(
+                    f"{base_url}/api/preferences/notifications?token=secret",
+                    data={"enabled": True},
+                )
+
+            self.assertEqual(error.exception.code, 409)
+            self.assertEqual(json.loads(error.exception.read()), {"ok": False, "error": "notifications_forced_disabled"})
+
+    def test_preferences_api_reports_system_notification_write_failure(self):
+        with _running_server() as base_url:
+            with mock.patch.object(MonitorPreferences, "set_notifications_enabled", side_effect=OSError("disk full")):
+                with self.assertRaises(HTTPError) as error:
+                    _json_request(
+                        f"{base_url}/api/preferences/notifications?token=secret",
+                        data={"enabled": False},
+                    )
+
+            self.assertEqual(error.exception.code, 500)
+            self.assertEqual(json.loads(error.exception.read()), {"ok": False, "error": "preferences_write_failed"})
 
     def test_preferences_api_rejects_unknown_pet_appearance(self):
         with _running_server() as base_url:
@@ -382,8 +466,9 @@ class WebLaunchTests(unittest.TestCase):
 
 
 class _running_server:
-    def __init__(self, preferences_payload: Optional[dict] = None):
+    def __init__(self, preferences_payload: Optional[dict] = None, notifications_forced_off: bool = False):
         self.preferences_payload = preferences_payload
+        self.notifications_forced_off = notifications_forced_off
 
     def __enter__(self):
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -391,7 +476,14 @@ class _running_server:
         if self.preferences_payload is not None:
             preferences_path.write_text(json.dumps(self.preferences_payload), encoding="utf-8")
         preferences = MonitorPreferences(preferences_path)
-        service = MonitorService([], SessionStore(), ActionExecutor(), preferences=preferences)
+        service = MonitorService(
+            [],
+            SessionStore(),
+            ActionExecutor(),
+            notifier=NotificationManager(sender=lambda _title, _message: None),
+            preferences=preferences,
+            notifications_forced_off=self.notifications_forced_off,
+        )
         self.server = web.create_server("127.0.0.1", 0, service, "secret")
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()

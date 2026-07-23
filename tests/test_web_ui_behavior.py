@@ -148,6 +148,42 @@ class WebUiBehaviorTests(unittest.TestCase):
         self.assertEqual(payload["finalDefaultCheck"], "✓")
         self.assertEqual(payload["finalShirtCheck"], "")
 
+    def test_system_notification_toggle_serializes_latest_choice_and_rolls_back_failure(self):
+        script = _main_script().replace("\nload();\n", "\n")
+        result = subprocess.run(
+            ["node", "-e", _appearance_save_queue_harness(script)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        payload = json.loads(result.stdout)
+        self.assertTrue(payload["optimisticNotificationsAfterClicks"])
+        self.assertEqual(payload["initialNotificationsEnabledCheck"], "✓")
+        self.assertEqual(payload["initialNotificationsDisabledCheck"], "")
+        self.assertTrue(payload["notificationsEnabledAfterParentClick"])
+        self.assertEqual(payload["notificationRequestCountAfterParentClick"], 0)
+        self.assertEqual(payload["notificationRequestCountAfterSameState"], 0)
+        self.assertEqual(payload["notificationBodiesBeforeFirstResponse"], [{"enabled": False}])
+        self.assertEqual(
+            payload["notificationBodiesAfterFirstResponse"],
+            [{"enabled": False}, {"enabled": True}],
+        )
+        self.assertTrue(payload["finalNotificationsEnabled"])
+        self.assertEqual(payload["finalNotificationsEnabledCheck"], "✓")
+        self.assertEqual(payload["finalNotificationsDisabledCheck"], "")
+        self.assertFalse(payload["notificationsBeforeFailure"])
+        self.assertTrue(payload["notificationsAfterFailure"])
+        self.assertEqual(payload["notificationsEnabledCheckAfterFailure"], "✓")
+        self.assertEqual(payload["notificationsDisabledCheckAfterFailure"], "")
+        self.assertEqual(payload["notificationFailureText"], "系统通知设置保存失败")
+        self.assertEqual(payload["lockedNotificationsEnabledCheck"], "")
+        self.assertEqual(payload["lockedNotificationsDisabledCheck"], "✓")
+        self.assertTrue(payload["lockedNotificationsEnabledDisabled"])
+        self.assertTrue(payload["lockedNotificationsDisabledDisabled"])
+        self.assertEqual(payload["notificationRequestCountAfterLockedSelection"], 3)
+
     def test_pet_appearance_save_failure_rolls_back_to_confirmed_theme(self):
         script = _main_script().replace("\nload();\n", "\n")
         result = subprocess.run(
@@ -202,6 +238,7 @@ def _node_harness(script: str) -> str:
             this.dataset = {{}};
             this.children = [];
             this.textContent = "";
+            this.disabled = false;
             this.offsetWidth = id === "pet" ? 150 : 260;
             this.offsetHeight = id === "pet" ? 136 : 120;
             this.scrollHeight = 120;
@@ -764,6 +801,20 @@ def _appearance_save_queue_harness(script: str) -> str:
           }};
         }}
 
+        function notificationSuccessResponse(enabled) {{
+          return {{
+            ok: true,
+            json: async () => ({{ok: true, notifications_enabled: enabled, notifications_locked: false}}),
+          }};
+        }}
+
+        function failedResponse() {{
+          return {{
+            ok: false,
+            json: async () => ({{ok: false, error: "preferences_write_failed"}}),
+          }};
+        }}
+
         async function settle() {{
           await Promise.resolve();
           await new Promise(resolve => setImmediate(resolve));
@@ -783,6 +834,12 @@ def _appearance_save_queue_harness(script: str) -> str:
             appearanceShirtMenuItem: new Element("appearanceShirtMenuItem"),
             appearanceDefaultCheck: new Element("appearanceDefaultCheck"),
             appearanceShirtCheck: new Element("appearanceShirtCheck"),
+            systemNotificationsMenuItem: new Element("systemNotificationsMenuItem"),
+            systemNotificationsSubmenu: new Element("systemNotificationsSubmenu"),
+            notificationsEnabledMenuItem: new Element("notificationsEnabledMenuItem"),
+            notificationsDisabledMenuItem: new Element("notificationsDisabledMenuItem"),
+            notificationsEnabledCheck: new Element("notificationsEnabledCheck"),
+            notificationsDisabledCheck: new Element("notificationsDisabledCheck"),
             statusNote: new Element("statusNote"),
             hidePetMenuItem: new Element("hidePetMenuItem"),
             quitPetMenuItem: new Element("quitPetMenuItem"),
@@ -790,6 +847,7 @@ def _appearance_save_queue_harness(script: str) -> str:
           elements.pet.classList.add("pet", "idle");
 
           const pendingRequests = [];
+          const pendingNotificationRequests = [];
           const hostMessages = [];
           const windowListeners = {{}};
           const context = {{
@@ -800,6 +858,9 @@ def _appearance_save_queue_harness(script: str) -> str:
               if (String(url).includes("/api/preferences/pet-appearance")) {{
                 return new Promise(resolve => pendingRequests.push({{url, options, resolve}}));
               }}
+              if (String(url).includes("/api/preferences/notifications")) {{
+                return new Promise(resolve => pendingNotificationRequests.push({{url, options, resolve}}));
+              }}
               return Promise.resolve({{json: async () => ({{sessions: []}}), ok: true}});
             }},
             localStorage: {{ getItem: () => null, setItem: () => {{}}, removeItem: () => {{}} }},
@@ -809,6 +870,8 @@ def _appearance_save_queue_harness(script: str) -> str:
             window: {{
               MONITOR_TOKEN: "test-token",
               PET_APPEARANCE: "default",
+              NOTIFICATIONS_ENABLED: true,
+              NOTIFICATIONS_LOCKED: false,
               PET_ASSETS: {{}},
               PET_ASSET_OVERRIDE_KEYS: [],
               PET_THEMES: {{
@@ -843,7 +906,7 @@ def _appearance_save_queue_harness(script: str) -> str:
           }};
           context.globalThis = context;
           vm.createContext(context);
-          vm.runInContext(script + "\\nglobalThis.__api = {{selectPetAppearance}};", context);
+          vm.runInContext(script + "\\nglobalThis.__api = {{selectPetAppearance,selectNotificationsEnabled,applyNotificationsEnabled}};", context);
 
           const api = context.__api;
           api.selectPetAppearance("shirt");
@@ -863,6 +926,51 @@ def _appearance_save_queue_harness(script: str) -> str:
           pendingRequests[1].resolve(successResponse("default"));
           await settle();
 
+          const initialNotificationsEnabledCheck = elements.notificationsEnabledCheck.textContent;
+          const initialNotificationsDisabledCheck = elements.notificationsDisabledCheck.textContent;
+          elements.systemNotificationsMenuItem.onclick({{target: elements.systemNotificationsMenuItem}});
+          await settle();
+          const notificationsEnabledAfterParentClick = context.window.NOTIFICATIONS_ENABLED;
+          const notificationRequestCountAfterParentClick = pendingNotificationRequests.length;
+          elements.notificationsEnabledMenuItem.onclick({{stopPropagation() {{}}}});
+          await settle();
+          const notificationRequestCountAfterSameState = pendingNotificationRequests.length;
+
+          elements.notificationsDisabledMenuItem.onclick({{stopPropagation() {{}}}});
+          elements.notificationsEnabledMenuItem.onclick({{stopPropagation() {{}}}});
+          await settle();
+          const optimisticNotificationsAfterClicks = context.window.NOTIFICATIONS_ENABLED;
+          const notificationBodiesBeforeFirstResponse = pendingNotificationRequests.map(request => JSON.parse(request.options.body));
+
+          pendingNotificationRequests[0].resolve(notificationSuccessResponse(false));
+          await settle();
+          const notificationBodiesAfterFirstResponse = pendingNotificationRequests.map(request => JSON.parse(request.options.body));
+
+          pendingNotificationRequests[1].resolve(notificationSuccessResponse(true));
+          await settle();
+          const finalNotificationsEnabled = context.window.NOTIFICATIONS_ENABLED;
+          const finalNotificationsEnabledCheck = elements.notificationsEnabledCheck.textContent;
+          const finalNotificationsDisabledCheck = elements.notificationsDisabledCheck.textContent;
+
+          elements.notificationsDisabledMenuItem.onclick({{stopPropagation() {{}}}});
+          await settle();
+          const notificationsBeforeFailure = context.window.NOTIFICATIONS_ENABLED;
+          pendingNotificationRequests[2].resolve(failedResponse());
+          await settle();
+
+          const notificationsEnabledCheckAfterFailure = elements.notificationsEnabledCheck.textContent;
+          const notificationsDisabledCheckAfterFailure = elements.notificationsDisabledCheck.textContent;
+          const notificationsAfterFailure = context.window.NOTIFICATIONS_ENABLED;
+          context.window.NOTIFICATIONS_LOCKED = true;
+          api.applyNotificationsEnabled(false);
+          const lockedNotificationsEnabledCheck = elements.notificationsEnabledCheck.textContent;
+          const lockedNotificationsDisabledCheck = elements.notificationsDisabledCheck.textContent;
+          const lockedNotificationsEnabledDisabled = elements.notificationsEnabledMenuItem.disabled;
+          const lockedNotificationsDisabledDisabled = elements.notificationsDisabledMenuItem.disabled;
+          elements.notificationsEnabledMenuItem.onclick({{stopPropagation() {{}}}});
+          await settle();
+          const notificationRequestCountAfterLockedSelection = pendingNotificationRequests.length;
+
           process.stdout.write(JSON.stringify({{
             optimisticAppearanceAfterClicks,
             optimisticPetSrcAfterClicks,
@@ -874,6 +982,27 @@ def _appearance_save_queue_harness(script: str) -> str:
             finalPetSrc: elements.petArt.src,
             finalDefaultCheck: elements.appearanceDefaultCheck.textContent,
             finalShirtCheck: elements.appearanceShirtCheck.textContent,
+            optimisticNotificationsAfterClicks,
+            initialNotificationsEnabledCheck,
+            initialNotificationsDisabledCheck,
+            notificationsEnabledAfterParentClick,
+            notificationRequestCountAfterParentClick,
+            notificationRequestCountAfterSameState,
+            notificationBodiesBeforeFirstResponse,
+            notificationBodiesAfterFirstResponse,
+            finalNotificationsEnabled,
+            finalNotificationsEnabledCheck,
+            finalNotificationsDisabledCheck,
+            notificationsBeforeFailure,
+            notificationsAfterFailure,
+            notificationsEnabledCheckAfterFailure,
+            notificationsDisabledCheckAfterFailure,
+            notificationFailureText: elements.statusNote.textContent,
+            lockedNotificationsEnabledCheck,
+            lockedNotificationsDisabledCheck,
+            lockedNotificationsEnabledDisabled,
+            lockedNotificationsDisabledDisabled,
+            notificationRequestCountAfterLockedSelection,
           }}));
         }})().catch(error => {{
           console.error(error && error.stack ? error.stack : error);

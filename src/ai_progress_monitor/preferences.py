@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from threading import RLock
 from typing import Optional, Set
 
 
@@ -13,6 +14,7 @@ PET_APPEARANCE_THEMES = {DEFAULT_PET_APPEARANCE, "shirt"}
 class MonitorPreferences:
     def __init__(self, path: Path | None = None):
         self.path = path or Path.home() / ".ai-progress-monitor" / "preferences.json"
+        self._mutation_lock = RLock()
 
     def hidden_sessions(self) -> Set[str]:
         payload = self._read()
@@ -27,14 +29,16 @@ class MonitorPreferences:
     def hide_session(self, session_id: str) -> None:
         if not session_id:
             return
-        hidden = self.hidden_sessions()
-        hidden.add(session_id)
-        self._write_hidden(hidden)
+        with self._mutation_lock:
+            hidden = self.hidden_sessions()
+            hidden.add(session_id)
+            self._write_hidden(hidden)
 
     def unhide_session(self, session_id: str) -> None:
-        hidden = self.hidden_sessions()
-        hidden.discard(session_id)
-        self._write_hidden(hidden)
+        with self._mutation_lock:
+            hidden = self.hidden_sessions()
+            hidden.discard(session_id)
+            self._write_hidden(hidden)
 
     def session_alias(self, session_id: str) -> Optional[str]:
         aliases = self._aliases()
@@ -46,17 +50,19 @@ class MonitorPreferences:
         title = str(title).strip()
         if not session_id:
             return
-        if not title:
-            self.reset_session_alias(session_id)
-            return
-        aliases = self._aliases()
-        aliases[session_id] = title[:80]
-        self._write_aliases(aliases)
+        with self._mutation_lock:
+            if not title:
+                self.reset_session_alias(session_id)
+                return
+            aliases = self._aliases()
+            aliases[session_id] = title[:80]
+            self._write_aliases(aliases)
 
     def reset_session_alias(self, session_id: str) -> None:
-        aliases = self._aliases()
-        aliases.pop(str(session_id), None)
-        self._write_aliases(aliases)
+        with self._mutation_lock:
+            aliases = self._aliases()
+            aliases.pop(str(session_id), None)
+            self._write_aliases(aliases)
 
     def pet_asset_path(self, key: str) -> Optional[Path]:
         assets = self._pet_assets()
@@ -70,9 +76,23 @@ class MonitorPreferences:
         normalized = normalize_pet_appearance(theme)
         if normalized != theme:
             return False
-        payload = self._read()
-        payload["pet_appearance"] = normalized
-        self._write_payload(payload)
+        with self._mutation_lock:
+            payload = self._read()
+            payload["pet_appearance"] = normalized
+            self._write_payload(payload)
+        return True
+
+    def notifications_enabled(self) -> bool:
+        value = self._read().get("notifications_enabled")
+        return value if isinstance(value, bool) else True
+
+    def set_notifications_enabled(self, enabled: bool) -> bool:
+        if not isinstance(enabled, bool):
+            return False
+        with self._mutation_lock:
+            payload = self._read()
+            payload["notifications_enabled"] = enabled
+            self._write_payload(payload)
         return True
 
     def _read(self) -> dict:

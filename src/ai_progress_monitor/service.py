@@ -30,6 +30,7 @@ class MonitorService:
         clock: Optional[Callable[[], float]] = None,
         now: Optional[Callable[[], datetime]] = None,
         viewed_desktop_idle_visible_seconds: float = VIEWED_DESKTOP_IDLE_VISIBLE_SECONDS,
+        notifications_forced_off: bool = False,
     ):
         self.sources = list(sources)
         self.store = store
@@ -42,7 +43,9 @@ class MonitorService:
         self.clock = clock or time.monotonic
         self.now = now or (lambda: datetime.now(timezone.utc))
         self.viewed_desktop_idle_visible_seconds = viewed_desktop_idle_visible_seconds
+        self._notifications_forced_off = bool(notifications_forced_off)
         self._process_empty_started_at: Optional[float] = None
+        self._sync_notifications_enabled([])
 
     def refresh(self) -> List[SessionUpdate]:
         if not self.paused:
@@ -56,8 +59,27 @@ class MonitorService:
                     self.store.apply_updates(updates)
         sessions = self.visible_sessions()
         if self.notifier is not None:
+            self._sync_notifications_enabled(sessions)
             self.notifier.notify_for_sessions(sessions)
         return sessions
+
+    def notifications_enabled(self) -> bool:
+        return not self._notifications_forced_off and self.preferences.notifications_enabled()
+
+    def notifications_locked(self) -> bool:
+        return self._notifications_forced_off
+
+    def set_notifications_enabled(self, enabled: bool) -> bool:
+        if self.notifications_locked():
+            return False
+        changed = self.preferences.set_notifications_enabled(enabled)
+        if changed:
+            self._sync_notifications_enabled(self.visible_sessions())
+        return changed
+
+    def _sync_notifications_enabled(self, sessions: Iterable[SessionUpdate]) -> None:
+        if self.notifier is not None:
+            self.notifier.set_enabled(self.notifications_enabled(), sessions=sessions)
 
     def _poll_sources(self) -> List[tuple[object, Optional[List[SessionUpdate]]]]:
         if not self.sources:

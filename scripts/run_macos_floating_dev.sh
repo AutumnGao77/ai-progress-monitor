@@ -69,6 +69,7 @@ python3 -m zipapp "$ROOT_DIR/src" \
 
 cp "$ROOT_DIR/native/macos/FloatingMonitor.swift" "$RESOURCES_DIR/FloatingMonitor.swift"
 cp "$ROOT_DIR/native/macos/FloatingMonitorGeometry.swift" "$RESOURCES_DIR/FloatingMonitorGeometry.swift"
+cp "$ROOT_DIR/native/macos/FloatingMonitorFocusPolicy.swift" "$RESOURCES_DIR/FloatingMonitorFocusPolicy.swift"
 
 APP_AVATAR="$ROOT_DIR/src/ai_progress_monitor/assets/app-avatar.png"
 if [ -f "$APP_AVATAR" ]; then
@@ -96,6 +97,7 @@ mkdir -p "$CLANG_MODULE_CACHE_PATH" "$SWIFT_MODULE_CACHE_PATH"
 
 swiftc "$ROOT_DIR/native/macos/FloatingMonitor.swift" \
   "$ROOT_DIR/native/macos/FloatingMonitorGeometry.swift" \
+  "$ROOT_DIR/native/macos/FloatingMonitorFocusPolicy.swift" \
   -o "$EXECUTABLE" \
   -framework Cocoa \
   -framework WebKit

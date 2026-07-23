@@ -224,15 +224,59 @@ class MonitorServiceTests(unittest.TestCase):
         self.assertFalse(result.ok)
 
     def test_refresh_sends_needs_action_notification(self):
-        sent = []
-        notifier = NotificationManager(sender=lambda title, message: sent.append((title, message)), cooldown_seconds=60)
-        service = MonitorService([DemoSource()], SessionStore(), ActionExecutor(), notifier=notifier)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            sent = []
+            notifier = NotificationManager(sender=lambda title, message: sent.append((title, message)), cooldown_seconds=60)
+            preferences = MonitorPreferences(Path(temp_dir) / "preferences.json")
+            service = MonitorService(
+                [DemoSource()],
+                SessionStore(),
+                ActionExecutor(),
+                notifier=notifier,
+                preferences=preferences,
+            )
 
-        service.refresh()
-        service.refresh()
+            service.refresh()
+            service.refresh()
 
-        self.assertEqual(len(sent), 1)
-        self.assertIn("需要处理", sent[0][0])
+            self.assertEqual(len(sent), 1)
+            self.assertIn("需要处理", sent[0][0])
+
+    def test_notification_preference_controls_notifier_immediately(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            preferences = MonitorPreferences(Path(temp_dir) / "preferences.json")
+            preferences.set_notifications_enabled(False)
+            notifier = NotificationManager(sender=lambda _title, _message: None)
+            service = MonitorService([], SessionStore(), ActionExecutor(), notifier=notifier, preferences=preferences)
+
+            self.assertFalse(service.notifications_enabled())
+            self.assertFalse(service.notifications_locked())
+            self.assertFalse(notifier.enabled)
+
+            self.assertTrue(service.set_notifications_enabled(True))
+            self.assertTrue(service.notifications_enabled())
+            self.assertTrue(notifier.enabled)
+            self.assertTrue(MonitorPreferences(preferences.path).notifications_enabled())
+
+    def test_no_notifications_argument_locks_runtime_without_changing_preference(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            preferences = MonitorPreferences(Path(temp_dir) / "preferences.json")
+            preferences.set_notifications_enabled(True)
+            notifier = NotificationManager(sender=lambda _title, _message: None)
+            service = MonitorService(
+                [],
+                SessionStore(),
+                ActionExecutor(),
+                notifier=notifier,
+                preferences=preferences,
+                notifications_forced_off=True,
+            )
+
+            self.assertFalse(service.notifications_enabled())
+            self.assertTrue(service.notifications_locked())
+            self.assertFalse(notifier.enabled)
+            self.assertFalse(service.set_notifications_enabled(False))
+            self.assertTrue(MonitorPreferences(preferences.path).notifications_enabled())
 
     def test_refresh_keeps_process_sessions_during_empty_poll_grace_window(self):
         clock = FakeClock()

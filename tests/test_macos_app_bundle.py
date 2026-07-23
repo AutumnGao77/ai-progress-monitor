@@ -97,6 +97,7 @@ class MacOSAppBundleTests(unittest.TestCase):
             resources = app_path / "Contents/Resources"
             self.assertFalse((resources / "FloatingMonitor.swift").exists())
             self.assertFalse((resources / "FloatingMonitorGeometry.swift").exists())
+            self.assertFalse((resources / "FloatingMonitorFocusPolicy.swift").exists())
             self.assertFalse((resources / "BUILD_FLOATING_APP.txt").exists())
 
     def test_native_compile_targets_arm64_and_supported_macos(self):
@@ -118,6 +119,15 @@ class MacOSAppBundleTests(unittest.TestCase):
             self.assertIn("-target", command)
             self.assertIn(
                 f"arm64-apple-macos{build_release.MACOS_MINIMUM_VERSION}",
+                command,
+            )
+            self.assertIn(
+                str(
+                    build_release.ROOT
+                    / "native"
+                    / "macos"
+                    / "FloatingMonitorFocusPolicy.swift"
+                ),
                 command,
             )
             self.assertTrue(executable.exists())

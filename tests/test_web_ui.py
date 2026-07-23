@@ -145,7 +145,7 @@ class WebUiTests(unittest.TestCase):
         self.assertIn("bubbleList.style.maxHeight = `${bubbleHeight}px`", HTML)
         self.assertIn('if (bubbleList.classList.contains("open")) scheduleBubbleLayout();', HTML)
         self.assertIn("mode === \"bubbles\" ? {width: 340, height: 500}", HTML)
-        self.assertIn('mode === "menu" ? {width: 270, height: 160}', HTML)
+        self.assertIn('mode === "menu" ? {width: 270, height: 190}', HTML)
         self.assertNotIn(".pet { left: 8px !important; right: auto; top: 8px !important;", HTML)
         self.assertNotIn("Math.max(72, petRect.top - 20)", HTML)
 
@@ -313,6 +313,25 @@ class WebUiTests(unittest.TestCase):
         self.assertIn("退出程序", HTML)
         self.assertIn("hidePet", HTML)
         self.assertIn("quitApp", HTML)
+
+    def test_pet_context_menu_has_system_notification_toggle(self):
+        self.assertIn('id="systemNotificationsMenuItem"', HTML)
+        self.assertIn('id="systemNotificationsSubmenu"', HTML)
+        self.assertIn('id="notificationsEnabledMenuItem"', HTML)
+        self.assertIn('id="notificationsDisabledMenuItem"', HTML)
+        self.assertIn('id="notificationsEnabledCheck"', HTML)
+        self.assertIn('id="notificationsDisabledCheck"', HTML)
+        self.assertIn("系统通知", HTML)
+        self.assertIn("开启", HTML)
+        self.assertIn("关闭", HTML)
+        self.assertRegex(
+            HTML,
+            r'id="systemNotificationsMenuItem"[^>]*>[\s\S]*?系统通知[\s\S]*?pet-menu-arrow[\s\S]*?id="systemNotificationsSubmenu"',
+        )
+        self.assertNotIn('systemNotificationsMenuItem.onclick = () => selectNotificationsEnabled(!window.NOTIFICATIONS_ENABLED);', HTML)
+        self.assertIn("/api/preferences/notifications", HTML)
+        self.assertIn("系统通知设置保存失败", HTML)
+        self.assertIn('mode === "menu" ? {width: 270, height: 190}', HTML)
 
     def test_pet_context_menu_uses_compact_visual_size(self):
         self.assertIn("min-width: 108px", HTML)

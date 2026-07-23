@@ -55,6 +55,7 @@ class StartScriptTests(unittest.TestCase):
         self.assertIn("zipapp", script)
         self.assertIn("native/macos/FloatingMonitor.swift", script)
         self.assertIn("native/macos/FloatingMonitorGeometry.swift", script)
+        self.assertIn("native/macos/FloatingMonitorFocusPolicy.swift", script)
         self.assertIn("swiftc", script)
         self.assertIn("codesign --force --deep --sign -", script)
         self.assertIn("AI Progress Monitor Floating Dev.app", script)

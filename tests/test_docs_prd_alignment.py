@@ -412,6 +412,66 @@ class DocsPrdAlignmentTests(unittest.TestCase):
         ]:
             self.assertIn(phrase, source_and_tests)
 
+    def test_system_notification_toggle_increment_is_documented_and_mapped(self):
+        prd_path = ROOT / "docs" / "prd" / "2026-07-14-notification-preference-toggle-prd.md"
+        prd = prd_path.read_text()
+        maintenance_docs = "\n".join(
+            [
+                (ROOT / "AGENTS.md").read_text(),
+                (ROOT / "README.md").read_text(),
+                (ROOT / "README.en.md").read_text(),
+                (ROOT / "docs" / "release-checklist.md").read_text(),
+                (ROOT / "docs" / "qa" / "2026-07-02-macos-sloth-pet-monitor-acceptance.md").read_text(),
+            ]
+        )
+        source_and_tests = "\n".join(
+            [
+                (ROOT / "src" / "ai_progress_monitor" / "preferences.py").read_text(),
+                (ROOT / "src" / "ai_progress_monitor" / "notifier.py").read_text(),
+                (ROOT / "src" / "ai_progress_monitor" / "service.py").read_text(),
+                (ROOT / "src" / "ai_progress_monitor" / "web.py").read_text(),
+                (ROOT / "tests" / "test_preferences.py").read_text(),
+                (ROOT / "tests" / "test_notifier.py").read_text(),
+                (ROOT / "tests" / "test_service.py").read_text(),
+                (ROOT / "tests" / "test_web_launch.py").read_text(),
+                (ROOT / "tests" / "test_web_ui_behavior.py").read_text(),
+            ]
+        )
+
+        for phrase in [
+            "系统通知",
+            "notifications_enabled",
+            "notifications_locked",
+            "POST /api/preferences/notifications",
+            "不补发",
+            "Mac + Web",
+            "系统通知 >",
+            "✓ 开启",
+            "✓ 关闭",
+            "两个选项均置灰",
+        ]:
+            self.assertIn(phrase, prd)
+
+        for phrase in [
+            prd_path.name,
+            "系统通知",
+            "notifications_enabled",
+            "开启 / 关闭",
+        ]:
+            self.assertIn(phrase, maintenance_docs)
+
+        for phrase in [
+            "set_notifications_enabled",
+            "notifications_forced_off",
+            '"/api/preferences/notifications"',
+            "notifications_locked",
+            "系统通知设置保存失败",
+            'id="systemNotificationsSubmenu"',
+            'id="notificationsEnabledMenuItem"',
+            'id="notificationsDisabledMenuItem"',
+        ]:
+            self.assertIn(phrase, source_and_tests)
+
 
 if __name__ == "__main__":
     unittest.main()

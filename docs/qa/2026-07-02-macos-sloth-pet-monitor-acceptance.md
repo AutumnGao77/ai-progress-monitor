@@ -4,6 +4,10 @@
 
 macOS 版本已完成 PRD 主路径验收并已正式发布：默认 Pet、三色角标、气泡列表、同文件夹多对话区分、隐私保护、点击气泡聚焦、拖动不误展开、右键隐藏/退出、Show 恢复链路、再次打开 app 恢复、桌面端具体对话已查看后 15 分钟收口。2026-07-14 增量已完成 Pet 外观主题切换，以及 WorkBuddy、Qoder、Qoder CN 监控扩展。2026-07-17 已完成桌面产品从 Codex 到 ChatGPT 的身份迁移，并修复 Claude Code CLI 工作目录串扰。v0.2.1 已于 2026-07-20 发布，用户已完成 GitHub 回下载与首次打开、Pet、菜单、气泡、窗口跳转验收。
 
+2026-07-21，系统通知开关增量已在功能分支完成开发态自动化、浏览器和 macOS Dev App 实机验收；该增量尚未提交、推送或发布，不属于已发布的 v0.2.1。
+
+2026-07-23，针对 macOS 原生 Pet 在 Zed 多窗口、多显示器环境中点击一个项目气泡却同时带出另一个 Zed 窗口的问题，已完成事件驱动修复、自动化、Swift 编译和发布门禁。用户已用真实鼠标完成正反向视觉验收：点击 SellerBooks 只出现 SellerBooks，点击“日报推送”只出现“日报推送”。随后发现最小化 SellerBooks 时 Zed 会显示“日报推送”；不经过 Pet 的对照实验得到完全相同结果，且 AX 状态证明 SellerBooks 为单窗口最小化、Zed App 未隐藏、“日报推送”由 Zed 接替为主窗口，因此该现象不属于 Pet 聚焦回归。本次修复尚未提交、推送或发布。
+
 ChatGPT 与多工具功能回归范围、445 项自动化结果和最小人工验收结论以 `docs/qa/2026-07-17-chatgpt-and-multi-tool-regression-test-cases.md` 为准；v0.2.1 最终双包、SHA-256 和发布后人工验收以 `docs/qa/2026-07-17-v0.2.1-release-packaging-validation.md` 为准。下文较早章节保留历史测试名、测试数和产物名时，不代表当前用户界面或发布结构仍采用旧版本。
 
 菜单栏头像图标中的 `Show Monitor`、外接屏跨屏拖动、气泡点击聚焦、状态稳定性已完成自动化覆盖和本地手动测试。用户本地测试通过后，已执行 `python3 scripts/build_release.py` 生成发布包。
@@ -72,6 +76,36 @@ ChatGPT 与多工具功能回归范围、445 项自动化结果和最小人工�
 | 外观切换边界 | 外观只切换 Pet 本体；APP 头像、菜单栏图标、favicon、角标、气泡、拖动、隐藏、退出、通知、会话识别和聚焦逻辑不随主题改变 | 通过 |
 | App 形态验收 | `scripts/check_macos_floating_dev.sh --strict` 已输出 `Manual acceptance complete`；用户已手动确认点击气泡聚焦窗口正常 | 通过 |
 | 发布边界 | 已发布的 `v0.1.0` tag 不移动；本增量进入后续源码与发版流程，公开发版前按 `docs/release-checklist.md` 重新验证发布包资源 | 通过 |
+
+## 2026-07-23 Zed 多窗口聚焦补充验收
+
+| 项目 | 证据 | 结果 |
+|---|---|---|
+| 真实根因 | WebView 每次点击只发送一个原生 focus 消息，Zed 也只有一个 App 进程，cwd 能正确匹配目标项目窗口。问题发生在匹配之后：`activate(from:)` 返回 `accepted=true` 只代表系统接受请求，旧实现却立即执行第二次 `AXRaise` 并回报成功；100 ms 后 Zed 才真正成为前台。激活请求与目标窗口状态切换没有时序闭环，旧 main/key 窗口仍可能在 Zed 激活时被恢复 | 已证明 |
+| 旧修复为何失效 | 第一版只把无来源激活改成来源感知激活，自动化/HID 检查曾显示目标窗口正确，但用户真实鼠标仍复现 SellerBooks 与“日报推送”同时跳出。该结果推翻了“`activate(from:)` 返回即完成”和“最终 AX focused/main 正确即可证明过程无双窗口”的旧结论 | 已证明并已撤回旧结论 |
+| 方案对照 | 固定 sleep 依赖机器负载；最小化或隐藏其他 Zed 窗口会破坏用户状态；Zed CLI 受打开策略影响且不是精确窗口 API；私有 WindowServer 接口不可维护。最终选择系统事件 + 有界状态确认，不依赖固定等待时间 | 已评估 |
+| 修复实现 | 每次点击生成唯一操作编号并取消旧监听、超时和重试；精确命中后先设置并抬升目标，连续两次确认它同时为 AX focused/main；在激活请求前注册 `NSWorkspace.didActivateApplicationNotification`，等待目标 App 真实 active/frontmost；激活后再次设置、抬升并连续确认目标。macOS 14+ 保留来源感知激活且拒绝时不回退；macOS 13 兼容请求同样等待真实激活 | 代码与编译通过 |
+| 非目标边界 | AI 桌面 App 在没有可访问窗口时的普通激活逻辑不变；窗口 ID、cwd/标题匹配顺序、通知、状态算法、隐藏/退出和 Web 点击消息均未改 | 通过 |
+| SellerBooks 技术链路 | 双屏现场中“日报推送”先为 Zed 的 main/focused；用户真实点击 Pet 的 SellerBooks 气泡后，日志依次出现前置稳定 2 次、协调激活接受、真实激活事件、后置稳定 2 次和 `focused-project-window` 成功；随后 AX 显示 SellerBooks 为唯一 main/focused，“日报推送”两项均为 false | 通过 |
+| 自动化与发布校验 | `tests.test_macos_focus_policy` 4 项、`tests.test_macos_native_companion` 34 项均通过，Dev App Swift 编译与临时签名通过。最终全量 472/472 在正常权限下通过；此前沙箱中的 11 项错误均由临时 localhost 端口被禁止引起，对应 `tests.test_web_launch` 已在正常权限下 36/36 通过；`python3 scripts/validate_release.py` 输出 `release-validation-ok` | 通过 |
+| 用户体验复核 | 用户真实点击 SellerBooks 时只出现 SellerBooks；反向点击“日报推送”时只出现“日报推送”，未再出现一次点击带出两个 Zed 项目窗口 | 通过 |
+| 最小化行为对照 | 直接通过 macOS 辅助功能聚焦 SellerBooks，全程不调用 Pet，再最小化该窗口；结果仍是 SellerBooks `minimized=true`、Zed `hidden=false`、“日报推送”自动变为 `main=true / focused=true`。这证明它是 Zed 在当前主窗口最小化后接替同 App 其他窗口的行为，不由 Pet 触发；为避免改变 IDE 原有窗口状态，本次不增加持续监听，也不隐藏或最小化其他项目窗口 | 边界已证明，无需改代码 |
+
+## 2026-07-21 系统通知开关增量验收
+
+| 项目 | 证据 | 结果 |
+|---|---|---|
+| 执行 PRD | `docs/prd/2026-07-14-notification-preference-toggle-prd.md` 记录 Mac + Web 范围、菜单、偏好、API、启动参数优先级和验收矩阵 | 通过 |
+| 偏好与兼容 | `notifications_enabled` 仅接受布尔值，缺失、非法或损坏配置默认开启；写入保留外观、隐藏会话、别名、自定义资源和未知字段；外观与通知并发保存使用同一进程内原子更新锁，不会互相覆盖 | 自动化通过 |
+| API 契约 | `GET /api/preferences` 返回实际状态和锁定态；通知写接口只接受且必须只包含一个布尔 `enabled` 字段，成功、非法请求、无令牌、启动参数锁定和写入失败分别覆盖 `200 / 400 / 403 / 409 / 500` | 自动化通过 |
+| 菜单与并发 | 右键 Pet 主菜单为“外观 > / 系统通知 > / 隐藏 Pet / 退出程序”；通知二级菜单为“开启 / 关闭”互斥勾选，同值不重复写入；串行保存保证快速连点后的最终落盘值等于最后选择，失败时回滚并提示 | 自动化通过 |
+| 通知边界 | 关闭后不调用系统通知 sender，但仍记录状态基线；重新开启不补发旧待处理、完成或疑似卡住通知，新状态变化恢复提醒 | 自动化通过 |
+| 启动参数锁定 | `--no-notifications` 优先于用户偏好，二级菜单显示“✓ 关闭”，“开启 / 关闭”均置灰，本次运行不改写偏好文件 | 自动化通过 |
+| Browser 验收 | 普通模式右键主菜单仅显示“系统通知 >”，点击父菜单不切换；子菜单显示“✓ 开启 / 关闭”或“开启 / ✓ 关闭”，选择后刷新保持。`--no-notifications` 模式显示“开启 / ✓ 关闭”，两个选项均置灰；两种模式均无控制台错误，并留存界面截图 | 通过 |
+| macOS Dev App | 重新构建 arm64 Dev App，签名校验通过；原生 WebView 辅助功能树显示“外观 / 系统通知 / 隐藏 Pet / 退出程序”及互斥的“开启 / 关闭”。关闭态跨重启保持；从“✓ 关闭”选择“开启”后偏好写入 `true`，再次展开和再次重启均显示“✓ 开启”；仅展开父菜单和重复选择当前项均未改写偏好文件 | 通过 |
+| 真实系统通知对照 | 使用隔离 HOME 和三个唯一待处理事件，在 macOS 通知中心按完整消息精确计数：开启事件 `1` 条、关闭事件 `0` 条、重新开启后旧事件仍为 `0` 条、重新开启后的新事件为 `1` 条 | 通过 |
+| Pet 状态独立性 | 通知关闭期间，原生气泡窗口仍显示两条唯一待处理会话，窗口正常扩展为 `340 x 500`；通知开关未影响 Pet 会话状态、气泡和待处理展示 | 通过 |
+| 自动化与发布校验 | PRD 明确列出的相关模块最终为 `165 tests OK`，全量 `PYTHONPATH=src python3 -m unittest discover -s tests` 最终为 `472 tests OK`；`python3 scripts/validate_release.py` 输出 `release-validation-ok`，单元测试、编译、帮助命令、JS 语法、通知帮助和敏感信息检查均通过；当前最终 Dev App 真实执行隐藏和菜单栏恢复后，`scripts/check_macos_floating_dev.sh --strict` 输出 `Manual acceptance complete` | 通过 |
 
 ## 2026-07-14 新增 AI 工具监控补充验收
 
@@ -165,7 +199,7 @@ ChatGPT 与多工具功能回归范围、445 项自动化结果和最小人工�
 | 会话计数偶发从 4 闪成 0 | 根因是 `ProcessSource` 一次空扫描会被当作进程全部消失，`replace_source_updates("process", [])` 立即清空 process-only 会话。已增加 process 源一次空扫描防抖：首次空结果保留，连续两次空才清除 | `test_refresh_debounces_one_empty_process_poll_before_removing_sessions`；重启开发态后需以最新 session snapshots 为准 |
 | ChatGPT 桌面端运行中对话监控不到 | 旧实现只看已退役的 `Codex.app` 主进程，既会漏掉真实运行中对话，也会把 App 打开误当成进行中。现兼容读取 `~/.codex/sessions` 中明确的桌面 originator：未完成 `task_started` 显示进行中，`task_complete` 后按刷新规则收口；ChatGPT 主程序存活只显示空闲入口，具体会话存在时该入口被去重 | `test_codex_session_source_marks_unfinished_task_as_running`、`test_codex_session_source_drops_old_completed_sessions`、`test_configured_desktop_ai_app_process_creates_idle_fallback_entry`、`test_visible_sessions_hide_generic_desktop_fallback_when_full_desktop_session_exists`、真实服务层 payload 识别到 ChatGPT 桌面会话和空闲入口去重 |
 | 点击终端 process-only 气泡可能无法回到原窗口 | 直接 CLI 子进程不是 GUI 应用，旧实现只拿子进程 ID 或生成标题，无法可靠聚焦真实终端/编辑器窗口。已新增 `focus_process_id` / `focus_app_name`，从父进程链识别 IDE、Terminal、iTerm、Codex 等 GUI 应用；带 cwd 的 process-only 先按 cwd 文件夹名匹配 IDE/终端窗口，再 `AXRaise` 目标窗口。真实点击曾因 fallback 5 秒超时出现 `ok=false`，已把 fallback 超时放宽到 15 秒，并修复验收脚本只接受 `ok=true` | `test_focus_session_uses_window_metadata_when_available`、`test_macos_focus_command_does_not_raise_parent_app_first_when_cwd_is_available`、`test_macos_focus_command_matches_project_folder_window_when_cwd_is_available`、`test_focus_fallback_timeout_allows_slow_project_activation`、`test_macos_dev_acceptance_helper_rejects_failed_focus_as_manual_evidence`、真实点击 `sample-project · 空闲` 后日志 `AI Progress Monitor focus: ok=true` |
-| 多屏下点击一个 IDE 项目气泡时另一个项目窗口也被带出 | 根因是 macOS 激活整个 IDE App 会把同一 App 的多个项目窗口一起前置。修复为通用 IDE 策略：如果已匹配到具体窗口 ID、cwd 文件夹名或窗口标题，只对目标窗口执行 `AXRaise`，不先 `set frontmost of proc` 激活整个 App；只有无法匹配具体窗口时才 fallback 打开目录 | `test_macos_focus_command_can_target_window_id`、`test_macos_focus_command_matches_project_folder_window_when_cwd_is_available`；真实点击 `sample-project · 空闲` 后 `/api/focus` 为 `ok=true`；用户手动确认点击各气泡只带出对应窗口 |
+| 多屏下点击一个 IDE 项目气泡时另一个项目窗口也被带出 | 早期仅修正 Python `/api/focus` 路径，后续第一版原生修复又把“来源感知激活已接受”误当成“激活已完成”，均不足以闭环。2026-07-23 已改为前置连续选窗确认、真实激活事件等待、后置连续复核和旧操作取消；macOS 14+ 不回退无来源激活，macOS 13 兼容请求也验证真实激活 | `tests.test_macos_focus_policy`、`test_native_focus_waits_for_stable_selection_and_real_activation_before_success`、`test_new_focus_request_cancels_stale_async_work`；用户正反向真实点击均确认只出现目标窗口。单独最小化目标后同 App 其他 Zed 窗口接替，已用不经过 Pet 的对照实验复现并排除为 Pet 回归 |
 | 右键 Pet 后可能污染拖动状态 | 根因是 `pointerdown` 没有限制鼠标按钮，右键按下也会发送 `start-window-drag`，可能导致后续点击/恢复状态异常。已限制只有左键进入拖动流程 | 先让行为测试失败：`messagesAfterRightPointerDown` 得到 `start-window-drag`；修复后 `tests.test_web_ui_behavior` 通过 |
 | 当前说明文档仍描述旧体验 | README 和 release checklist 仍出现旧的主路径描述，例如暂隐、会话管理、宠物内直接回复和面板诊断，会误导真实试用和后续验收 | 新增 `tests/test_docs_prd_alignment.py`，先失败后修正文档；现在 README 和发布清单已改为左键展开/收起、右键隐藏/退出、点击气泡回原窗口 |
 
@@ -191,7 +225,7 @@ ChatGPT 与多工具功能回归范围、445 项自动化结果和最小人工�
 | 外接屏跨屏拖动边界 | 拖拽按鼠标所在屏幕选择屏幕 frame，展开态按右下角 Pet 可见区域约束，不按整块透明窗口约束；真实系统拖动事件后窗口从 `x=-194` 到 `x=45` | 已证明 |
 | 右键隐藏后可恢复 | 原生测试覆盖 `showMonitorFromMenu()` 恢复紧凑尺寸和 `restorePetWebState()`；真实日志出现 `Restored pet web state` | 恢复链路已证明 |
 | 菜单栏头像图标中的 `Show Monitor` 真实点击 | `showItem.target = self` 和 selector 测试已证明菜单项绑定；真实点击菜单项后窗口数恢复为 1，日志出现 `Show monitor requested from menu` 和 `Restored pet web state` | 已证明 |
-| 点击气泡回对应窗口/页面 | `/api/focus` 服务测试和窗口聚焦命令测试；行为级 JS 测试真实点击兼容测试气泡，请求 `/api/focus` 且不请求 `/api/action`；点击气泡会尝试回到对应 AI 工具窗口；真实点击两个脱敏项目气泡后日志 `AI Progress Monitor focus: ok=true`；用户手动确认多屏下只带出对应窗口 | 已证明 |
+| 点击气泡回对应窗口/页面 | `/api/focus` 服务测试和窗口聚焦命令测试；行为级 JS 测试真实点击兼容测试气泡，请求 `/api/focus` 且不请求 `/api/action`；原生 WebView 路径每次点击只产生一个 focus 请求。2026-07-23 事件驱动修复已用 SellerBooks 真实点击证明完整原生时序和最终 AX 唯一目标状态；用户正反向真实点击均只出现所选目标窗口 | 已证明 |
 | 同文件夹多对话可区分 | 行为级 JS 测试验证 `checkout-flow · Codex #1/#2` | 已证明 |
 | 无文件夹桌面对话可读 | 行为级 JS 测试验证无 cwd 或工具定义表识别出的自动聊天目录使用 `ChatGPT 对话` / `ChatGPT · hello` / `ChatGPT 对话 #1/#2`，不展示不可读 session_id 碎片；真实项目目录仍显示项目文件夹；Qoder 日志优先显示本地缓存或 project session 的真实标题，只有生成目录名时前端兜底为 `Qoder 对话 #1/#2`，不展示 `chat-1/chat-2` 或长内部 ID | 已证明 |
 | 同一文件夹多个 wrapper 对话不互相覆盖 | macOS/Linux wrapper 在未设置 `AI_MONITOR_SESSION_ID` 时按文件夹名、时间戳和进程号生成默认唯一会话 ID；真实执行同一目录连续两次生成 2 个 session JSON | 已证明 |

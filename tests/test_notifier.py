@@ -129,6 +129,52 @@ class NotifierTests(unittest.TestCase):
 
         self.assertEqual(sent, [])
 
+    def test_disabled_notifications_track_state_without_replaying_old_events(self):
+        sent = []
+        manager = NotificationManager(
+            sender=lambda title, message: sent.append((title, message)),
+            cooldown_seconds=60,
+            enabled=False,
+        )
+        now = datetime(2026, 6, 30, tzinfo=timezone.utc)
+        running = [
+            make_session("needs", SessionStatus.NEEDS_ACTION, now),
+            make_session("completed", SessionStatus.RUNNING, now),
+            make_session("stuck", SessionStatus.RUNNING, now),
+        ]
+        changed_while_disabled = [
+            make_session("needs", SessionStatus.NEEDS_ACTION, now + timedelta(seconds=5)),
+            make_session("completed", SessionStatus.IDLE, now + timedelta(seconds=5)),
+            make_session("stuck", SessionStatus.STUCK, now + timedelta(seconds=5)),
+        ]
+
+        manager.notify_for_sessions(running, now=now)
+        manager.notify_for_sessions(changed_while_disabled, now=now + timedelta(seconds=5))
+        manager.set_enabled(True, sessions=changed_while_disabled)
+        manager.notify_for_sessions(changed_while_disabled, now=now + timedelta(seconds=6))
+
+        self.assertEqual(sent, [])
+
+        manager.notify_for_sessions(
+            changed_while_disabled + [make_session("new", SessionStatus.NEEDS_ACTION, now + timedelta(seconds=7))],
+            now=now + timedelta(seconds=7),
+        )
+        self.assertEqual(len(sent), 1)
+        self.assertIn("Claude Code - task", sent[0][1])
+
+    def test_suppressed_needs_action_can_notify_after_leaving_and_reentering(self):
+        sent = []
+        manager = NotificationManager(sender=lambda title, message: sent.append((title, message)), enabled=False)
+        now = datetime(2026, 6, 30, tzinfo=timezone.utc)
+
+        manager.notify_for_sessions([make_session("s1", SessionStatus.NEEDS_ACTION, now)], now=now)
+        manager.set_enabled(True, sessions=[make_session("s1", SessionStatus.NEEDS_ACTION, now)])
+        manager.notify_for_sessions([make_session("s1", SessionStatus.RUNNING, now + timedelta(seconds=1))], now=now + timedelta(seconds=1))
+        manager.notify_for_sessions([make_session("s1", SessionStatus.NEEDS_ACTION, now + timedelta(seconds=2))], now=now + timedelta(seconds=2))
+
+        self.assertEqual(len(sent), 1)
+        self.assertIn("需要处理", sent[0][0])
+
 
 def make_session(session_id: str, status: SessionStatus, updated_at: datetime) -> SessionUpdate:
     return SessionUpdate(
