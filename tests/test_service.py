@@ -1,6 +1,5 @@
 import tempfile
 import threading
-import time
 import unittest
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -893,16 +892,18 @@ class MonitorServiceTests(unittest.TestCase):
                 self.assertFalse(service.set_native_project_window_inventory(payload))
 
     def test_refresh_polls_independent_sources_concurrently_for_visibility_budget(self):
-        sources = [DelayedEmptySource(0.2), DelayedEmptySource(0.2)]
+        barrier = threading.Barrier(2)
+        sources = [
+            CoordinatedEmptySource(barrier),
+            CoordinatedEmptySource(barrier),
+        ]
         service = MonitorService(sources, SessionStore(), ActionExecutor())
 
-        start = time.monotonic()
         payload = service.sessions_payload()
-        elapsed = time.monotonic() - start
 
         self.assertEqual(payload, [])
-        self.assertLess(elapsed, 0.35)
         self.assertTrue(all(source.polled for source in sources))
+        self.assertTrue(all(source.overlapped for source in sources))
 
     def test_refresh_isolates_one_failed_source_and_keeps_other_sessions_visible(self):
         class BrokenSource:
@@ -2040,14 +2041,19 @@ class FakeProjectWindowSource:
         return window_id is not None, window_id
 
 
-class DelayedEmptySource:
-    def __init__(self, delay_seconds):
-        self.delay_seconds = delay_seconds
+class CoordinatedEmptySource:
+    def __init__(self, barrier):
+        self.barrier = barrier
         self.polled = False
+        self.overlapped = False
 
     def poll(self):
-        time.sleep(self.delay_seconds)
         self.polled = True
+        try:
+            self.barrier.wait(timeout=1)
+        except threading.BrokenBarrierError:
+            return []
+        self.overlapped = True
         return []
 
 
