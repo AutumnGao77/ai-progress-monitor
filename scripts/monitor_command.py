@@ -295,18 +295,21 @@ def detect_focus_app_from_process_rows(process_id: int, rows: List[str]) -> Tupl
         process_table[pid] = (ppid, parts[2])
 
     current = process_id
+    candidate_pid: Optional[int] = None
+    candidate_app: Optional[str] = None
     for _ in range(8):
         entry = process_table.get(current)
         if entry is None:
-            return None, None
+            return candidate_pid, candidate_app
         parent_id, args = entry
         app_name = focus_app_name_from_args(args)
         if app_name is not None:
-            return current, app_name
+            candidate_pid = current
+            candidate_app = app_name
         if parent_id <= 1 or parent_id == current:
-            return None, None
+            return candidate_pid, candidate_app
         current = parent_id
-    return None, None
+    return candidate_pid, candidate_app
 
 
 def focus_app_name_from_args(args: str) -> Optional[str]:
@@ -318,9 +321,32 @@ def focus_app_name_from_args(args: str) -> Optional[str]:
         ("/WezTerm.app/", "WezTerm"),
         ("/kitty.app/", "kitty"),
         ("/Alacritty.app/", "Alacritty"),
+        ("/Ghostty.app/", "Ghostty"),
+        ("/Hyper.app/", "Hyper"),
+        ("/Tabby.app/", "Tabby"),
+        ("/Rio.app/", "Rio"),
         ("/Zed.app/", "Zed"),
         ("/Cursor.app/", "Cursor"),
-        ("/Visual Studio Code.app/", "Visual Studio Code"),
+        ("/Visual Studio Code", "Visual Studio Code"),
+        ("/VSCodium.app/", "VSCodium"),
+        ("/Windsurf.app/", "Windsurf"),
+        ("/Sublime Text.app/", "Sublime Text"),
+        ("/Nova.app/", "Nova"),
+        ("/Xcode.app/", "Xcode"),
+        ("/Kiro.app/", "Kiro"),
+        ("/Trae.app/", "Trae"),
+        ("/Trae CN.app/", "Trae"),
+        ("/Eclipse.app/", "Eclipse"),
+        ("/Fleet.app/", "Fleet"),
+        ("/Android Studio", "Android Studio"),
+        ("/CLion.app/", "CLion"),
+        ("/GoLand.app/", "GoLand"),
+        ("/IntelliJ IDEA", "IntelliJ IDEA"),
+        ("/PhpStorm.app/", "PhpStorm"),
+        ("/PyCharm", "PyCharm"),
+        ("/Rider.app/", "Rider"),
+        ("/RubyMine.app/", "RubyMine"),
+        ("/WebStorm.app/", "WebStorm"),
         ("/Codex.app/", "Codex"),
     ]
     for marker, app_name in markers:

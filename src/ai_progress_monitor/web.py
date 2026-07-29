@@ -19,7 +19,7 @@ from .actions import ActionExecutor
 from .demo import DemoSource
 from .doctor import run_diagnostics
 from .notifier import NotificationManager
-from .preferences import normalize_pet_appearance
+from .preferences import MonitorPreferences, normalize_pet_appearance
 from .service import MonitorService
 from .sources import ChatGPTSessionSource, JsonSessionSource, OsWindowSource, ProcessSource
 from .store import SessionStore
@@ -76,6 +76,8 @@ class MonitorRequestHandler(BaseHTTPRequestHandler):
                     self.token,
                     configured_pet_asset_urls(self.service.preferences),
                     pet_appearance=self.service.preferences.pet_appearance(),
+                    notifications_enabled=self.service.notifications_enabled(),
+                    notifications_locked=self.service.notifications_locked(),
                 ),
                 "text/html; charset=utf-8",
             )
@@ -99,7 +101,14 @@ class MonitorRequestHandler(BaseHTTPRequestHandler):
             if not self._authorized(parsed.query):
                 self._send_json(403, {"error": "forbidden"})
                 return
-            self._send_json(200, {"pet_appearance": self.service.preferences.pet_appearance()})
+            self._send_json(
+                200,
+                {
+                    "pet_appearance": self.service.preferences.pet_appearance(),
+                    "notifications_enabled": self.service.notifications_enabled(),
+                    "notifications_locked": self.service.notifications_locked(),
+                },
+            )
         elif path == "/api/hidden-sessions":
             if not self._authorized(parsed.query):
                 self._send_json(403, {"error": "forbidden"})
@@ -153,6 +162,51 @@ class MonitorRequestHandler(BaseHTTPRequestHandler):
             pet_appearance = self.service.preferences.pet_appearance()
             print(pet_appearance_snapshot_line(pet_appearance), flush=True)
             self._send_json(200, {"ok": True, "pet_appearance": pet_appearance})
+        elif path == "/api/preferences/notifications":
+            if not isinstance(payload, dict) or set(payload) != {"enabled"}:
+                self._send_json(400, {"ok": False, "error": "invalid_notifications_enabled"})
+                return
+            enabled = payload["enabled"]
+            if not isinstance(enabled, bool):
+                self._send_json(400, {"ok": False, "error": "invalid_notifications_enabled"})
+                return
+            if self.service.notifications_locked():
+                self._send_json(409, {"ok": False, "error": "notifications_forced_disabled"})
+                return
+            try:
+                changed = self.service.set_notifications_enabled(enabled)
+            except OSError:
+                self._send_json(500, {"ok": False, "error": "preferences_write_failed"})
+                return
+            if not changed:
+                self._send_json(400, {"ok": False, "error": "invalid_notifications_enabled"})
+                return
+            self._send_json(
+                200,
+                {
+                    "ok": True,
+                    "notifications_enabled": self.service.notifications_enabled(),
+                    "notifications_locked": self.service.notifications_locked(),
+                },
+            )
+        elif path == "/api/native/project-windows":
+            if not isinstance(payload, dict) or set(payload) != {"available", "applications"}:
+                self._send_json(400, {"ok": False, "error": "invalid_project_window_inventory"})
+                return
+            available = payload["available"]
+            applications = payload["applications"]
+            if not isinstance(available, bool) or not isinstance(applications, list):
+                self._send_json(400, {"ok": False, "error": "invalid_project_window_inventory"})
+                return
+            if not available:
+                if applications:
+                    self._send_json(400, {"ok": False, "error": "invalid_project_window_inventory"})
+                    return
+                self.service.clear_native_project_window_inventory()
+            elif not self.service.set_native_project_window_inventory(applications):
+                self._send_json(400, {"ok": False, "error": "invalid_project_window_inventory"})
+                return
+            self._send_json(200, {"ok": True})
         else:
             self._send_json(404, {"error": "not_found"})
 
@@ -272,7 +326,13 @@ def configured_pet_asset_urls(preferences) -> dict:
     return overrides
 
 
-def render_html(token: str, pet_assets: Optional[Mapping[str, str]] = None, pet_appearance: str = "default") -> str:
+def render_html(
+    token: str,
+    pet_assets: Optional[Mapping[str, str]] = None,
+    pet_appearance: str = "default",
+    notifications_enabled: bool = True,
+    notifications_locked: bool = False,
+) -> str:
     default_assets = pet_asset_urls()
     assets = {}
     themes = {theme: dict(urls) for theme, urls in default_assets["themes"].items()}
@@ -292,6 +352,8 @@ def render_html(token: str, pet_assets: Optional[Mapping[str, str]] = None, pet_
         .replace("__PET_ASSET_OVERRIDE_KEYS__", json.dumps(asset_override_keys, ensure_ascii=True))
         .replace("__PET_THEMES__", json.dumps(themes, ensure_ascii=True))
         .replace("__PET_APPEARANCE__", json.dumps(current_appearance))
+        .replace("__NOTIFICATIONS_ENABLED__", json.dumps(bool(notifications_enabled)))
+        .replace("__NOTIFICATIONS_LOCKED__", json.dumps(bool(notifications_locked)))
     )
 
 
@@ -511,8 +573,16 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    notifier = NotificationManager(enabled=not args.no_notifications)
-    service = MonitorService(build_sources(args), SessionStore(), ActionExecutor(response_dir=resolve_response_dir(args)), notifier=notifier)
+    preferences = MonitorPreferences()
+    notifier = NotificationManager()
+    service = MonitorService(
+        build_sources(args),
+        SessionStore(),
+        ActionExecutor(response_dir=resolve_response_dir(args)),
+        notifier=notifier,
+        preferences=preferences,
+        notifications_forced_off=args.no_notifications,
+    )
     token = generate_token()
     server, selected_port = create_server_with_port_fallback(args.host, args.port, service, token)
     url = build_launch_url(args.host, selected_port, token)
@@ -568,6 +638,7 @@ html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background:
 .pet-context-menu.open { display: block; }
 .pet-context-menu button, .pet-menu-parent { display: flex; align-items: center; gap: 6px; width: 100%; min-height: 26px; border: 0; background: transparent; border-radius: 6px; padding: 5px 7px; text-align: left; font: inherit; font-size: 13px; line-height: 1.2; color: #172033; cursor: pointer; box-sizing: border-box; }
 .pet-context-menu button:hover, .pet-menu-parent:hover, .pet-menu-parent:focus-within { background: #eef2f7; }
+.pet-context-menu button:disabled { opacity: .48; cursor: default; background: transparent; }
 .pet-menu-parent { position: relative; justify-content: space-between; }
 .pet-menu-arrow { margin-left: auto; color: #667085; }
 .pet-context-submenu { position: absolute; left: calc(100% - 2px); top: -4px; display: none; width: 128px; padding: 4px; border-radius: 8px; background: rgba(255,255,255,.98); border: 1px solid rgba(17,24,39,.08); box-shadow: 0 10px 24px rgba(17,24,39,.18); }
@@ -596,6 +667,8 @@ window.PET_ASSETS = __PET_ASSETS__;
 window.PET_ASSET_OVERRIDE_KEYS = __PET_ASSET_OVERRIDE_KEYS__;
 window.PET_THEMES = __PET_THEMES__;
 window.PET_APPEARANCE = __PET_APPEARANCE__;
+window.NOTIFICATIONS_ENABLED = __NOTIFICATIONS_ENABLED__;
+window.NOTIFICATIONS_LOCKED = __NOTIFICATIONS_LOCKED__;
 </script>
 <div class="bubble-list" id="bubbleList"></div>
 <button class="pet idle" id="pet" aria-label="AI 监控 Pet">
@@ -616,6 +689,13 @@ window.PET_APPEARANCE = __PET_APPEARANCE__;
       <button type="button" id="appearanceShirtMenuItem" data-pet-appearance="shirt"><span class="pet-menu-check" id="appearanceShirtCheck"></span><span>衬衫树懒</span></button>
     </div>
   </div>
+  <div class="pet-menu-parent" id="systemNotificationsMenuItem" tabindex="0">
+    <span>系统通知</span><span class="pet-menu-arrow" aria-hidden="true">›</span>
+    <div class="pet-context-submenu" id="systemNotificationsSubmenu">
+      <button type="button" id="notificationsEnabledMenuItem"><span class="pet-menu-check" id="notificationsEnabledCheck"></span><span>开启</span></button>
+      <button type="button" id="notificationsDisabledMenuItem"><span class="pet-menu-check" id="notificationsDisabledCheck"></span><span>关闭</span></button>
+    </div>
+  </div>
   <button type="button" id="hidePetMenuItem">隐藏 Pet</button>
   <button type="button" id="quitPetMenuItem">退出程序</button>
 </div>
@@ -634,6 +714,11 @@ const appearanceDefaultMenuItem = document.getElementById("appearanceDefaultMenu
 const appearanceShirtMenuItem = document.getElementById("appearanceShirtMenuItem");
 const appearanceDefaultCheck = document.getElementById("appearanceDefaultCheck");
 const appearanceShirtCheck = document.getElementById("appearanceShirtCheck");
+const systemNotificationsMenuItem = document.getElementById("systemNotificationsMenuItem");
+const notificationsEnabledMenuItem = document.getElementById("notificationsEnabledMenuItem");
+const notificationsDisabledMenuItem = document.getElementById("notificationsDisabledMenuItem");
+const notificationsEnabledCheck = document.getElementById("notificationsEnabledCheck");
+const notificationsDisabledCheck = document.getElementById("notificationsDisabledCheck");
 const statusNote = document.getElementById("statusNote");
 const defaultPetThemes = {
   default: {
@@ -654,6 +739,9 @@ let confirmedPetAppearance = "default";
 let petImages = Object.assign({}, petThemes.default);
 let queuedPetAppearance = null;
 let petAppearanceSaveInFlight = false;
+let confirmedNotificationsEnabled = window.NOTIFICATIONS_ENABLED === true;
+let queuedNotificationsEnabled = null;
+let notificationsSaveInFlight = false;
 const sessionSequenceByGroup = new Map();
 const BUBBLE_GAP = 10;
 const VISUAL_MOTION_BUFFER = 24;
@@ -672,6 +760,7 @@ const PET_POSITION_KEY = "monitor.pet.position";
 
 applyPetAppearance(window.PET_APPEARANCE || "default");
 confirmedPetAppearance = currentPetAppearance;
+applyNotificationsEnabled(window.NOTIFICATIONS_ENABLED === true);
 applyPetPosition();
 resizeHostWindow("compact");
 window.restorePetFromHost = restorePetFromHost;
@@ -693,6 +782,14 @@ document.getElementById("hidePetMenuItem").onclick = hidePet;
 document.getElementById("quitPetMenuItem").onclick = quitApp;
 appearanceDefaultMenuItem.onclick = event => handleAppearanceMenuClick(event, "default");
 appearanceShirtMenuItem.onclick = event => handleAppearanceMenuClick(event, "shirt");
+if (systemNotificationsMenuItem) {
+  systemNotificationsMenuItem.onclick = event => {
+    if (event.target && event.target.closest && event.target.closest(".pet-context-submenu")) return;
+    if (systemNotificationsMenuItem.focus) systemNotificationsMenuItem.focus();
+  };
+}
+if (notificationsEnabledMenuItem) notificationsEnabledMenuItem.onclick = event => handleNotificationsMenuClick(event, true);
+if (notificationsDisabledMenuItem) notificationsDisabledMenuItem.onclick = event => handleNotificationsMenuClick(event, false);
 
 async function load() {
   try {
@@ -817,6 +914,74 @@ async function savePetAppearance(theme) {
 function updateAppearanceMenu() {
   appearanceDefaultCheck.textContent = currentPetAppearance === "default" ? "✓" : "";
   appearanceShirtCheck.textContent = currentPetAppearance === "shirt" ? "✓" : "";
+}
+
+function handleNotificationsMenuClick(event, enabled) {
+  if (event && event.stopPropagation) event.stopPropagation();
+  selectNotificationsEnabled(enabled);
+}
+
+function selectNotificationsEnabled(enabled) {
+  if (window.NOTIFICATIONS_LOCKED === true) return;
+  const nextEnabled = enabled === true;
+  if (window.NOTIFICATIONS_ENABLED === nextEnabled) {
+    closePetContextMenu();
+    return;
+  }
+  applyNotificationsEnabled(nextEnabled);
+  closePetContextMenu();
+  queueNotificationsSave(window.NOTIFICATIONS_ENABLED);
+}
+
+function applyNotificationsEnabled(enabled) {
+  window.NOTIFICATIONS_ENABLED = enabled === true;
+  updateNotificationsMenu();
+}
+
+function updateNotificationsMenu() {
+  if (!notificationsEnabledMenuItem || !notificationsDisabledMenuItem || !notificationsEnabledCheck || !notificationsDisabledCheck) return;
+  notificationsEnabledCheck.textContent = window.NOTIFICATIONS_ENABLED === true ? "✓" : "";
+  notificationsDisabledCheck.textContent = window.NOTIFICATIONS_ENABLED === true ? "" : "✓";
+  notificationsEnabledMenuItem.disabled = window.NOTIFICATIONS_LOCKED === true;
+  notificationsDisabledMenuItem.disabled = window.NOTIFICATIONS_LOCKED === true;
+}
+
+function queueNotificationsSave(enabled) {
+  queuedNotificationsEnabled = enabled === true;
+  saveQueuedNotifications();
+}
+
+async function saveQueuedNotifications() {
+  if (notificationsSaveInFlight) return;
+  notificationsSaveInFlight = true;
+  try {
+    while (queuedNotificationsEnabled !== null) {
+      const enabled = queuedNotificationsEnabled;
+      queuedNotificationsEnabled = null;
+      await saveNotificationsEnabled(enabled);
+    }
+  } finally {
+    notificationsSaveInFlight = false;
+    if (queuedNotificationsEnabled !== null) saveQueuedNotifications();
+  }
+}
+
+async function saveNotificationsEnabled(enabled) {
+  try {
+    const response = await fetch("/api/preferences/notifications", {method:"POST", body: JSON.stringify({enabled}), headers: {"content-type":"application/json", "x-monitor-token": window.MONITOR_TOKEN}});
+    if (!response.ok) throw new Error("system notifications save failed");
+    const payload = await response.json();
+    confirmedNotificationsEnabled = payload.notifications_enabled === true;
+    window.NOTIFICATIONS_LOCKED = payload.notifications_locked === true;
+    if (queuedNotificationsEnabled === null && window.NOTIFICATIONS_ENABLED === enabled) {
+      applyNotificationsEnabled(confirmedNotificationsEnabled);
+    }
+  } catch (_error) {
+    if (queuedNotificationsEnabled === null && window.NOTIFICATIONS_ENABLED === enabled) {
+      applyNotificationsEnabled(confirmedNotificationsEnabled);
+      showStatusNote("系统通知设置保存失败");
+    }
+  }
 }
 
 function refreshPetArt() {
@@ -1150,9 +1315,10 @@ function scheduleBubbleLayout() {
 function showPetContextMenu(event) {
   event.preventDefault();
   updateAppearanceMenu();
+  updateNotificationsMenu();
   if (!bubbleList.classList.contains("open")) resizeHostWindow("menu");
   petContextMenu.style.left = `${clamp(event.clientX, 8, window.innerWidth - 248)}px`;
-  petContextMenu.style.top = `${clamp(event.clientY, 8, window.innerHeight - 92)}px`;
+  petContextMenu.style.top = `${clamp(event.clientY, 8, window.innerHeight - 124)}px`;
   petContextMenu.classList.add("open");
 }
 
@@ -1187,7 +1353,7 @@ function hasHostWindow() {
 }
 
 function resizeHostWindow(mode) {
-  const size = mode === "bubbles" ? {width: 340, height: 500} : mode === "menu" ? {width: 270, height: 160} : {width: 170, height: 150};
+  const size = mode === "bubbles" ? {width: 340, height: 500} : mode === "menu" ? {width: 270, height: 190} : {width: 170, height: 150};
   try { window.resizeTo(size.width, size.height); } catch (_error) {}
   postHostMessage("resize", {mode, width: size.width, height: size.height});
 }

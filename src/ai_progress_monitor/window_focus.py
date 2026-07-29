@@ -3,6 +3,7 @@ from __future__ import annotations
 import platform
 import re
 import subprocess
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, List, Optional
@@ -31,8 +32,12 @@ PROJECT_EDITOR_APP_NAMES = {
     "clion",
     "code",
     "cursor",
+    "eclipse",
+    "fleet",
+    "kiro",
     "nova",
     "sublime text",
+    "vscodium",
     "windsurf",
     "xcode",
     "zed",
@@ -44,6 +49,7 @@ PROJECT_EDITOR_APP_PREFIXES = (
     "pycharm",
     "rider",
     "rubymine",
+    "trae",
     "visual studio code",
     "webstorm",
 )
@@ -125,8 +131,11 @@ def build_macos_focus_command(target) -> List[str]:
     escaped = _escape_applescript(target.title)
     escaped_app_name = _escape_applescript(target.app_name) if target.app_name else ""
     process_condition = ""
-    if target.process_id is not None and not target.cwd:
+    process_filter_start = ""
+    process_filter_end = ""
+    if target.process_id is not None:
         escaped_process_id = _escape_applescript(str(target.process_id))
+    if target.process_id is not None and not target.cwd and not target.window_id:
         process_condition = f'if unix id of proc as string is "{escaped_process_id}" then\n'
         process_condition += "set frontmost of proc to true\n"
         process_condition += "try\n"
@@ -136,6 +145,9 @@ def build_macos_focus_command(target) -> List[str]:
         process_condition += "end try\n"
         process_condition += 'return "focused-process"\n'
         process_condition += "end if\n"
+    elif target.process_id is not None:
+        process_filter_start = f'if unix id of proc as string is "{escaped_process_id}" then\n'
+        process_filter_end = "end if\n"
     id_condition = ""
     if target.window_id:
         escaped_id = _escape_applescript(str(target.window_id))
@@ -147,36 +159,27 @@ def build_macos_focus_command(target) -> List[str]:
     if target.cwd:
         folder_name = Path(target.cwd).name
         if folder_name:
-            escaped_folder_name = _escape_applescript(folder_name)
-            cwd_name_condition = f'if name of win is "{escaped_folder_name}" or name of win contains "{escaped_folder_name}" then\n'
+            project_title_condition = _macos_project_title_condition(folder_name)
+            cwd_name_condition = "set windowName to name of win as string\n"
+            cwd_name_condition += f"if {project_title_condition} then\n"
             cwd_name_condition += 'perform action "AXRaise" of win\n'
             cwd_name_condition += 'return "focused-project-window"\n'
             cwd_name_condition += "end if\n"
-    if escaped_app_name:
-        direct_process_condition = ""
-        if target.process_id is not None and not target.cwd:
-            escaped_process_id = _escape_applescript(str(target.process_id))
-            direct_process_condition = f'if unix id as string is "{escaped_process_id}" then\n'
-            direct_process_condition += "set frontmost to true\n"
-            direct_process_condition += "try\n"
-            direct_process_condition += "if (count of windows) > 0 then\n"
-            direct_process_condition += 'perform action "AXRaise" of window 1\n'
-            direct_process_condition += "end if\n"
-            direct_process_condition += "end try\n"
-            direct_process_condition += 'return "focused-process"\n'
-            direct_process_condition += "end if\n"
+    title_name_condition = ""
+    if not target.cwd:
+        title_name_condition = f'if name of win contains "{escaped}" then\n'
+        title_name_condition += 'perform action "AXRaise" of win\n'
+        title_name_condition += 'return "focused-title-window"\n'
+        title_name_condition += "end if\n"
+    if escaped_app_name and target.process_id is None:
         script = (
             'tell application "System Events"\n'
             f'tell application process "{escaped_app_name}"\n'
-            f"{direct_process_condition}"
             "repeat with win in windows\n"
             "try\n"
             f"{id_condition}"
             f"{cwd_name_condition}"
-            f'if name of win contains "{escaped}" then\n'
-            "perform action \"AXRaise\" of win\n"
-            "return \"focused-title-window\"\n"
-            "end if\n"
+            f"{title_name_condition}"
             "end try\n"
             "end repeat\n"
             "end tell\n"
@@ -188,16 +191,15 @@ def build_macos_focus_command(target) -> List[str]:
         'tell application "System Events"\n'
         "repeat with proc in application processes\n"
         f"{process_condition}"
+        f"{process_filter_start}"
         "repeat with win in windows of proc\n"
         "try\n"
         f"{id_condition}"
         f"{cwd_name_condition}"
-        f'if name of win contains "{escaped}" then\n'
-        "perform action \"AXRaise\" of win\n"
-        "return \"focused-title-window\"\n"
-        "end if\n"
+        f"{title_name_condition}"
         "end try\n"
         "end repeat\n"
+        f"{process_filter_end}"
         "end repeat\n"
         'error "not found" number 1\n'
         "end tell"
@@ -209,7 +211,7 @@ def focus_fallback_command(target: FocusTarget) -> Optional[List[str]]:
     system = platform.system().lower()
     if system == "darwin" and target.app_name:
         if target.cwd:
-            if _is_project_editor_app(target.app_name):
+            if is_project_editor_app(target.app_name):
                 return None
             if _is_ai_desktop_app(target.app_name):
                 return build_macos_activate_app_command(target.app_name)
@@ -255,9 +257,61 @@ def _escape_powershell(value: str) -> str:
     return value.replace("'", "''")
 
 
-def _is_project_editor_app(app_name: str) -> bool:
+def _macos_project_title_condition(folder_name: str) -> str:
+    folder = _escape_applescript(folder_name)
+    separators = (" — ", " – ", " - ", " | ", " · ", " :: ", " / ", " \\ ")
+    conditions = [f'windowName is "{folder}"']
+    for separator in separators:
+        escaped_separator = _escape_applescript(separator)
+        conditions.extend(
+            (
+                f'windowName starts with "{folder}{escaped_separator}"',
+                f'windowName ends with "{escaped_separator}{folder}"',
+                f'windowName contains "{escaped_separator}{folder}{escaped_separator}"',
+            )
+        )
+    conditions.extend(
+        (
+            f'windowName starts with "{folder} ["',
+            f'windowName starts with "{folder} ("',
+            f'windowName starts with "{folder}: "',
+            f'windowName contains "[{folder}]"',
+            f'windowName contains "({folder})"',
+        )
+    )
+    return " or ".join(conditions)
+
+
+def is_project_editor_app(app_name: str) -> bool:
     normalized = app_name.strip().lower()
     return normalized in PROJECT_EDITOR_APP_NAMES or any(normalized.startswith(prefix) for prefix in PROJECT_EDITOR_APP_PREFIXES)
+
+
+def project_window_title_match_score(folder_name: str, window_title: str) -> int:
+    folder = unicodedata.normalize("NFC", folder_name).strip().casefold()
+    title = unicodedata.normalize("NFC", window_title).strip().casefold()
+    if not folder or not title:
+        return 0
+    if title == folder:
+        return 3
+    segments = re.split(r"\s+(?:—|–|-|\||·|::|/|\\)\s+", title)
+    if folder in segments or title.startswith((f"{folder} [", f"{folder} (", f"{folder}: ")):
+        return 2
+    start = 0
+    while True:
+        index = title.find(folder, start)
+        if index < 0:
+            return 0
+        end = index + len(folder)
+        before = title[index - 1] if index > 0 else ""
+        after = title[end] if end < len(title) else ""
+        if not _is_project_name_continuation(before) and not _is_project_name_continuation(after):
+            return 1
+        start = index + 1
+
+
+def _is_project_name_continuation(character: str) -> bool:
+    return bool(character) and (character.isalnum() or character in "_-")
 
 
 def _is_ai_desktop_app(app_name: str) -> bool:

@@ -121,6 +121,7 @@
 | `originator` 为 Codex CLI 或其他来源 | 不生成 ChatGPT Desktop 气泡，Codex CLI 继续走进程级监控 |
 | `originator` 缺失或不可识别 | 安全降级为 App 空闲入口，不猜测、不伪报完整状态 |
 | 单个来源解析异常 | 隔离该来源并保留其他工具会话，输出不含会话内容的错误类型诊断 |
+| 已查看对话在 15 分钟保留期内短暂缺失 | ChatGPT App 仍运行时保留该具体对话，不提前退化为空闲入口；App 明确退出时立即移除 |
 
 ## 8. 状态映射
 
@@ -131,6 +132,7 @@
 | `running`、`working`、`thinking`、`processing`、`planning`、`prompting`、`streaming` | 进行中 | 绿色 | 否 |
 | `completed`、`success`、`failed`、`error`，且代表 AI 已返回结果等待用户查看 | 待处理 | 红色 | 是 |
 | `requiresApproval`、`suspended`、`pending`、`waitingForInput`、`needsUserInput` 等需要用户继续操作 | 待处理 | 红色 | 否 |
+| 明确的额度、套餐、账户或模型配置阻塞 | 待处理 | 红色 | 否 |
 | `idle`、`ready`、`stopped`、`cancelled` | 空闲 | 蓝色 | 否 |
 | 无具体会话，仅桌面 App 存活 | 空闲 | 蓝色 | 否 |
 
@@ -140,6 +142,7 @@
 |---|---|---|
 | 完成待查看 | `true` | 聚焦成功后可转为空闲 |
 | 需要用户选择/批准/输入/继续 | `false` | 聚焦成功后仍保持待处理，直到工具状态真实变化 |
+| 持续账户/套餐/额度/配置阻塞 | `false` | 聚焦成功后仍保持待处理；新的真实运行或其他明确源状态可解除旧阻塞 |
 | 进行中 | `false` | 保持进行中 |
 | 空闲入口 | `false` | 保持空闲 |
 
@@ -151,6 +154,8 @@
 | `requiresApproval=true` 显示进行中 | 显示待处理 |
 | WorkBuddy `pending` 有真实活动时显示进行中或空闲 | 显示待处理 |
 | 用户点击等待操作气泡后转为空闲 | 仍显示待处理 |
+| Qoder 套餐/额度阻塞被普通 `Error` 当成完成待查看 | 识别嵌套错误原因并跨紧邻清理快照保留，点击后仍待处理 |
+| 旧 Qoder 套餐阻塞永久污染后续任务 | 同一会话出现更新的 running 后清除旧阻塞，后续普通失败仍可查看确认 |
 | AI 完成返回后永久红色不清除 | 用户点击查看后可转为空闲 |
 
 ## 9. 气泡标题规则
@@ -225,11 +230,15 @@
 | 场景 | 行为 |
 |---|---|
 | 能匹配具体窗口 | Raise 对应窗口 |
+| 多个标题都含 cwd 文件夹名 | 按“完整标题 > 标准标题分段 > 有边界词元”评分选择最高项；`项目-old` 不得冒充 `项目` |
 | 有 `focus_process_id` | 尝试激活对应进程 |
 | AI 桌面 App 有 `focus_app_name` 但窗口标题匹配失败 | `open -a <AppName>` 激活 App |
 | ChatGPT 已运行但未授予辅助功能权限 | 跳过精确窗口 Raise，直接激活 ChatGPT；不得把权限不足误报为无法跳转 |
 | 项目编辑器有 cwd 但匹配失败 | 不自动激活所有窗口，避免跳到错误项目 |
 | Qoder / WorkBuddy 有 cwd 但匹配失败 | 激活 App，而不是打开 cwd |
+| 项目型 IDE 支持范围 | Zed、Cursor、Visual Studio Code / Insiders、VSCodium、Windsurf、Xcode、Nova、Sublime Text、Kiro、Trae / Trae CN、Eclipse、Fleet、Android Studio、CLion、GoLand、IntelliJ IDEA、PhpStorm、PyCharm、Rider、RubyMine、WebStorm 必须进入同一项目窗口清单、失效清理和精准聚焦链路 |
+| 独立终端支持范围 | Terminal、iTerm、Warp、WezTerm、kitty、Alacritty、Ghostty、Hyper、Tabby、Rio 不要求项目窗口清单；会话是否保留由 AI 子进程决定，但点击仍按父 GUI 进程和 cwd 安全边界定位 |
+| 双重身份宿主 | Kiro 有终端 cwd 时按项目型 IDE 处理，不允许 App 级兜底带出错误窗口；无项目上下文的 Kiro 桌面入口仍可激活 App |
 
 ### 11.3 跳转失败处理
 
@@ -270,10 +279,14 @@
 | `test_workbuddy_desktop_process_creates_idle_entry` | WorkBuddy App 存活但无具体会话时显示空闲入口 |
 | `test_workbuddy_db_completed_session_creates_needs_action_conversation` | WorkBuddy 完成会话显示待处理且可查看清除 |
 | `test_workbuddy_db_pending_user_attention_is_not_view_ack` | WorkBuddy pending / requires approval 等用户注意状态 `view_ack_required=false` |
+| `test_workbuddy_runtime_user_attention_overrides_completed_db_view_ack` | 更新的 runtime 待处理信号覆盖旧数据库完成态，不能被点击查看清除 |
 | `test_workbuddy_bubble_title_includes_tool_name` | WorkBuddy 具体会话标题包含软件名 |
 | `test_qoder_desktop_process_uses_recent_task_status_log` | Qoder 日志 running 显示进行中 |
 | `test_qoder_completed_task_log_creates_needs_action_conversation` | Qoder completed 显示待处理且可查看清除 |
 | `test_qoder_user_attention_state_is_not_cleared_by_view_ack` | Qoder suspended / requiresApproval `view_ack_required=false` |
+| `test_qoder_shared_cache_db_plan_blocker_requires_resolution` | Qoder 缓存中的套餐/额度阻塞为 `view_ack_required=false`，监控重启后仍显示待处理 |
+| `test_qoder_plan_blocker_survives_cancelled_cleanup_and_monitor_restart` | Qoder 紧邻的 cancelled/error 清理快照不覆盖持续阻塞 |
+| `test_qoder_new_run_clears_older_cached_plan_blocker` | 更新的运行状态清除旧阻塞，后续普通失败保持可查看确认 |
 | `test_qoder_uses_local_cache_session_title_instead_of_generated_chat_folder` | Qoder 标题优先读取本地缓存库真实标题 |
 | `test_qoder_multiple_task_logs_create_separate_conversation_updates` | 多个 Qoder task 生成多个气泡 |
 | `test_qoder_cn_desktop_ignores_regular_qoder_logs` | Qoder CN 不读取普通 Qoder 日志 |
@@ -286,6 +299,10 @@
 | `tests/test_store.py` | `view_ack_required=false` 的待处理会话点击查看后仍保持待处理 |
 | `tests/test_service.py` | WorkBuddy / Qoder full process session payload 包含 `tool_display_name`、`focus_app_name`、`focus_process_id` |
 | `tests/test_service.py` | 聚焦成功只清除可查看完成态，不清除真实等待操作态 |
+| `tests/test_service.py` | Qoder 持续阻塞聚焦成功并刷新后仍为待处理 |
+| `tests/test_service.py` | ChatGPT 已查看对话在 App 存活时承受一次来源缺失，App 退出后不保留 |
+| `tests/test_service.py` | 原生窗口清单在相似项目前缀并存时选择真实项目窗口，仅剩前缀项目时移除目标气泡 |
+| `tests/test_service.py` | 每个已注册 IDE 家族都进入同一项目窗口核对与窗口 ID 回填链路；每个独立终端都不被项目窗口规则误删 |
 
 ### 13.3 Web UI 行为测试
 
@@ -302,6 +319,8 @@
 | `tests/test_window_focus.py` | Qoder CN 有 cwd 时，聚焦失败兜底为 `open -a "Qoder CN"` |
 | `tests/test_window_focus.py` | WorkBuddy 有 cwd 时，聚焦失败兜底为激活 WorkBuddy App |
 | `tests/test_window_focus.py` | 项目编辑器仍不因 cwd 匹配失败而激活所有窗口 |
+| `tests/test_window_focus.py`、`tests/test_macos_focus_policy.py` | Python 与 Swift 使用一致的项目标题评分，不把相似前缀窗口当成目标 |
+| `tests/test_window_focus.py`、`tests/test_macos_focus_policy.py`、`tests/test_macos_native_companion.py` | 全部已注册 IDE 名称使用同一原生策略；独立终端保持终端生命周期；Kiro 的 IDE/桌面双重身份不串逻辑 |
 
 ### 13.5 推荐测试命令
 
@@ -333,12 +352,17 @@ python3 scripts/validate_release.py
 | M-14 | 隐私检查 | 对话包含 prompt / summary / 命令输出 | 气泡不展示这些内容 |
 | M-15 | 旧工具回归 | ChatGPT Plan 模式等待用户输入 | 仍显示待处理，不误显示进行中 |
 | M-16 | Claude Code 回归 | Claude Code 运行、完成、点击查看 | 状态与原逻辑一致 |
+| M-17 | Qoder CN 套餐/额度阻塞 | 触发套餐或额度限制并点击对应气泡 | 成功聚焦 Qoder CN；跨多个扫描周期仍保持待处理，不短暂变为空闲 |
+| M-18 | 非 Zed IDE 代表性回归 | 在已安装的另一种项目型 IDE 中打开两个不同项目窗口，并在其中启动已配置 AI CLI | 两个气泡分别对应各自项目；点击只聚焦目标窗口；关闭一个项目窗口后仅对应气泡消失 |
 
 ### 14.1 手工验收结果
 
 | 验收日期 | 验收范围 | 结论 | 备注 |
 |---|---|---|---|
 | 2026-07-14 | M-1 至 M-16 全部手工验收场景 | 通过 | 已完成手工测试，目前未发现问题 |
+| 2026-07-24 | M-17 Qoder CN 持续阻塞 | 通过 | 真实 Qoder CN 会话点击后连续三个完整扫描周期保持待处理，页面控制台无错误 |
+| 2026-07-28 | M-18 非 Zed IDE 代表性回归 | 通过 | 在真实 Visual Studio Code 中打开 alpha / beta 两个隔离项目并分别启动 AI CLI；Pet 两个气泡均绑定 Code 主进程，正反向点击后 AX focused/main 只指向目标项目。关闭 alpha 后其气泡在下一轮扫描中消失，beta 保留且再次点击仍只定位 beta |
+| 2026-07-29 | Visual Studio Code 用户人工监测回归 | 通过 | 用户在 VS Code IDE 窗口内启动真实 Claude Code，确认 Pet 可正常发现和监测；本条只记录用户明确验证的监测链路，双窗口精准聚焦与关闭清理由 2026-07-28 的 M-18 实机证据覆盖 |
 
 ## 15. 验收标准
 
@@ -368,6 +392,7 @@ python3 scripts/validate_release.py
 | AC-15 | WorkBuddy 数据库异常时，回退桌面空闲入口，不崩溃 | 自动化测试 |
 | AC-16 | Qoder / WorkBuddy 聚焦失败时给出轻量失败提示，不展开诊断面板 | 手工验收 |
 | AC-17 | 新增工具脚本和发布校验包含对应监控入口 | 发布校验 |
+| AC-18 | 所有已注册项目型 IDE 共用窗口有效性和精准聚焦规则；独立终端不被该规则误删 | 自动化矩阵 + 至少一种非 Zed IDE 代表性实机验收 |
 
 ## 16. 测试数据样例
 
@@ -471,6 +496,16 @@ python3 scripts/validate_release.py
 | 2026-07-14 | `python3 scripts/validate_release.py` | 通过，输出 `release-validation-ok` |
 | 2026-07-14 | `scripts/run_macos_floating_dev.sh --build-only`、`scripts/run_macos_floating_dev.sh --launch-only`、`scripts/check_macos_floating_dev.sh` | 通过，开发版已重新构建并启动，有实时会话快照 |
 | 2026-07-14 | `python3 scripts/build_release.py` | 通过，输出 `release-artifact-ok dist/ai-progress-monitor.pyz` 和 `release-bundle-ok dist/ai-progress-monitor-release.zip` |
+| 2026-07-24 | Qoder CN 套餐/额度阻塞回归 | 通过，点击聚焦后连续三个完整扫描周期保持待处理；新 running 可清除旧阻塞，普通失败不受影响 |
+| 2026-07-24 | `PYTHONPATH=src python3 -m unittest discover -s tests` | 通过，491 个测试 OK |
+| 2026-07-24 | `python3 scripts/validate_release.py` | 通过，输出 `release-validation-ok` |
+| 2026-07-28 | ChatGPT 短暂来源缺失、WorkBuddy 显式待处理合并、相似项目窗口匹配回归 | 通过，均由修复前失败、修复后通过的定向测试覆盖 |
+| 2026-07-28 | 跨 IDE / 独立终端宿主矩阵 | 284 项相关测试通过；覆盖全部已注册 IDE 的窗口核对、聚焦兜底、辅助进程祖先解析和独立终端生命周期，非本机已安装 IDE 的结果只记自动化覆盖，不以自动化冒充人工验收 |
+| 2026-07-28 | Visual Studio Code 辅助进程归属与双窗口实机验收 | 使用隔离项目启动真实 VS Code 窗口和临时 AI CLI 子进程，确认 `AI CLI → shell → Code Helper → Code 主进程` 最终绑定同一个 Code 主进程。真实 Pet 点击 alpha / beta 后，原生日志均返回 `focused-project-window`，精确 PID 的 AX focused/main 只指向对应项目；关闭 alpha 后仅 alpha 气泡消失，beta 保留且仍可定位 |
+| 2026-07-28 | POSIX 进程扫描预算 | 清除上轮隔离测试恢复的旧进程后，在两个 VS Code 项目 AI CLI 与现有会话共存条件下连续扫描 6 次，均成功返回，耗时 `2.095–3.025 秒`，未触发 4 秒超时；不通过放宽超时掩盖问题 |
+| 2026-07-28 | `PYTHONPATH=src python3 -m unittest discover -s tests` | 正常本机权限下通过，511 个测试 OK |
+| 2026-07-28 | `python3 scripts/validate_release.py` | 正常本机权限下通过，输出 `release-validation-ok` |
+| 2026-07-29 | Visual Studio Code 内真实 Claude Code 监测 | 用户手动在 VS Code IDE 窗口中启动 Claude Code，确认 Pet 监测功能正常；该结论补充真实用户路径，不替代 2026-07-28 的自动化矩阵与双窗口技术验收 |
 
 ## 19. 不允许 AI 自行扩展的内容
 

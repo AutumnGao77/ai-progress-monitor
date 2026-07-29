@@ -11,6 +11,7 @@ def native_sources() -> str:
         [
             (macos / "FloatingMonitor.swift").read_text(),
             (macos / "FloatingMonitorGeometry.swift").read_text(),
+            (macos / "FloatingMonitorFocusPolicy.swift").read_text(),
         ]
     )
 
@@ -139,34 +140,51 @@ class MacOSNativeCompanionTests(unittest.TestCase):
         source = native_sources()
 
         self.assertIn('windowID: payload["window_id"] as? String ?? ""', source)
-        self.assertIn("private func focusTargetWindow(windowID: String", source)
+        self.assertIn("private func focusTargetWindow(", source)
+        self.assertIn("windowID: String,", source)
         self.assertIn("let cleanWindowID = windowID.trimmingCharacters", source)
         self.assertIn("accessibilityWindowNumber(for: window) == cleanWindowID", source)
         self.assertIn('"AXWindowNumber" as CFString', source)
-        self.assertIn('return raise(window: window, app: app, appElement: appElement, detail: "focused-window-id")', source)
+        self.assertIn('detail: "focused-window-id"', source)
+        self.assertIn("focusSpecificWindow(", source)
         self.assertLess(source.index("accessibilityWindowNumber(for: window)"), source.index("let folderName = URL(fileURLWithPath: cwd).lastPathComponent"))
+
+    def test_native_focus_scores_project_titles_instead_of_taking_first_substring(self):
+        source = native_sources()
+
+        self.assertIn("private func bestProjectWindow(", source)
+        self.assertIn("FloatingMonitorFocusPolicy.projectWindowTitleMatchScore(", source)
+        self.assertIn("if score > bestScore", source)
+        self.assertNotIn("windowTitle.contains(folderName)", source)
 
     def test_native_focus_matches_common_ide_name_variants(self):
         source = native_sources()
 
-        self.assertIn("prefixMatchedAppNameTargets", source)
+        self.assertIn("exactProjectEditorApplicationNames", source)
+        self.assertIn("prefixProjectEditorApplicationNames", source)
+        self.assertIn("FloatingMonitorFocusPolicy.projectEditorApplicationNameMatches(", source)
         for app_name in [
             "android studio",
             "clion",
+            "eclipse",
+            "fleet",
             "goland",
             "intellij idea",
+            "kiro",
             "phpstorm",
             "pycharm",
             "rider",
             "rubymine",
             "sublime text",
+            "trae",
+            "vscodium",
             "visual studio code",
             "webstorm",
         ]:
             self.assertIn(f'"{app_name}"', source)
-        self.assertIn('target == "visual studio code"', source)
-        self.assertIn('candidate == "code"', source)
-        self.assertIn("candidate.hasPrefix", source)
+        self.assertIn('normalizedTarget == "visual studio code"', source)
+        self.assertIn('normalizedCandidate == "code"', source)
+        self.assertIn("normalizedCandidate.hasPrefix", source)
 
     def test_native_focus_tries_all_matching_apps_before_window_list_failure(self):
         source = native_sources()
@@ -176,7 +194,7 @@ class MacOSNativeCompanionTests(unittest.TestCase):
         self.assertIn("var sawWindowListFailure = false", source)
         self.assertIn("sawWindowListFailure = true", source)
         self.assertIn("continue", source)
-        self.assertIn('return (false, "window-list-unavailable")', source)
+        self.assertIn('completion((false, "window-list-unavailable"))', source)
 
     def test_native_focus_only_activates_ai_desktop_apps_as_last_resort(self):
         source = native_sources()
@@ -188,7 +206,9 @@ class MacOSNativeCompanionTests(unittest.TestCase):
         self.assertIn("private func activateRunningApplication", source)
         self.assertIn("app.activate(options: [])", source)
         self.assertIn('return (true, "activated-app")', source)
-        self.assertIn("if isDesktopAIApp(appName), let app = apps.first", source)
+        self.assertIn("private func canActivateWholeApp(appName: String, cwd: String) -> Bool", source)
+        self.assertIn("if canActivateWholeApp(appName: appName, cwd: cwd), let app = apps.first", source)
+        self.assertIn("!FloatingMonitorFocusPolicy.isProjectEditorApplicationName(appName)", source)
 
     def test_native_focus_activates_ai_app_without_accessibility_permission(self):
         source = native_sources()
@@ -197,9 +217,9 @@ class MacOSNativeCompanionTests(unittest.TestCase):
 
         self.assertLess(focus_body.index("let apps = runningApplications"), focus_body.index("AXIsProcessTrustedWithOptions"))
         self.assertIn("if !AXIsProcessTrustedWithOptions(options)", focus_body)
-        self.assertIn("if isDesktopAIApp(appName), let app = apps.first", focus_body)
-        self.assertIn("return activateRunningApplication(app)", focus_body)
-        self.assertIn('return (false, "accessibility-permission-required")', focus_body)
+        self.assertIn("if canActivateWholeApp(appName: appName, cwd: cwd), let app = apps.first", focus_body)
+        self.assertIn("completion(activateRunningApplication(app))", focus_body)
+        self.assertIn('completion((false, "accessibility-permission-required"))', focus_body)
 
     def test_native_focus_matches_qoder_cn_when_payload_uses_qoder_display_name(self):
         source = native_sources()
@@ -211,26 +231,97 @@ class MacOSNativeCompanionTests(unittest.TestCase):
         self.assertIn("appNameMatches(candidate: localized, target: alias)", source)
         self.assertIn("appNameMatches(candidate: bundleName, target: alias)", source)
 
-    def test_native_focus_activates_target_app_and_reraises_specific_window(self):
+    def test_native_focus_waits_for_stable_selection_and_real_activation_before_success(self):
         source = native_sources()
 
-        self.assertIn("private func raise(window: AXUIElement, app: NSRunningApplication, appElement: AXUIElement, detail: String)", source)
-        self.assertIn("AXUIElementSetAttributeValue(appElement, kAXFocusedWindowAttribute as CFString, window)", source)
-        self.assertIn("AXUIElementSetAttributeValue(window, kAXMainAttribute as CFString, kCFBooleanTrue)", source)
-        self.assertIn("let activateResult = activateRunningApplication(app)", source)
-        self.assertIn("guard activateResult.ok else", source)
+        self.assertIn("private func focusSpecificWindow(", source)
+        self.assertIn("private func applySpecificWindowSelection(", source)
+        self.assertIn("kAXFocusedWindowAttribute as CFString", source)
+        self.assertIn("kAXMainAttribute as CFString", source)
+        self.assertIn("kAXMainWindowAttribute as CFString", source)
+        self.assertIn("stabilizeSpecificWindowSelection(", source)
+        self.assertIn("FloatingMonitorFocusPolicy.decision(", source)
+        self.assertIn("requestSpecificWindowActivation(", source)
+        self.assertIn("NSWorkspace.didActivateApplicationNotification", source)
+        self.assertIn("NSWorkspace.applicationUserInfoKey", source)
+        self.assertIn("FloatingMonitorFocusPolicy.activationTimeout", source)
+        self.assertIn("completeSpecificWindowActivation(", source)
         self.assertIn("AXUIElementPerformAction(window, kAXRaiseAction as CFString)", source)
-        self.assertGreater(source.count("AXUIElementPerformAction(window, kAXRaiseAction as CFString)"), 1)
+        self.assertIn('"focused-window-selection-timeout"', source)
+        self.assertIn('"focused-window-activation-timeout"', source)
+        self.assertNotIn("let activateResult = activateFocusedWindowApplication(app)", source)
+
+    def test_specific_window_activation_uses_frontmost_source_without_modern_uncoordinated_fallback(self):
+        source = native_sources()
+        activation_body = source[source.index("private func requestSpecificWindowActivation") :]
+        activation_body = activation_body[: activation_body.index("private func completeSpecificWindowActivation")]
+        modern_body = activation_body[activation_body.index("if #available(macOS 14.0, *)") :]
+        modern_body = modern_body[: modern_body.index("private func requestLegacySpecificWindowActivation")]
+
+        self.assertIn("NSWorkspace.shared.frontmostApplication", modern_body)
+        self.assertIn("source.processIdentifier == app.processIdentifier", modern_body)
+        self.assertIn("source.processIdentifier == ProcessInfo.processInfo.processIdentifier", modern_body)
+        self.assertIn("NSApp.isActive", modern_body)
+        self.assertIn("NSApp.yieldActivation(to: app)", modern_body)
+        self.assertIn("app.activate(from: source, options: [])", modern_body)
+        self.assertIn('"coordinated-window-activate-failed"', modern_body)
+        self.assertNotIn("app.activate(options: [])", modern_body)
+        self.assertNotIn("activateRunningApplication(app)", modern_body)
+        self.assertNotIn("activateIgnoringOtherApps", modern_body)
+        self.assertIn("requestLegacySpecificWindowActivation(", activation_body)
+
+    def test_specific_window_activation_observer_is_installed_before_request(self):
+        source = native_sources()
+        activation_body = source[source.index("private func requestSpecificWindowActivation") :]
+        activation_body = activation_body[: activation_body.index("private func completeSpecificWindowActivation")]
+
+        self.assertLess(
+            activation_body.index("NSWorkspace.didActivateApplicationNotification"),
+            activation_body.index("app.activate(from: source, options: [])"),
+        )
+        self.assertLess(
+            activation_body.index("scheduleSpecificWindowActivationTimeout("),
+            activation_body.index("app.activate(from: source, options: [])"),
+        )
+
+    def test_new_focus_request_cancels_stale_async_work(self):
+        source = native_sources()
+
+        self.assertIn("private var focusOperationID: UUID?", source)
+        self.assertIn("private var focusStabilizationWorkItem: DispatchWorkItem?", source)
+        self.assertIn("private var focusActivationTimeoutWorkItem: DispatchWorkItem?", source)
+        self.assertIn("private var focusActivationObserver: NSObjectProtocol?", source)
+        self.assertIn("let operationID = beginFocusOperation()", source)
+        self.assertIn("cancelCurrentFocusOperation()", source)
+        self.assertIn("focusStabilizationWorkItem?.cancel()", source)
+        self.assertIn("focusActivationTimeoutWorkItem?.cancel()", source)
+        self.assertIn("NSWorkspace.shared.notificationCenter.removeObserver(observer)", source)
+        self.assertIn("guard focusOperationID == operationID else { return }", source)
+
+    def test_specific_window_success_rechecks_frontmost_state_after_activation(self):
+        source = native_sources()
+        completion_body = source[source.index("private func completeSpecificWindowActivation") :]
+        completion_body = completion_body[: completion_body.index("private func activateRunningApplication")]
+
+        self.assertIn("isApplicationActuallyActive(app)", completion_body)
+        self.assertIn("applySpecificWindowSelection(", completion_body)
+        self.assertIn("stabilizeSpecificWindowSelection(", completion_body)
+        self.assertIn('"focused-window-activation-timeout"', completion_body)
+        self.assertLess(
+            completion_body.index("applySpecificWindowSelection("),
+            completion_body.index("stabilizeSpecificWindowSelection("),
+        )
 
     def test_native_focus_success_compacts_pet_without_showing_error(self):
         source = native_sources()
         focus_body = source[source.index("private func handleFocusMessage") :]
         focus_body = focus_body[: focus_body.index("private func focusTargetWindow")]
 
-        self.assertIn("if result.ok", focus_body)
+        self.assertIn("completeFocusOperation(", focus_body)
+        self.assertIn("if result.ok", source)
         self.assertIn("restorePetWebState()", focus_body)
         self.assertIn("let sessionID = payload[\"session_id\"] as? String ?? \"\"", focus_body)
-        self.assertIn("sendHostFocusResult(ok: result.ok, detail: result.detail, sessionID: sessionID)", focus_body)
+        self.assertIn("sendHostFocusResult(", source)
         self.assertIn('"session_id": sessionID', source)
 
     def test_native_focus_does_not_treat_pet_as_the_obstructing_window(self):
@@ -390,6 +481,25 @@ class MacOSNativeCompanionTests(unittest.TestCase):
         source = native_sources()
 
         self.assertNotIn('"--no-windows"', source)
+
+    def test_native_companion_publishes_fresh_project_window_inventory(self):
+        source = native_sources()
+
+        self.assertIn("private var projectWindowInventoryTimer: Timer?", source)
+        self.assertIn("startProjectWindowInventoryPublishing()", source)
+        self.assertIn("projectWindowInventoryTimer?.invalidate()", source)
+        self.assertIn("AXIsProcessTrusted()", source)
+        self.assertIn("isProjectEditorApplication", source)
+        self.assertIn("FloatingMonitorFocusPolicy.isProjectEditorApplicationName", source)
+        self.assertIn("accessibilityWindows(for: appElement)", source)
+        self.assertIn("result == .noValue", source)
+        self.assertIn("accessibilityWindowNumber(for: window)", source)
+        self.assertIn("accessibilityTitle(for: window)", source)
+        self.assertIn("/api/native/project-windows", source)
+        self.assertIn("window.MONITOR_TOKEN", source)
+        self.assertIn('"available": false, "applications": []', source)
+        self.assertIn('writeLog("Project window inventory: \\(summary)")', source)
+        self.assertNotIn("Native project window title:", source)
 
     def test_release_build_uses_writable_swift_module_caches(self):
         source = (ROOT / "scripts" / "build_release.py").read_text()

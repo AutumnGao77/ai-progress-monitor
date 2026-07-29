@@ -16,6 +16,7 @@ from .cleanup import cleanup_session_files
 from .classifier import classify_session_text
 from .models import ActionKind, SafeAction, SessionStatus, SessionUpdate, SurfaceKind, ToolKind
 from .terminal_bridge import clean_terminal_text
+from .window_focus import project_window_title_match_score
 
 
 SOURCE_COMMAND_TIMEOUT_SECONDS = 4.0
@@ -185,6 +186,9 @@ class JsonSessionSource:
 class OsWindowSource:
     volatile_source = "os-window"
 
+    def __init__(self):
+        self._project_window_rows: Optional[Tuple[dict, ...]] = None
+
     def poll(self) -> Optional[List[SessionUpdate]]:
         system = platform.system().lower()
         if system == "darwin":
@@ -194,8 +198,37 @@ class OsWindowSource:
         else:
             rows = []
         if rows is None:
+            self._project_window_rows = None
             return None
+        self._project_window_rows = (
+            tuple(_parse_window_row(row) for row in rows if row.strip()) if system == "darwin" else None
+        )
         return list(_classify_window_rows(rows))
+
+    def project_window_match(
+        self,
+        process_id: int,
+        app_name: str,
+        cwd: str,
+    ) -> Optional[Tuple[bool, Optional[str]]]:
+        if self._project_window_rows is None:
+            return None
+        folder_name = Path(cwd).name.strip().casefold()
+        if not folder_name or not app_name.strip():
+            return None
+        best_match: Optional[dict] = None
+        best_score = 0
+        for metadata in self._project_window_rows:
+            if _optional_int(metadata.get("process_id")) != process_id:
+                continue
+            title = str(metadata.get("title") or "").strip().casefold()
+            score = project_window_title_match_score(folder_name, title)
+            if score > best_score:
+                best_match = metadata
+                best_score = score
+        if best_match is not None:
+            return True, _optional_str(best_match.get("window_id"))
+        return False, None
 
 
 class ProcessSource:
@@ -325,6 +358,7 @@ class _QoderTaskState:
     title: Optional[str] = None
     cwd: Optional[str] = None
     user_attention_signal: bool = False
+    persistent_user_blocker_at: Optional[datetime] = None
     last_running_at: Optional[datetime] = None
     short_run_visibility_allowed: bool = True
 
@@ -1052,6 +1086,7 @@ def _qoder_task_state_from_cache_row(row: sqlite3.Row, db_path: Path) -> Optiona
     if task_id is None:
         return None
     payload = _qoder_cache_row_status_payload(row)
+    persistent_user_blocker = _qoder_payload_has_persistent_user_blocker(payload)
     status = _qoder_cache_payload_status(payload)
     if status is None:
         return None
@@ -1066,6 +1101,7 @@ def _qoder_task_state_from_cache_row(row: sqlite3.Row, db_path: Path) -> Optiona
         title=metadata.title if metadata is not None else None,
         cwd=metadata.cwd if metadata is not None else None,
         user_attention_signal=_qoder_payload_has_user_attention_signal(payload),
+        persistent_user_blocker_at=updated_at if persistent_user_blocker else None,
     )
 
 
@@ -1271,6 +1307,7 @@ def _qoder_is_generated_chat_title(value: str) -> bool:
 
 def _qoder_log_line_state(line: str, updated_at: datetime) -> Optional[_QoderTaskState]:
     payload = _qoder_log_json_payload(line) if "{" in line else None
+    persistent_user_blocker = _qoder_payload_has_persistent_user_blocker(payload)
     user_attention_signal = False
     if "task.status.update" in line:
         if payload is None:
@@ -1287,6 +1324,9 @@ def _qoder_log_line_state(line: str, updated_at: datetime) -> Optional[_QoderTas
         updated_at=updated_at,
         task_id=_qoder_task_id(line, payload),
         user_attention_signal=user_attention_signal and status == SessionStatus.NEEDS_ACTION,
+        persistent_user_blocker_at=(
+            updated_at if persistent_user_blocker and status == SessionStatus.NEEDS_ACTION else None
+        ),
         short_run_visibility_allowed=not _qoder_state_is_explicit_user_attention(line, payload, status),
     )
 
@@ -1403,6 +1443,8 @@ def _qoder_line_has_user_attention_signal(line: str) -> bool:
 def _qoder_payload_has_user_attention_signal(payload: Optional[dict]) -> bool:
     if payload is None:
         return False
+    if _qoder_payload_has_persistent_user_blocker(payload):
+        return True
     for key in (
         "hasPendingUserInput",
         "needUserInput",
@@ -1438,6 +1480,8 @@ def _qoder_state_is_explicit_user_attention(
         return True
     if payload is None:
         return False
+    if _qoder_payload_has_persistent_user_blocker(payload):
+        return True
     for key in (
         "state",
         "acpState",
@@ -1467,6 +1511,8 @@ def _qoder_state_is_explicit_user_attention(
 def _qoder_payload_has_terminal_error_signal(payload: Optional[dict]) -> bool:
     if payload is None:
         return False
+    if _qoder_payload_has_persistent_user_blocker(payload):
+        return True
     for key in ("acp_session_status_code", "statusCode", "status_code", "code"):
         try:
             status_code = int(str(payload.get(key) or "").strip())
@@ -1502,6 +1548,40 @@ def _qoder_payload_has_terminal_error_signal(payload: Optional[dict]) -> bool:
     return False
 
 
+def _qoder_payload_has_persistent_user_blocker(payload: Optional[dict]) -> bool:
+    if payload is None:
+        return False
+    status_codes = set()
+    for key in ("acp_session_status_code", "statusCode", "status_code", "code"):
+        try:
+            status_codes.add(int(str(payload.get(key) or "").strip()))
+        except ValueError:
+            continue
+    # Qoder uses code 112 for account plan or credit exhaustion.
+    if 112 in status_codes:
+        return True
+    text = " ".join(str(value or "") for value in payload.values()).strip().lower()
+    return any(
+        token in text
+        for token in (
+            "pricingurl",
+            "/pricing?",
+            "credits exhausted",
+            "credit exhausted",
+            "quota",
+            "insufficient credit",
+            "insufficient balance",
+            "no model config",
+            "配额",
+            "额度",
+            "余额不足",
+            "升级订阅",
+            "升级套餐",
+            "模型未配置",
+        )
+    )
+
+
 def _qoder_text_has_terminal_error_signal(value) -> bool:
     text = str(value or "").strip().lower()
     if not text:
@@ -1526,7 +1606,10 @@ def _qoder_text_has_terminal_error_signal(value) -> bool:
 def _qoder_state_should_replace(candidate: _QoderTaskState, existing: _QoderTaskState) -> bool:
     if candidate.status == SessionStatus.IDLE and existing.status == SessionStatus.NEEDS_ACTION:
         age_seconds = (candidate.updated_at - existing.updated_at).total_seconds()
-        if 0 <= age_seconds <= QODER_TERMINAL_RESULT_IDLE_GRACE_SECONDS and not existing.user_attention_signal:
+        preserve_terminal_state = (
+            not existing.user_attention_signal or existing.persistent_user_blocker_at is not None
+        )
+        if 0 <= age_seconds <= QODER_TERMINAL_RESULT_IDLE_GRACE_SECONDS and preserve_terminal_state:
             return False
     if candidate.updated_at > existing.updated_at:
         return True
@@ -1540,18 +1623,71 @@ def _qoder_state_with_running_history(
     existing: Optional[_QoderTaskState] = None,
 ) -> _QoderTaskState:
     last_running_at = _qoder_latest_running_at(state)
+    persistent_user_blocker_at = state.persistent_user_blocker_at
     if existing is not None:
         last_running_at = _latest_datetime(last_running_at, _qoder_latest_running_at(existing))
-    if last_running_at == state.last_running_at:
+        persistent_user_blocker_at = _latest_datetime(
+            persistent_user_blocker_at,
+            existing.persistent_user_blocker_at,
+        )
+    blocker_is_active = (
+        state.status == SessionStatus.NEEDS_ACTION
+        and persistent_user_blocker_at is not None
+        and (last_running_at is None or last_running_at <= persistent_user_blocker_at)
+    )
+    if not blocker_is_active:
+        persistent_user_blocker_at = None
+    user_attention_signal = state.user_attention_signal or blocker_is_active
+    short_run_visibility_allowed = state.short_run_visibility_allowed and not blocker_is_active
+    if (
+        last_running_at == state.last_running_at
+        and persistent_user_blocker_at == state.persistent_user_blocker_at
+        and user_attention_signal == state.user_attention_signal
+        and short_run_visibility_allowed == state.short_run_visibility_allowed
+    ):
         return state
-    return replace(state, last_running_at=last_running_at)
+    return replace(
+        state,
+        user_attention_signal=user_attention_signal,
+        persistent_user_blocker_at=persistent_user_blocker_at,
+        last_running_at=last_running_at,
+        short_run_visibility_allowed=short_run_visibility_allowed,
+    )
 
 
 def _qoder_merge_running_history(existing: _QoderTaskState, candidate: _QoderTaskState) -> _QoderTaskState:
     last_running_at = _latest_datetime(_qoder_latest_running_at(existing), _qoder_latest_running_at(candidate))
-    if last_running_at == existing.last_running_at:
+    persistent_user_blocker_at = _latest_datetime(
+        existing.persistent_user_blocker_at,
+        candidate.persistent_user_blocker_at,
+    )
+    blocker_is_active = (
+        existing.status == SessionStatus.NEEDS_ACTION
+        and persistent_user_blocker_at is not None
+        and (last_running_at is None or last_running_at <= persistent_user_blocker_at)
+    )
+    if not blocker_is_active:
+        persistent_user_blocker_at = None
+    user_attention_signal = existing.user_attention_signal
+    if blocker_is_active:
+        user_attention_signal = True
+    elif existing.persistent_user_blocker_at is not None:
+        user_attention_signal = False
+    short_run_visibility_allowed = existing.short_run_visibility_allowed and not blocker_is_active
+    if (
+        last_running_at == existing.last_running_at
+        and persistent_user_blocker_at == existing.persistent_user_blocker_at
+        and user_attention_signal == existing.user_attention_signal
+        and short_run_visibility_allowed == existing.short_run_visibility_allowed
+    ):
         return existing
-    return replace(existing, last_running_at=last_running_at)
+    return replace(
+        existing,
+        user_attention_signal=user_attention_signal,
+        persistent_user_blocker_at=persistent_user_blocker_at,
+        last_running_at=last_running_at,
+        short_run_visibility_allowed=short_run_visibility_allowed,
+    )
 
 
 def _qoder_latest_running_at(state: _QoderTaskState) -> Optional[datetime]:
@@ -1796,9 +1932,7 @@ def _workbuddy_state_with_runtime_state(
     if state.status == SessionStatus.NEEDS_ACTION:
         if state.user_attention_signal or runtime_state.status == SessionStatus.IDLE:
             return state
-    user_attention_signal = (
-        state.user_attention_signal if runtime_state.status == SessionStatus.NEEDS_ACTION else False
-    )
+    user_attention_signal = runtime_state.status == SessionStatus.NEEDS_ACTION
     return replace(
         state,
         status=runtime_state.status,
@@ -2719,7 +2853,11 @@ def _macos_window_command() -> List[str]:
         'repeat with proc in application processes\n'
         'repeat with win in windows of proc\n'
         'try\n'
-        'set output to output & "window_id=" & (id of win as string) & tab & "process_id=" & (unix id of proc as string) & tab & "process_name=" & name of proc & tab & "title=" & name of win & linefeed\n'
+        'set windowID to ""\n'
+        'try\n'
+        'set windowID to id of win as string\n'
+        'end try\n'
+        'set output to output & "window_id=" & windowID & tab & "process_id=" & (unix id of proc as string) & tab & "process_name=" & name of proc & tab & "title=" & name of win & linefeed\n'
         'end try\n'
         'end repeat\n'
         'end repeat\n'
@@ -2749,13 +2887,22 @@ def _posix_process_command() -> List[str]:
         "*/WezTerm.app/*) printf 'WezTerm' ;; "
         "*/kitty.app/*) printf 'kitty' ;; "
         "*/Alacritty.app/*) printf 'Alacritty' ;; "
+        "*/Ghostty.app/*) printf 'Ghostty' ;; "
+        "*/Hyper.app/*) printf 'Hyper' ;; "
+        "*/Tabby.app/*) printf 'Tabby' ;; "
+        "*/Rio.app/*) printf 'Rio' ;; "
         "*/Zed.app/*) printf 'Zed' ;; "
         "*/Cursor.app/*) printf 'Cursor' ;; "
         "*Visual\\ Studio\\ Code*.app*) printf 'Visual Studio Code' ;; "
+        "*/VSCodium.app/*) printf 'VSCodium' ;; "
         "*/Windsurf.app/*) printf 'Windsurf' ;; "
         "*Sublime\\ Text.app*) printf 'Sublime Text' ;; "
         "*/Nova.app/*) printf 'Nova' ;; "
         "*/Xcode.app/*) printf 'Xcode' ;; "
+        "*/Kiro.app/*) printf 'Kiro' ;; "
+        "*/Trae.app/*|*/Trae\\ CN.app/*) printf 'Trae' ;; "
+        "*/Eclipse.app/*) printf 'Eclipse' ;; "
+        "*/Fleet.app/*) printf 'Fleet' ;; "
         "*Android\\ Studio.app*) printf 'Android Studio' ;; "
         "*/CLion.app/*) printf 'CLion' ;; "
         "*/GoLand.app/*) printf 'GoLand' ;; "
@@ -2813,7 +2960,7 @@ def _posix_process_command() -> List[str]:
         "[ -n \"$ancestor_row\" ] || break; "
         "ancestor_args=${ancestor_row#*|}; "
         "app=$(focus_app_name \"$ancestor_args\" || true); "
-        "if [ -n \"$app\" ]; then focus_pid=\"$ancestor\"; focus_app=\"$app\"; break; fi; "
+        "if [ -n \"$app\" ]; then focus_pid=\"$ancestor\"; focus_app=\"$app\"; fi; "
         "ancestor=${ancestor_row%%|*}; "
         "hops=$((hops + 1)); "
         "done; "

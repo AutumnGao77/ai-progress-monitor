@@ -37,7 +37,7 @@
 | Claude/Codex/Qoder/WorkBuddy CLI 进程检测 | 已支持，直接启动已配置 AI CLI 时显示 process-only 气泡；WorkBuddy 同时识别 `workbuddy` 和 `codebuddy` CLI；Claude CLI 优先读取 Claude 会话状态，明确 idle 时不因短暂 CPU/MCP 活跃翻成进行中，读不到时回退到进程活跃度；Codex、Qoder、WorkBuddy 等其他 CLI 暂按进程活跃度保守判断 |
 | macOS / Windows 窗口扫描 | 已支持基础窗口标题扫描 |
 | 桌面窗口 ID / 进程信息跟踪 | 已支持，用于更可靠地回到原窗口 |
-| 点击气泡回到原窗口 | 已支持，优先用窗口 ID / 进程信息聚焦 |
+| 点击气泡回到原窗口 | 已支持，优先用窗口 ID / 进程信息聚焦；项目型 IDE 使用统一的项目窗口校验和精准跳转，不是 Zed 专用逻辑 |
 | 主界面信息脱敏 | 已支持，不展示 summary、命令输出或直接回复按钮 |
 | 完成/空闲轻提示 | 已支持，仅从执行中转为完成时提醒一次 |
 | 疑似卡住轻提示 | 已支持，仅从执行中转为疑似卡住时提醒一次 |
@@ -140,6 +140,7 @@ scripts/check_macos_floating_dev.sh --strict
 
 ```json
 {
+  "notifications_enabled": false,
   "pet_assets": {
     "idle": "/path/to/idle.png",
     "running": "/path/to/running.png",
@@ -151,11 +152,14 @@ scripts/check_macos_floating_dev.sh --strict
 
 右键点击 Pet，选择“外观”，可以在“背带裤树懒”和“衬衫树懒”之间切换；当前外观会显示对勾。背带裤树懒使用现有三态图片，衬衫树懒当前三态共用 `/assets/pet/shirt.png`。外观选择会保存到偏好文件的 `pet_appearance` 字段，缺失或非法值会回退到背带裤树懒。
 
+右键菜单中的“系统通知 >”会展开“开启 / 关闭”二级菜单，当前生效项显示对勾。选择“关闭”后，Pet 三态、数字角标、气泡列表和点击回到原窗口仍继续工作；设置会写入 `notifications_enabled` 并在重启后保留。使用 `--no-notifications` 启动时，二级菜单显示“✓ 关闭”，“开启”和“关闭”均置灰，本次运行不会改写用户偏好。
+
 本次外观主题切换的功能 PRD 是 `docs/prd/2026-07-11-pet-appearance-theme-switching-prd.md`。
+系统通知开关的功能 PRD 是 `docs/prd/2026-07-14-notification-preference-toggle-prd.md`。
 
 偏好文件默认位置是 `~/.ai-progress-monitor/preferences.json`。自定义图片支持 PNG、JPG、JPEG、WebP，单个文件最大 8 MB；路径无效、格式不支持或文件过大时会自动回退到内置资源。兼容旧入口的 `sloth-pet.png` 保留为空闲态图片。自定义 `pet_assets.*` 仍会覆盖最终 Pet 图片；APP 头像、菜单栏图标和 favicon 不随外观主题切换。
 
-页面右下角会显示原创树懒 Pet。左键点击 Pet 只负责展开或收起上方气泡列表；右键点击 Pet 会打开菜单，菜单提供“外观”“隐藏 Pet”和“退出程序”。每条气泡只展示文件夹/对话标识和状态；桌面版 AI 对话没有真实项目文件夹时显示为 `工具名 对话` 或安全短标题，工具定义表中声明的自动聊天目录也按无真实项目文件夹处理，例如 ChatGPT 兼容会话的 `Documents/ChatGPT/YYYY-MM-DD/<对话名>`。后续接入其他 AI 桌面端时，只需补充对应工具配置和自动聊天目录 pattern，不需要改前端命名逻辑；页面不会展示不可读 session_id 碎片。点击气泡会尝试回到对应 AI 工具窗口。
+页面右下角会显示原创树懒 Pet。左键点击 Pet 只负责展开或收起上方气泡列表；右键点击 Pet 会打开菜单，菜单提供“外观 >”“系统通知 >”“隐藏 Pet”和“退出程序”，“系统通知 >”内使用“开启 / 关闭”互斥选项。每条气泡只展示文件夹/对话标识和状态；桌面版 AI 对话没有真实项目文件夹时显示为 `工具名 对话` 或安全短标题，工具定义表中声明的自动聊天目录也按无真实项目文件夹处理，例如 ChatGPT 兼容会话的 `Documents/ChatGPT/YYYY-MM-DD/<对话名>`。后续接入其他 AI 桌面端时，只需补充对应工具配置和自动聊天目录 pattern，不需要改前端命名逻辑；页面不会展示不可读 session_id 碎片。点击气泡会尝试回到对应 AI 工具窗口。
 
 启动失败时，一键启动脚本会写入本地日志。macOS 日志默认在 `~/Library/Logs/AI Progress Monitor/monitor.log`，Windows 日志默认在 `%LOCALAPPDATA%\AI Progress Monitor\monitor.log`。
 
@@ -170,7 +174,7 @@ scripts/check_macos_floating_dev.sh --strict
 | `--host` | 指定监听地址，默认 `127.0.0.1` |
 | `--port` | 指定端口，默认 `8765` |
 | `--open` | 启动后自动打开默认浏览器 |
-| `--no-notifications` | 关闭系统级“需要处理”提醒 |
+| `--no-notifications` | 强制关闭本次运行的所有系统通知；不改写持久化偏好 |
 | `--cleanup-after-seconds` | 清理旧的完成/未知/疑似卡住会话文件，默认 7 天，设为 `0` 关闭；待处理会话不自动清理 |
 
 终端桥接脚本、JSON 事件脚本和 Web 服务都支持 `AI_PROGRESS_MONITOR_HOME`。设置后，sessions 和 responses 会写到同一个根目录下，便于本地试用、便携发布或隔离测试：
@@ -227,7 +231,9 @@ python3 scripts/doctor.py
 
 推荐方式有两种：直接写 JSON 事件，或用终端桥接脚本包装 Claude Code、Codex、Qoder、WorkBuddy 等 AI 命令。
 
-如果用户直接在终端运行已配置的 AI CLI，监控器会通过进程扫描显示 process-only 气泡；气泡本身仍只展示文件夹/对话标识和状态。当前仍处于前台交互终端状态的直接 CLI 会话会显示；即使 CLI 在 App 启动前已经打开，只要进程仍存在，也会显示为空闲或当前状态；退出 CLI 后，即使 IDE、终端或项目窗口还开着，也不应继续保留气泡。Claude CLI 会优先读取 `~/.claude/sessions/<pid>.json` 中 Claude 自己记录的会话状态；每个进程的扫描字段必须独立重置，工作目录只能来自当前进程或同 PID 且目录一致的 Claude 状态记录，不能继承上一进程的目录或虚构其他项目会话。运行中显示进行中；明确空闲时保持空闲，不因短暂 CPU/MCP 活跃翻成进行中；回复完成后，或同一会话出现新的空闲完成时间后，先显示待处理，点击气泡成功回到对应系统终端或 IDE 内置终端后标记为已查看并转为空闲；读不到、状态不匹配或过期 running 时再按 CPU、进程运行态和过滤后的活跃子进程做保守判断。Codex CLI、Qoder CLI、WorkBuddy CLI 和 `codebuddy` CLI 暂按进程活跃度判断。ChatGPT 桌面端会兼容读取 `~/.codex/sessions` 的会话事件：App 启动后有未完成任务时显示进行中，有可见回复并完成后显示待处理，点击气泡成功回到 ChatGPT 后转为空闲；已查看后转为空闲的桌面端具体对话保留 15 分钟后从气泡列表移出；如果只是 ChatGPT 主程序存活，或具体桌面对话都已移出，先显示空闲入口，有具体桌面会话后自动隐藏该入口，避免重复计数。Qoder 桌面端会读取本地 Qoder/Qoder CN 日志；WorkBuddy 桌面端会在本地 sessions 数据库出现明确 Running / Completed / Failed 等状态时生成 full 级具体会话，默认 Pending 且无活动时间的空白会话不会被误报为进行中。普通系统权限不会读取或展示终端内部文本。
+如果用户直接在终端运行已配置的 AI CLI，监控器会通过进程扫描显示 process-only 气泡；气泡本身仍只展示文件夹/对话标识和状态。当前仍处于前台交互终端状态的直接 CLI 会话会显示；即使 CLI 在 App 启动前已经打开，只要进程仍存在，也会显示为空闲或当前状态；退出 CLI 后，即使 IDE、终端或项目窗口还开着，也不应继续保留气泡。项目型 IDE 统一使用项目窗口校验和精准跳转，不是 Zed 专用逻辑；当前注册范围包括 Zed、Cursor、Visual Studio Code / Insiders、VSCodium、Windsurf、Xcode、Nova、Sublime Text、Kiro、Trae / Trae CN、Eclipse、Fleet、Android Studio 和 JetBrains 系列。macOS 原生 App 会用已获辅助功能权限的窗口清单核对父 GUI 进程、cwd 项目名和窗口 ID；相似项目名按完整标题、标准分段和安全边界匹配，`ProjectAlpha-old` 不会冒充 `ProjectAlpha`。关闭项目窗口后，即使 IDE 短暂保留 Claude 子进程，也会移除对应气泡，避免点击后提示“无法定位窗口”。原生辅助功能权限不可用、窗口清单读取失败或扫描被关闭时，不会仅凭缺少清单误删会话。Terminal、iTerm、Warp、WezTerm、kitty、Alacritty、Ghostty、Hyper、Tabby、Rio 等独立终端继续按 AI 子进程生命周期处理，但点击时仍使用父 GUI 进程和安全项目名边界定位。
+
+Claude CLI 会优先读取 `~/.claude/sessions/<pid>.json` 中 Claude 自己记录的会话状态；每个进程的扫描字段必须独立重置，工作目录只能来自当前进程或同 PID 且目录一致的 Claude 状态记录，不能继承上一进程的目录或虚构其他项目会话。运行中显示进行中；明确空闲时保持空闲，不因短暂 CPU/MCP 活跃翻成进行中；回复完成后，或同一会话出现新的空闲完成时间后，先显示待处理，点击气泡成功回到对应系统终端或 IDE 内置终端后标记为已查看并转为空闲；读不到、状态不匹配或过期 running 时再按 CPU、进程运行态和过滤后的活跃子进程做保守判断。Codex CLI、Qoder CLI、WorkBuddy CLI 和 `codebuddy` CLI 暂按进程活跃度判断。ChatGPT 桌面端会兼容读取 `~/.codex/sessions` 的会话事件：App 启动后有未完成任务时显示进行中，有可见回复并完成后显示待处理，点击气泡成功回到 ChatGPT 后转为空闲；已查看后转为空闲的桌面端具体对话保留 15 分钟后从气泡列表移出；如果只是 ChatGPT 主程序存活，或具体桌面对话都已移出，先显示空闲入口，有具体桌面会话后自动隐藏该入口，避免重复计数。Qoder 桌面端会读取本地 Qoder/Qoder CN 日志；普通完成或失败结果可在查看后转为空闲，但明确的额度、套餐或模型配置阻塞会持续显示待处理，点击只聚焦工具，直到同一任务产生新的真实状态。WorkBuddy 桌面端同时读取本地 sessions 数据库和 runtime log，明确的 Running / Completed / Failed 等状态会生成 full 级具体会话；当前运行会话不会因为同一 WorkBuddy 进程还存在旧对话而被隐藏，默认 Pending 且无活动时间的空白会话也不会被误报为进行中。普通系统权限不会读取或展示终端内部文本。
 
 ### 方式一：终端桥接脚本
 
@@ -330,7 +336,7 @@ python3 scripts/emit_event.py \
 | 回原窗口处理 | 主 Pet 不提供直接回复按钮 |
 | 复杂交互回原窗口 | 大段阅读、自由输入、多选项、高风险命令不在宠物内处理 |
 | 本地 API 令牌 | 页面和接口使用启动时生成的随机令牌 |
-| 系统通知 | 仅在需要处理时提醒，并带冷却去重；同一轮多个待处理会话合并成一条通知 |
+| 系统通知 | 默认开启，可从 Pet 右键菜单关闭；带冷却去重，同一轮多个待处理会话合并成一条通知 |
 | 保守清理 | 仅自动清理旧的 idle/unknown/stuck，会保留 running/needs_action；待处理不会因为用户长时间未点击而自动消失 |
 | 桌面对话收口 | 已查看后转为空闲的桌面端具体对话在气泡列表保留 15 分钟后移出；如果桌面 App 仍存活，则保留 App 空闲入口 |
 

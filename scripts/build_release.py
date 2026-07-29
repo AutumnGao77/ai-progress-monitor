@@ -304,7 +304,14 @@ def verify_macos_release_bundle() -> None:
     forbidden = sorted(
         name
         for name in names
-        if name.endswith(("FloatingMonitor.swift", "FloatingMonitorGeometry.swift", "BUILD_FLOATING_APP.txt"))
+        if name.endswith(
+            (
+                "FloatingMonitor.swift",
+                "FloatingMonitorGeometry.swift",
+                "FloatingMonitorFocusPolicy.swift",
+                "BUILD_FLOATING_APP.txt",
+            )
+        )
     )
     if forbidden:
         raise SystemExit(f"macOS release contains build-only files: {forbidden}")
@@ -404,6 +411,7 @@ def create_macos_app_bundle(app_path: Path) -> None:
 def compile_macos_app_executable(executable: Path) -> None:
     source = ROOT / "native" / "macos" / "FloatingMonitor.swift"
     geometry_source = ROOT / "native" / "macos" / "FloatingMonitorGeometry.swift"
+    focus_policy_source = ROOT / "native" / "macos" / "FloatingMonitorFocusPolicy.swift"
     swiftc = shutil.which("swiftc")
     if swiftc is None:
         raise SystemExit("swiftc is required to build the macOS release app")
@@ -415,6 +423,7 @@ def compile_macos_app_executable(executable: Path) -> None:
             swiftc,
             str(source),
             str(geometry_source),
+            str(focus_policy_source),
             "-target",
             f"arm64-apple-macos{MACOS_MINIMUM_VERSION}",
             "-o",

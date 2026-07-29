@@ -3,6 +3,8 @@ import ApplicationServices
 import WebKit
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavigationDelegate, WKScriptMessageHandler {
+    private typealias FocusResult = (ok: Bool, detail: String)
+
     private var window: NSPanel!
     private var webView: WKWebView!
     private var statusItem: NSStatusItem!
@@ -14,25 +16,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     private var monitorRestartAttempt = 0
     private var isTerminating = false
     private var dragTimer: Timer?
+    private var projectWindowInventoryTimer: Timer?
+    private var lastProjectWindowInventorySummary: String?
     private var lastDragMouseLocation: NSPoint?
+    private var focusOperationID: UUID?
+    private var focusStabilizationWorkItem: DispatchWorkItem?
+    private var focusActivationTimeoutWorkItem: DispatchWorkItem?
+    private var focusActivationObserver: NSObjectProtocol?
     private let compactWindowWidth: CGFloat = 170
     private let compactWindowHeight: CGFloat = 150
     private var compactWindowSize: NSSize {
         NSSize(width: compactWindowWidth, height: compactWindowHeight)
     }
-    private let prefixMatchedAppNameTargets: Set<String> = [
-        "android studio",
-        "clion",
-        "goland",
-        "intellij idea",
-        "phpstorm",
-        "pycharm",
-        "rider",
-        "rubymine",
-        "sublime text",
-        "visual studio code",
-        "webstorm",
-    ]
     private let aiDesktopApps: Set<String> = [
         "claude",
         "claude code",
@@ -58,6 +53,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         isTerminating = true
         monitorRestartWorkItem?.cancel()
         monitorRestartWorkItem = nil
+        projectWindowInventoryTimer?.invalidate()
+        projectWindowInventoryTimer = nil
+        cancelCurrentFocusOperation()
         stopWindowDrag()
         stdoutPipe?.fileHandleForReading.readabilityHandler = nil
         stderrPipe?.fileHandleForReading.readabilityHandler = nil
@@ -154,6 +152,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         writeLog("WebView finished loading")
         resizeWindow(width: 170, height: 150)
         showMonitor()
+        startProjectWindowInventoryPublishing()
         let script = """
         (() => {
           const pet = document.querySelector('#pet');
@@ -212,13 +211,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     private func handleFocusMessage(_ payload: [String: Any]) {
         writeLog("Native focus requested")
         let sessionID = payload["session_id"] as? String ?? ""
-        let result = focusTargetWindow(
+        let operationID = beginFocusOperation()
+        focusTargetWindow(
             windowID: payload["window_id"] as? String ?? "",
             title: payload["title"] as? String ?? "",
             processID: intValue(payload["process_id"]),
             appName: payload["app_name"] as? String ?? "",
-            cwd: payload["cwd"] as? String ?? ""
-        )
+            cwd: payload["cwd"] as? String ?? "",
+            operationID: operationID
+        ) { [weak self] result in
+            self?.completeFocusOperation(
+                operationID,
+                result: result,
+                sessionID: sessionID
+            )
+        }
+    }
+
+    private func beginFocusOperation() -> UUID {
+        cancelCurrentFocusOperation()
+        let operationID = UUID()
+        focusOperationID = operationID
+        return operationID
+    }
+
+    private func completeFocusOperation(
+        _ operationID: UUID,
+        result: FocusResult,
+        sessionID: String
+    ) {
+        guard focusOperationID == operationID else { return }
+        focusOperationID = nil
+        focusStabilizationWorkItem?.cancel()
+        focusStabilizationWorkItem = nil
+        clearSpecificWindowActivationWait()
         writeLog("Native focus result: ok=\(result.ok) method=\(result.detail)")
         if result.detail == "accessibility-permission-required" {
             openAccessibilitySettings()
@@ -229,17 +255,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         sendHostFocusResult(ok: result.ok, detail: result.detail, sessionID: sessionID)
     }
 
-    private func focusTargetWindow(windowID: String, title: String, processID: Int32?, appName: String, cwd: String) -> (ok: Bool, detail: String) {
+    private func cancelCurrentFocusOperation() {
+        focusOperationID = nil
+        focusStabilizationWorkItem?.cancel()
+        focusStabilizationWorkItem = nil
+        clearSpecificWindowActivationWait()
+    }
+
+    private func focusTargetWindow(
+        windowID: String,
+        title: String,
+        processID: Int32?,
+        appName: String,
+        cwd: String,
+        operationID: UUID,
+        completion: @escaping (FocusResult) -> Void
+    ) {
         let apps = runningApplications(processID: processID, appName: appName)
         guard !apps.isEmpty else {
-            return (false, "application-not-found")
+            completion((false, "application-not-found"))
+            return
         }
         let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
         if !AXIsProcessTrustedWithOptions(options) {
-            if isDesktopAIApp(appName), let app = apps.first {
-                return activateRunningApplication(app)
+            if canActivateWholeApp(appName: appName, cwd: cwd), let app = apps.first {
+                completion(activateRunningApplication(app))
+                return
             }
-            return (false, "accessibility-permission-required")
+            completion((false, "accessibility-permission-required"))
+            return
         }
         let cleanWindowID = windowID.trimmingCharacters(in: .whitespacesAndNewlines)
         var sawWindowListFailure = false
@@ -252,29 +296,52 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
             if let window = windows.first(where: { window in
                 !cleanWindowID.isEmpty && accessibilityWindowNumber(for: window) == cleanWindowID
             }) {
-                return raise(window: window, app: app, appElement: appElement, detail: "focused-window-id")
+                focusSpecificWindow(
+                    window: window,
+                    app: app,
+                    appElement: appElement,
+                    detail: "focused-window-id",
+                    operationID: operationID,
+                    completion: completion
+                )
+                return
             }
             let folderName = URL(fileURLWithPath: cwd).lastPathComponent
-            if let window = windows.first(where: { window in
-                let windowTitle = accessibilityTitle(for: window)
-                return !folderName.isEmpty && (windowTitle == folderName || windowTitle.contains(folderName))
-            }) {
-                return raise(window: window, app: app, appElement: appElement, detail: "focused-project-window")
+            if let window = bestProjectWindow(in: windows, folderName: folderName) {
+                focusSpecificWindow(
+                    window: window,
+                    app: app,
+                    appElement: appElement,
+                    detail: "focused-project-window",
+                    operationID: operationID,
+                    completion: completion
+                )
+                return
             }
             if let window = windows.first(where: { window in
                 let windowTitle = accessibilityTitle(for: window)
                 return !title.isEmpty && windowTitle.contains(title)
             }) {
-                return raise(window: window, app: app, appElement: appElement, detail: "focused-title-window")
+                focusSpecificWindow(
+                    window: window,
+                    app: app,
+                    appElement: appElement,
+                    detail: "focused-title-window",
+                    operationID: operationID,
+                    completion: completion
+                )
+                return
             }
         }
-        if isDesktopAIApp(appName), let app = apps.first {
-            return activateRunningApplication(app)
+        if canActivateWholeApp(appName: appName, cwd: cwd), let app = apps.first {
+            completion(activateRunningApplication(app))
+            return
         }
         if sawWindowListFailure {
-            return (false, "window-list-unavailable")
+            completion((false, "window-list-unavailable"))
+            return
         }
-        return (false, "not-found")
+        completion((false, "not-found"))
     }
 
     private func runningApplications(processID: Int32?, appName: String) -> [NSRunningApplication] {
@@ -316,6 +383,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         return value as? [AXUIElement]
     }
 
+    private func bestProjectWindow(
+        in windows: [AXUIElement],
+        folderName: String
+    ) -> AXUIElement? {
+        guard !folderName.isEmpty else { return nil }
+        var bestWindow: AXUIElement?
+        var bestScore = 0
+        for window in windows {
+            let score = FloatingMonitorFocusPolicy.projectWindowTitleMatchScore(
+                folderName: folderName,
+                windowTitle: accessibilityTitle(for: window)
+            )
+            if score > bestScore {
+                bestWindow = window
+                bestScore = score
+            }
+        }
+        return bestWindow
+    }
+
     private func accessibilityTitle(for window: AXUIElement) -> String {
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(window, kAXTitleAttribute as CFString, &value) == .success else {
@@ -335,19 +422,383 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         return value as? String ?? ""
     }
 
-    private func raise(window: AXUIElement, app: NSRunningApplication, appElement: AXUIElement, detail: String) -> (ok: Bool, detail: String) {
-        let result = AXUIElementPerformAction(window, kAXRaiseAction as CFString)
-        guard result == .success else {
-            return (false, "raise-failed")
+    private func focusSpecificWindow(
+        window: AXUIElement,
+        app: NSRunningApplication,
+        appElement: AXUIElement,
+        detail: String,
+        operationID: UUID,
+        completion: @escaping (FocusResult) -> Void
+    ) {
+        guard focusOperationID == operationID else { return }
+        guard applySpecificWindowSelection(window: window, appElement: appElement) else {
+            completion((false, "raise-failed"))
+            return
         }
-        AXUIElementSetAttributeValue(appElement, kAXFocusedWindowAttribute as CFString, window)
-        AXUIElementSetAttributeValue(window, kAXMainAttribute as CFString, kCFBooleanTrue)
-        let activateResult = activateRunningApplication(app)
-        guard activateResult.ok else {
-            return activateResult
+        stabilizeSpecificWindowSelection(
+            window: window,
+            appElement: appElement,
+            operationID: operationID,
+            phase: "before-activation"
+        ) { [weak self] isStable in
+            guard let self = self else { return }
+            guard self.focusOperationID == operationID else { return }
+            guard isStable else {
+                completion((false, "focused-window-selection-timeout"))
+                return
+            }
+            if self.isApplicationActuallyActive(app) {
+                self.completeSpecificWindowActivation(
+                    window: window,
+                    app: app,
+                    appElement: appElement,
+                    detail: detail,
+                    operationID: operationID,
+                    completion: completion
+                )
+                return
+            }
+            self.requestSpecificWindowActivation(
+                window: window,
+                app: app,
+                appElement: appElement,
+                detail: detail,
+                operationID: operationID,
+                completion: completion
+            )
         }
-        AXUIElementPerformAction(window, kAXRaiseAction as CFString)
-        return (true, detail)
+    }
+
+    private func applySpecificWindowSelection(
+        window: AXUIElement,
+        appElement: AXUIElement
+    ) -> Bool {
+        let focusedResult = AXUIElementSetAttributeValue(
+            appElement,
+            kAXFocusedWindowAttribute as CFString,
+            window
+        )
+        let mainResult = AXUIElementSetAttributeValue(
+            window,
+            kAXMainAttribute as CFString,
+            kCFBooleanTrue
+        )
+        let windowFocusedResult = AXUIElementSetAttributeValue(
+            window,
+            kAXFocusedAttribute as CFString,
+            kCFBooleanTrue
+        )
+        let raiseResult = AXUIElementPerformAction(window, kAXRaiseAction as CFString)
+        if focusedResult != .success
+            || mainResult != .success
+            || windowFocusedResult != .success
+            || raiseResult != .success
+        {
+            writeLog(
+                "Specific window selection request: "
+                    + "focused=\(focusedResult.rawValue) "
+                    + "main=\(mainResult.rawValue) "
+                    + "windowFocused=\(windowFocusedResult.rawValue) "
+                    + "raise=\(raiseResult.rawValue)"
+            )
+        }
+        return raiseResult == .success
+    }
+
+    private func stabilizeSpecificWindowSelection(
+        window: AXUIElement,
+        appElement: AXUIElement,
+        operationID: UUID,
+        phase: String,
+        stableReadCount: Int = 0,
+        attempt: Int = 0,
+        completion: @escaping (Bool) -> Void
+    ) {
+        guard focusOperationID == operationID else { return }
+        let targetSelected = specificWindowIsSelected(
+            window: window,
+            appElement: appElement
+        )
+        let decision = FloatingMonitorFocusPolicy.decision(
+            targetSelected: targetSelected,
+            stableReadCount: stableReadCount,
+            attempt: attempt
+        )
+        switch decision {
+        case .complete:
+            focusStabilizationWorkItem = nil
+            writeLog(
+                "Specific window selection stable: "
+                    + "phase=\(phase) attempts=\(attempt + 1)"
+            )
+            completion(true)
+        case .fail:
+            focusStabilizationWorkItem = nil
+            writeLog(
+                "Specific window selection timed out: "
+                    + "phase=\(phase) attempts=\(attempt + 1)"
+            )
+            completion(false)
+        case .retry(let nextStableReadCount):
+            if !targetSelected {
+                _ = applySpecificWindowSelection(
+                    window: window,
+                    appElement: appElement
+                )
+            }
+            let workItem = DispatchWorkItem { [weak self] in
+                guard let self = self else { return }
+                guard self.focusOperationID == operationID else { return }
+                self.stabilizeSpecificWindowSelection(
+                    window: window,
+                    appElement: appElement,
+                    operationID: operationID,
+                    phase: phase,
+                    stableReadCount: nextStableReadCount,
+                    attempt: attempt + 1,
+                    completion: completion
+                )
+            }
+            focusStabilizationWorkItem = workItem
+            DispatchQueue.main.asyncAfter(
+                deadline: .now() + FloatingMonitorFocusPolicy.stabilizationInterval,
+                execute: workItem
+            )
+        }
+    }
+
+    private func specificWindowIsSelected(
+        window: AXUIElement,
+        appElement: AXUIElement
+    ) -> Bool {
+        guard let focusedWindow = accessibilityElementAttribute(
+            appElement,
+            attribute: kAXFocusedWindowAttribute as CFString
+        ), let mainWindow = accessibilityElementAttribute(
+            appElement,
+            attribute: kAXMainWindowAttribute as CFString
+        ) else {
+            return false
+        }
+        return CFEqual(focusedWindow, window) && CFEqual(mainWindow, window)
+    }
+
+    private func accessibilityElementAttribute(
+        _ element: AXUIElement,
+        attribute: CFString
+    ) -> AXUIElement? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute, &value) == .success,
+              let rawValue = value,
+              CFGetTypeID(rawValue) == AXUIElementGetTypeID() else {
+            return nil
+        }
+        return (rawValue as! AXUIElement)
+    }
+
+    private func requestSpecificWindowActivation(
+        window: AXUIElement,
+        app: NSRunningApplication,
+        appElement: AXUIElement,
+        detail: String,
+        operationID: UUID,
+        completion: @escaping (FocusResult) -> Void
+    ) {
+        guard focusOperationID == operationID else { return }
+        let workspaceCenter = NSWorkspace.shared.notificationCenter
+        focusActivationObserver = workspaceCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let activatedApp = notification.userInfo?[
+                NSWorkspace.applicationUserInfoKey
+            ] as? NSRunningApplication else {
+                return
+            }
+            guard activatedApp.processIdentifier == app.processIdentifier else {
+                return
+            }
+            DispatchQueue.main.async {
+                self?.handleSpecificWindowActivationObserved(
+                    window: window,
+                    app: app,
+                    appElement: appElement,
+                    detail: detail,
+                    operationID: operationID,
+                    completion: completion
+                )
+            }
+        }
+        scheduleSpecificWindowActivationTimeout(
+            window: window,
+            app: app,
+            appElement: appElement,
+            detail: detail,
+            operationID: operationID,
+            completion: completion
+        )
+
+        if isApplicationActuallyActive(app) {
+            handleSpecificWindowActivationObserved(
+                window: window,
+                app: app,
+                appElement: appElement,
+                detail: detail,
+                operationID: operationID,
+                completion: completion
+            )
+            return
+        }
+
+        if #available(macOS 14.0, *) {
+            guard let source = NSWorkspace.shared.frontmostApplication else {
+                writeLog("Focused window activation: method=coordinated accepted=false reason=source-unavailable")
+                clearSpecificWindowActivationWait()
+                completion((false, "activation-source-unavailable"))
+                return
+            }
+            if source.processIdentifier == app.processIdentifier {
+                writeLog("Focused window activation: method=already-frontmost accepted=true")
+                handleSpecificWindowActivationObserved(
+                    window: window,
+                    app: app,
+                    appElement: appElement,
+                    detail: detail,
+                    operationID: operationID,
+                    completion: completion
+                )
+                return
+            }
+            if source.processIdentifier == ProcessInfo.processInfo.processIdentifier && NSApp.isActive {
+                NSApp.yieldActivation(to: app)
+            }
+            let accepted = app.activate(from: source, options: [])
+            writeLog("Focused window activation: method=coordinated accepted=\(accepted)")
+            if !accepted {
+                clearSpecificWindowActivationWait()
+                completion((false, "coordinated-window-activate-failed"))
+            }
+            return
+        }
+        writeLog("Focused window activation: method=legacy")
+        let accepted = requestLegacySpecificWindowActivation(app)
+        if !accepted {
+            clearSpecificWindowActivationWait()
+            completion((false, "activate-failed"))
+        }
+    }
+
+    private func requestLegacySpecificWindowActivation(
+        _ app: NSRunningApplication
+    ) -> Bool {
+        app.activate(options: [])
+    }
+
+    private func scheduleSpecificWindowActivationTimeout(
+        window: AXUIElement,
+        app: NSRunningApplication,
+        appElement: AXUIElement,
+        detail: String,
+        operationID: UUID,
+        completion: @escaping (FocusResult) -> Void
+    ) {
+        let timeoutWorkItem = DispatchWorkItem { [weak self] in
+            guard let self = self else { return }
+            guard self.focusOperationID == operationID else { return }
+            if self.isApplicationActuallyActive(app) {
+                self.handleSpecificWindowActivationObserved(
+                    window: window,
+                    app: app,
+                    appElement: appElement,
+                    detail: detail,
+                    operationID: operationID,
+                    completion: completion
+                )
+                return
+            }
+            self.clearSpecificWindowActivationWait()
+            completion((false, "focused-window-activation-timeout"))
+        }
+        focusActivationTimeoutWorkItem = timeoutWorkItem
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + FloatingMonitorFocusPolicy.activationTimeout,
+            execute: timeoutWorkItem
+        )
+    }
+
+    private func handleSpecificWindowActivationObserved(
+        window: AXUIElement,
+        app: NSRunningApplication,
+        appElement: AXUIElement,
+        detail: String,
+        operationID: UUID,
+        completion: @escaping (FocusResult) -> Void
+    ) {
+        guard focusOperationID == operationID else { return }
+        guard isApplicationActuallyActive(app) else { return }
+        clearSpecificWindowActivationWait()
+        writeLog("Focused window activation observed: targetActive=true")
+        completeSpecificWindowActivation(
+            window: window,
+            app: app,
+            appElement: appElement,
+            detail: detail,
+            operationID: operationID,
+            completion: completion
+        )
+    }
+
+    private func clearSpecificWindowActivationWait() {
+        focusActivationTimeoutWorkItem?.cancel()
+        focusActivationTimeoutWorkItem = nil
+        if let observer = focusActivationObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(observer)
+            focusActivationObserver = nil
+        }
+    }
+
+    private func completeSpecificWindowActivation(
+        window: AXUIElement,
+        app: NSRunningApplication,
+        appElement: AXUIElement,
+        detail: String,
+        operationID: UUID,
+        completion: @escaping (FocusResult) -> Void
+    ) {
+        guard focusOperationID == operationID else { return }
+        guard isApplicationActuallyActive(app) else {
+            completion((false, "focused-window-activation-timeout"))
+            return
+        }
+        guard applySpecificWindowSelection(window: window, appElement: appElement) else {
+            completion((false, "raise-failed"))
+            return
+        }
+        stabilizeSpecificWindowSelection(
+            window: window,
+            appElement: appElement,
+            operationID: operationID,
+            phase: "after-activation"
+        ) { [weak self] isStable in
+            guard let self = self else { return }
+            guard self.focusOperationID == operationID else { return }
+            guard isStable else {
+                completion((false, "focused-window-selection-timeout"))
+                return
+            }
+            guard self.isApplicationActuallyActive(app) else {
+                completion((false, "focused-window-activation-timeout"))
+                return
+            }
+            completion((true, detail))
+        }
+    }
+
+    private func isApplicationActuallyActive(_ app: NSRunningApplication) -> Bool {
+        guard app.isActive else { return false }
+        return NSWorkspace.shared.frontmostApplication?.processIdentifier
+            == app.processIdentifier
     }
 
     private func activateRunningApplication(_ app: NSRunningApplication) -> (ok: Bool, detail: String) {
@@ -393,13 +844,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     }
 
     private func appNameMatches(candidate: String, target: String) -> Bool {
-        if candidate == target {
-            return true
-        }
-        if target == "visual studio code" && (candidate == "code" || candidate.hasPrefix("code - insiders")) {
-            return true
-        }
-        return prefixMatchedAppNameTargets.contains(target) && candidate.hasPrefix(target)
+        FloatingMonitorFocusPolicy.projectEditorApplicationNameMatches(
+            candidate: candidate,
+            target: target
+        )
     }
 
     private func appNameAliases(for target: String) -> Set<String> {
@@ -412,6 +860,115 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     private func isDesktopAIApp(_ appName: String) -> Bool {
         let normalized = normalizedAppName(appName)
         return !aiDesktopApps.isDisjoint(with: appNameAliases(for: normalized))
+    }
+
+    private func canActivateWholeApp(appName: String, cwd: String) -> Bool {
+        guard isDesktopAIApp(appName) else { return false }
+        return cwd.isEmpty
+            || !FloatingMonitorFocusPolicy.isProjectEditorApplicationName(appName)
+    }
+
+    private func startProjectWindowInventoryPublishing() {
+        projectWindowInventoryTimer?.invalidate()
+        publishProjectWindowInventory()
+        let timer = Timer(timeInterval: 2.0, repeats: true) { [weak self] _ in
+            self?.publishProjectWindowInventory()
+        }
+        projectWindowInventoryTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    private func publishProjectWindowInventory() {
+        guard AXIsProcessTrusted() else {
+            logProjectWindowInventorySummary("trusted=false")
+            sendProjectWindowInventory(["available": false, "applications": []])
+            return
+        }
+        var applications: [[String: Any]] = []
+        var windowCount = 0
+        var unavailableApplicationCount = 0
+        for app in NSWorkspace.shared.runningApplications where isProjectEditorApplication(app) {
+            let appElement = AXUIElementCreateApplication(app.processIdentifier)
+            var rawWindows: CFTypeRef?
+            let result = AXUIElementCopyAttributeValue(
+                appElement,
+                kAXWindowsAttribute as CFString,
+                &rawWindows
+            )
+            let windows: [AXUIElement]
+            if result == .success {
+                windows = rawWindows as? [AXUIElement] ?? []
+            } else if result == .noValue {
+                windows = []
+            } else {
+                unavailableApplicationCount += 1
+                applications.append(
+                    [
+                        "process_id": Int(app.processIdentifier),
+                        "available": false,
+                        "windows": [],
+                    ]
+                )
+                continue
+            }
+            windowCount += windows.count
+            let windowPayloads: [[String: Any]] = windows.map { window in
+                [
+                    "window_id": accessibilityWindowNumber(for: window),
+                    "title": accessibilityTitle(for: window),
+                ]
+            }
+            applications.append(
+                [
+                    "process_id": Int(app.processIdentifier),
+                    "available": true,
+                    "windows": windowPayloads,
+                ]
+            )
+        }
+        logProjectWindowInventorySummary(
+            "trusted=true apps=\(applications.count) windows=\(windowCount) unavailable=\(unavailableApplicationCount)"
+        )
+        sendProjectWindowInventory(["available": true, "applications": applications])
+    }
+
+    private func logProjectWindowInventorySummary(_ summary: String) {
+        guard summary != lastProjectWindowInventorySummary else { return }
+        lastProjectWindowInventorySummary = summary
+        writeLog("Project window inventory: \(summary)")
+    }
+
+    private func isProjectEditorApplication(_ app: NSRunningApplication) -> Bool {
+        let candidateNames = [
+            app.localizedName,
+            app.bundleURL?.deletingPathExtension().lastPathComponent,
+        ].compactMap { $0 }
+        return candidateNames.contains { candidateName in
+            FloatingMonitorFocusPolicy.isProjectEditorApplicationName(candidateName)
+        }
+    }
+
+    private func sendProjectWindowInventory(_ payload: [String: Any]) {
+        guard let data = try? JSONSerialization.data(withJSONObject: payload),
+              let json = String(data: data, encoding: .utf8) else {
+            return
+        }
+        let script = """
+        (() => {
+          const token = window.MONITOR_TOKEN;
+          if (!token) return;
+          fetch(`/api/native/project-windows?token=${encodeURIComponent(token)}`, {
+            method: 'POST',
+            headers: {'content-type': 'application/json'},
+            body: JSON.stringify(\(json))
+          }).catch(() => {});
+        })()
+        """
+        webView.evaluateJavaScript(script) { [weak self] _result, error in
+            if let error = error {
+                self?.writeLog("Project window inventory publish failed: \(error)")
+            }
+        }
     }
 
     private func resizeWindow(width: CGFloat, height: CGFloat) {

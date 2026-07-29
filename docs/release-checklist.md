@@ -2,7 +2,7 @@
 
 结论：每次交付前必须先证明核心逻辑、事件接入、原生悬浮入口、进程探测边界、Pet 左键/右键边界和隐私减负主路径都可用。
 
-Pet 外观主题切换的执行 PRD 是 `docs/prd/2026-07-11-pet-appearance-theme-switching-prd.md`；新增 AI 工具监控的执行 PRD 是 `docs/prd/2026-07-14-ai-tool-monitoring-expansion-prd.md`；ChatGPT 迁移与多工具回归记录是 `docs/qa/2026-07-17-chatgpt-and-multi-tool-regression-test-cases.md`；v0.2.1 双包验包记录是 `docs/qa/2026-07-17-v0.2.1-release-packaging-validation.md`。发布前需确认 PRD、README、QA 报告和本清单中的菜单、资源、偏好、API、App 验收描述一致。
+Pet 外观主题切换的执行 PRD 是 `docs/prd/2026-07-11-pet-appearance-theme-switching-prd.md`；系统通知开关的执行 PRD 是 `docs/prd/2026-07-14-notification-preference-toggle-prd.md`；新增 AI 工具监控的执行 PRD 是 `docs/prd/2026-07-14-ai-tool-monitoring-expansion-prd.md`；ChatGPT 迁移与多工具回归记录是 `docs/qa/2026-07-17-chatgpt-and-multi-tool-regression-test-cases.md`；v0.2.1 双包验包记录是 `docs/qa/2026-07-17-v0.2.1-release-packaging-validation.md`。发布前需确认 PRD、README、QA 报告和本清单中的菜单、资源、偏好、API、App 验收描述一致。
 
 ## 当前已发布基线
 
@@ -45,7 +45,8 @@ python3 scripts/validate_release.py
 | 发布包资源收口 | 检查 `dist/ai-progress-monitor.pyz` 内容 | 不包含 `assets/sloth-candidates/` 或 `.DS_Store` |
 | 终端桥接 | `python3 scripts/monitor_command.py --help` | 正常显示参数 |
 | 一键启动 | `python3 dist/ai-progress-monitor.pyz --help` | 参数包含 `--open` |
-| 通知开关 | `python3 dist/ai-progress-monitor.pyz --help` | 参数包含 `--no-notifications` |
+| 命令行通知关闭 | `python3 dist/ai-progress-monitor.pyz --help` | 参数包含 `--no-notifications` |
+| Pet 系统通知开关 | `PYTHONPATH=src python3 -m unittest tests.test_preferences tests.test_notifier tests.test_service tests.test_web_launch tests.test_web_ui tests.test_web_ui_behavior` | “系统通知 >”展开“开启 / 关闭”，当前项互斥勾选；默认开启、持久化、同值不重复写入、即时生效、失败回滚、快速连点、旧通知不补发和命令行锁定态均通过 |
 | 会话清理 | `python3 dist/ai-progress-monitor.pyz --help` | 参数包含 `--cleanup-after-seconds` |
 | 响应目录 | `python3 dist/ai-progress-monitor.pyz --help` | 参数包含 `--response-dir` |
 | 环境诊断 | `python3 scripts/doctor.py` | 输出 Python、平台、目录、通知、窗口适配检查 |
@@ -62,7 +63,7 @@ python3 scripts/validate_release.py
 | macOS 用户入口 | 解压 macOS arm64 ZIP 后双击唯一的 `AI Progress Monitor.app`；原生 Pet 小窗置顶；关闭只隐藏；菜单栏头像图标可恢复/退出；无需在两个 App 之间选择 |
 | Windows 轻量预览入口 | 解压 portable ZIP 后双击 `scripts\start_floating_monitor.bat`；小窗置顶；关闭只隐藏；托盘可恢复/退出；作为预览路径记录，稳定交付需单独验收 |
 | API 令牌 | 页面能读取启动令牌并请求会话 API |
-| 系统通知 | needs_action 触发通知，重复刷新不反复弹 |
+| 系统通知 | 右键 Pet → 系统通知，展开“开启 / 关闭”；默认显示“✓ 开启”；关闭后显示“✓ 关闭”，不弹窗但 Pet 状态继续更新；重新开启不补发旧状态，新状态恢复提醒 |
 | 需要处理状态 | 页面右下角宠物显示“待处理” |
 | 三态换图 | 空闲、进行中、待处理分别显示对应 Pet 图片；右上角数字角标仍显示总气泡数 |
 | 外观子菜单 | 右键 Pet → 外观，展开“背带裤树懒 / 衬衫树懒”；当前项显示对勾；切换衬衫树懒后三态共用衬衫图，切回背带裤树懒后三态恢复 |
@@ -76,9 +77,9 @@ python3 scripts/validate_release.py
 | WorkBuddy | 打开 WorkBuddy，分别验证空闲、运行中、完成、等待用户操作、项目/文件夹下对话；空闲入口显示 `WorkBuddy Desktop · 空闲`，具体会话显示软件名和项目/文件夹上下文，完成待查看可点击后转空闲，用户注意状态点击后仍待处理 |
 | process-only 去重 | 同一个进程已被桥接脚本监控时，只显示完整监控项，不再显示重复的 process-only 项 |
 | 复杂交互 | 不展示直接回复按钮，引导回原窗口 |
-| 窗口定位 | 点击气泡后尝试激活对应窗口；直接 CLI 优先聚焦父 GUI 应用 |
+| 窗口定位 | 点击气泡后尝试激活对应窗口；直接 CLI 优先聚焦父 GUI 应用。精确命中 macOS 窗口后，必须先连续确认目标为 AX focused/main，再监听真实 App 激活，激活完成后重新抬升并复核同一目标；快速连续点击时旧任务必须失效。macOS 14+ 使用来源感知的协调激活，不能回退到无来源 App 激活；macOS 13 兼容请求也必须等待并验证激活结果。多屏 Zed 至少用两个项目窗口做正反向真实鼠标验收，分别确认只出现目标窗口且可直接输入 |
 | 左键 Pet | 只展开/收起气泡列表，不隐藏 Pet |
-| 右键 Pet | 只出现外观、隐藏 Pet、退出程序；隐藏后程序继续运行 |
+| 右键 Pet | 只出现外观、系统通知、隐藏 Pet、退出程序；“系统通知 >”二级菜单显示互斥的“开启 / 关闭”，锁定时显示“✓ 关闭”且两项均置灰；隐藏后程序继续运行 |
 | 低侵入体验 | 默认只显示 Pet、角标和气泡列表，不出现工具面板 |
 
 ## 当前发布说明
@@ -93,4 +94,4 @@ python3 scripts/validate_release.py
 | 隐私策略 | 本地运行，不上传会话内容 |
 | 当前发布包 | macOS 13+ Apple Silicon 用户包只含一个正式 App、README 和 LICENSE；portable 包承载 Python 3.9+ Web Companion、CLI 集成、诊断和 Windows 轻量预览脚本 |
 | 诊断工具 | `scripts/doctor.py` 可用于定位权限、目录和平台适配问题 |
-| Pet 外观配置 | `~/.ai-progress-monitor/preferences.json` 支持 `pet_appearance` 选择背带裤/衬衫树懒，并支持 `pet_assets.idle`、`pet_assets.running`、`pet_assets.needs_action`、`pet_assets.app_avatar` 本地路径；无效值或无效路径自动回退内置资源 |
+| Pet 偏好配置 | `~/.ai-progress-monitor/preferences.json` 支持 `pet_appearance`、布尔值 `notifications_enabled` 和 `pet_assets.*` 本地路径；通知值缺失或非法时默认开启，资源无效时回退内置资源 |
