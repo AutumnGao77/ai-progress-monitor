@@ -90,6 +90,95 @@ class MacOSFocusPolicyTests(unittest.TestCase):
 
         self.assertEqual(output, "ok")
 
+    def test_project_window_title_scoring_prefers_real_segment_over_prefix(self):
+        output = run_policy_case(
+            """
+            let exactSegment = FloatingMonitorFocusPolicy.projectWindowTitleMatchScore(
+                folderName: "SellerBooks",
+                windowTitle: "SellerBooks — app.py"
+            )
+            let prefixOnly = FloatingMonitorFocusPolicy.projectWindowTitleMatchScore(
+                folderName: "SellerBooks",
+                windowTitle: "SellerBooks-old — README.md"
+            )
+            let middleSegment = FloatingMonitorFocusPolicy.projectWindowTitleMatchScore(
+                folderName: "日报推送",
+                windowTitle: "SKILL.md — 日报推送 — Zed"
+            )
+            check(exactSegment > prefixOnly, "real project segment must outrank a prefix-only title")
+            check(prefixOnly == 0, "a different hyphenated project must not count as the target")
+            check(middleSegment == exactSegment, "project segment should match anywhere in an IDE title")
+            check(
+                FloatingMonitorFocusPolicy.projectWindowTitleMatchScore(
+                    folderName: "SellerBooks",
+                    windowTitle: "[SellerBooks] app.py"
+                ) > 0,
+                "title boundaries should still match the real project"
+            )
+            print("ok")
+            """
+        )
+
+        self.assertEqual(output, "ok")
+
+    def test_all_supported_ide_families_use_the_same_native_project_policy(self):
+        output = run_policy_case(
+            """
+            let projectEditors = [
+                "Android Studio",
+                "CLion",
+                "Code",
+                "Cursor",
+                "Eclipse",
+                "Fleet",
+                "GoLand 2026.1",
+                "IntelliJ IDEA Ultimate",
+                "Kiro",
+                "Nova",
+                "PhpStorm",
+                "PyCharm CE",
+                "Rider",
+                "RubyMine",
+                "Sublime Text",
+                "Trae",
+                "Trae CN",
+                "VSCodium",
+                "Visual Studio Code",
+                "Visual Studio Code - Insiders",
+                "WebStorm",
+                "Windsurf",
+                "Xcode",
+                "Zed",
+            ]
+            for appName in projectEditors {
+                check(
+                    FloatingMonitorFocusPolicy.isProjectEditorApplicationName(appName),
+                    "\\(appName) must use project-window inventory and exact focus"
+                )
+            }
+            for appName in [
+                "Terminal",
+                "iTerm",
+                "Warp",
+                "WezTerm",
+                "kitty",
+                "Alacritty",
+                "Ghostty",
+                "Hyper",
+                "Tabby",
+                "Rio",
+            ] {
+                check(
+                    !FloatingMonitorFocusPolicy.isProjectEditorApplicationName(appName),
+                    "\\(appName) must keep terminal process lifecycle semantics"
+                )
+            }
+            print("ok")
+            """
+        )
+
+        self.assertEqual(output, "ok")
+
 
 def run_policy_case(case_source: str) -> str:
     with tempfile.TemporaryDirectory() as temp_dir:

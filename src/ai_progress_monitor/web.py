@@ -189,6 +189,24 @@ class MonitorRequestHandler(BaseHTTPRequestHandler):
                     "notifications_locked": self.service.notifications_locked(),
                 },
             )
+        elif path == "/api/native/project-windows":
+            if not isinstance(payload, dict) or set(payload) != {"available", "applications"}:
+                self._send_json(400, {"ok": False, "error": "invalid_project_window_inventory"})
+                return
+            available = payload["available"]
+            applications = payload["applications"]
+            if not isinstance(available, bool) or not isinstance(applications, list):
+                self._send_json(400, {"ok": False, "error": "invalid_project_window_inventory"})
+                return
+            if not available:
+                if applications:
+                    self._send_json(400, {"ok": False, "error": "invalid_project_window_inventory"})
+                    return
+                self.service.clear_native_project_window_inventory()
+            elif not self.service.set_native_project_window_inventory(applications):
+                self._send_json(400, {"ok": False, "error": "invalid_project_window_inventory"})
+                return
+            self._send_json(200, {"ok": True})
         else:
             self._send_json(404, {"error": "not_found"})
 

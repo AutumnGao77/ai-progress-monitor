@@ -1,6 +1,7 @@
 import tempfile
 import time
 import unittest
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
@@ -130,6 +131,45 @@ class MonitorServiceTests(unittest.TestCase):
             self.assertTrue(before["view_ack_required"])
             self.assertTrue(result.ok)
             self.assertEqual(after_refresh["status"], "idle")
+
+    def test_qoder_persistent_blocker_stays_needs_action_after_focus_and_refresh(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            updated_at = datetime(2026, 7, 24, 7, 21, 59, tzinfo=timezone.utc)
+            qoder_plan_blocker = SessionUpdate(
+                session_id="qoder-task-plan-blocked",
+                title="Qoder CN Desktop - 测试任务",
+                tool=ToolKind.UNKNOWN,
+                surface=SurfaceKind.DESKTOP,
+                status=SessionStatus.NEEDS_ACTION,
+                summary="Qoder 任务需要用户处理。",
+                updated_at=updated_at,
+                source="process",
+                process_id=51005,
+                focus_process_id=51005,
+                focus_app_name="Qoder CN",
+                cwd="/Users/Gao/Documents/QoderCN/2026-07-24/chat-1",
+                view_ack_required=False,
+                status_source="qoder-log",
+                tool_display_name="Qoder CN",
+            )
+            source = VolatileProcessSource([[qoder_plan_blocker], [qoder_plan_blocker]])
+            store = SessionStore(audit_dir=Path(temp_dir))
+            focus_manager = WindowFocusManager(sender=lambda target: FocusResult(True, "focused-qoder"))
+            service = MonitorService(
+                [source],
+                store,
+                ActionExecutor(),
+                focus_manager=focus_manager,
+            )
+
+            before = service.sessions_payload()[0]
+            result = service.focus_session("qoder-task-plan-blocked")
+            after_refresh = service.sessions_payload()[0]
+
+            self.assertEqual(before["status"], "needs_action")
+            self.assertFalse(before["view_ack_required"])
+            self.assertTrue(result.ok)
+            self.assertEqual(after_refresh["status"], "needs_action")
 
     def test_generic_full_session_is_view_acknowledged_after_focus(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -360,6 +400,444 @@ class MonitorServiceTests(unittest.TestCase):
         self.assertEqual([session["session_id"] for session in failed_twice], ["process-1"])
         self.assertEqual([session["session_id"] for session in empty_started], ["process-1"])
 
+    def test_refresh_removes_ide_terminal_session_without_matching_project_window(self):
+        seller_books = SessionUpdate(
+            "process-101",
+            "Claude Code CLI - SellerBooks",
+            ToolKind.CLAUDE_CODE,
+            SurfaceKind.TERMINAL,
+            SessionStatus.IDLE,
+            "Process detected",
+            SessionUpdate.now(),
+            source="process",
+            process_id=101,
+            focus_process_id=478,
+            focus_app_name="Zed",
+            cwd="/Users/Gao/Documents/SellerBooks",
+        )
+        daily_report = SessionUpdate(
+            "process-102",
+            "Claude Code CLI - 日报推送",
+            ToolKind.CLAUDE_CODE,
+            SurfaceKind.TERMINAL,
+            SessionStatus.IDLE,
+            "Process detected",
+            SessionUpdate.now(),
+            source="process",
+            process_id=102,
+            focus_process_id=478,
+            focus_app_name="Zed",
+            cwd="/Users/Gao/Documents/日报推送",
+        )
+        window_source = FakeProjectWindowSource(
+            {
+                (478, "Zed", "/Users/Gao/Documents/日报推送"): "window-42",
+            }
+        )
+        service = MonitorService(
+            [VolatileProcessSource([[seller_books, daily_report]]), window_source],
+            SessionStore(),
+            ActionExecutor(),
+        )
+
+        payload = service.sessions_payload()
+
+        self.assertEqual([session["session_id"] for session in payload], ["process-102"])
+        self.assertEqual(payload[0]["window_id"], "window-42")
+
+    def test_refresh_reconciles_process_sessions_for_every_supported_ide_family(self):
+        app_names = [
+            "Android Studio",
+            "CLion",
+            "Code",
+            "Cursor",
+            "Eclipse",
+            "Fleet",
+            "GoLand 2026.1",
+            "IntelliJ IDEA Ultimate",
+            "Kiro",
+            "Nova",
+            "PhpStorm",
+            "PyCharm CE",
+            "Rider",
+            "RubyMine",
+            "Sublime Text",
+            "Trae",
+            "Trae CN",
+            "VSCodium",
+            "Visual Studio Code",
+            "Visual Studio Code - Insiders",
+            "WebStorm",
+            "Windsurf",
+            "Xcode",
+            "Zed",
+        ]
+
+        for index, app_name in enumerate(app_names):
+            with self.subTest(app_name=app_name):
+                process_id = 5000 + index
+                cwd = "/Users/Gao/Documents/ProjectAlpha"
+                session = SessionUpdate(
+                    f"process-{index}",
+                    "Claude Code CLI - ProjectAlpha",
+                    ToolKind.CLAUDE_CODE,
+                    SurfaceKind.TERMINAL,
+                    SessionStatus.IDLE,
+                    "Process detected",
+                    SessionUpdate.now(),
+                    source="process",
+                    process_id=1000 + index,
+                    focus_process_id=process_id,
+                    focus_app_name=app_name,
+                    cwd=cwd,
+                )
+                window_source = FakeProjectWindowSource(
+                    {(process_id, app_name, cwd): f"window-{index}"}
+                )
+                service = MonitorService(
+                    [VolatileProcessSource([[session]]), window_source],
+                    SessionStore(),
+                    ActionExecutor(),
+                )
+
+                payload = service.sessions_payload()
+
+                self.assertEqual([item["session_id"] for item in payload], [f"process-{index}"])
+                self.assertEqual(payload[0]["window_id"], f"window-{index}")
+
+    def test_refresh_removes_last_stale_ide_session_without_empty_poll_grace(self):
+        session = SessionUpdate(
+            "process-101",
+            "Claude Code CLI - SellerBooks",
+            ToolKind.CLAUDE_CODE,
+            SurfaceKind.TERMINAL,
+            SessionStatus.IDLE,
+            "Process detected",
+            SessionUpdate.now(),
+            source="process",
+            process_id=101,
+            focus_process_id=478,
+            focus_app_name="Zed",
+            cwd="/Users/Gao/Documents/SellerBooks",
+        )
+        process_source = VolatileProcessSource([[session], [session]])
+        window_source = FakeProjectWindowSource(
+            {
+                (478, "Zed", "/Users/Gao/Documents/SellerBooks"): "window-41",
+            }
+        )
+        service = MonitorService(
+            [process_source, window_source],
+            SessionStore(),
+            ActionExecutor(),
+            process_empty_grace_seconds=60,
+        )
+
+        first = service.sessions_payload()
+        window_source.matches.clear()
+        second = service.sessions_payload()
+
+        self.assertEqual([item["session_id"] for item in first], ["process-101"])
+        self.assertEqual(second, [])
+
+    def test_refresh_preserves_ide_terminal_session_when_window_inventory_fails(self):
+        session = SessionUpdate(
+            "process-101",
+            "Claude Code CLI - SellerBooks",
+            ToolKind.CLAUDE_CODE,
+            SurfaceKind.TERMINAL,
+            SessionStatus.IDLE,
+            "Process detected",
+            SessionUpdate.now(),
+            source="process",
+            process_id=101,
+            focus_process_id=478,
+            focus_app_name="Zed",
+            cwd="/Users/Gao/Documents/SellerBooks",
+        )
+        service = MonitorService(
+            [VolatileProcessSource([[session]]), FakeProjectWindowSource({}, available=False)],
+            SessionStore(),
+            ActionExecutor(),
+        )
+
+        payload = service.sessions_payload()
+
+        self.assertEqual([item["session_id"] for item in payload], ["process-101"])
+
+    def test_refresh_does_not_require_project_window_for_supported_terminal_hosts(self):
+        terminal_names = [
+            "Terminal",
+            "iTerm",
+            "Warp",
+            "WezTerm",
+            "kitty",
+            "Alacritty",
+            "Ghostty",
+            "Hyper",
+            "Tabby",
+            "Rio",
+        ]
+
+        for index, app_name in enumerate(terminal_names):
+            with self.subTest(app_name=app_name):
+                session = SessionUpdate(
+                    f"process-{index}",
+                    "Claude Code CLI - ProjectAlpha",
+                    ToolKind.CLAUDE_CODE,
+                    SurfaceKind.TERMINAL,
+                    SessionStatus.IDLE,
+                    "Process detected",
+                    SessionUpdate.now(),
+                    source="process",
+                    process_id=100 + index,
+                    focus_process_id=900 + index,
+                    focus_app_name=app_name,
+                    cwd="/Users/Gao/Documents/ProjectAlpha",
+                )
+                service = MonitorService(
+                    [VolatileProcessSource([[session]]), FakeProjectWindowSource({})],
+                    SessionStore(),
+                    ActionExecutor(),
+                )
+
+                payload = service.sessions_payload()
+
+                self.assertEqual([item["session_id"] for item in payload], [f"process-{index}"])
+
+    def test_refresh_prefers_native_project_window_inventory_from_macos_companion(self):
+        seller_books = SessionUpdate(
+            "process-101",
+            "Claude Code CLI - SellerBooks",
+            ToolKind.CLAUDE_CODE,
+            SurfaceKind.TERMINAL,
+            SessionStatus.IDLE,
+            "Process detected",
+            SessionUpdate.now(),
+            source="process",
+            process_id=101,
+            focus_process_id=478,
+            focus_app_name="Zed",
+            cwd="/Users/Gao/Documents/SellerBooks",
+        )
+        daily_report = SessionUpdate(
+            "process-102",
+            "Claude Code CLI - 日报推送",
+            ToolKind.CLAUDE_CODE,
+            SurfaceKind.TERMINAL,
+            SessionStatus.IDLE,
+            "Process detected",
+            SessionUpdate.now(),
+            source="process",
+            process_id=102,
+            focus_process_id=478,
+            focus_app_name="Zed",
+            cwd="/Users/Gao/Documents/日报推送",
+        )
+        service = MonitorService(
+            [VolatileProcessSource([[seller_books, daily_report]])],
+            SessionStore(),
+            ActionExecutor(),
+        )
+
+        accepted = service.set_native_project_window_inventory(
+            [
+                {
+                    "process_id": 478,
+                    "available": True,
+                    "windows": [
+                        {"window_id": "42", "title": "日报推送 — SKILL.md"},
+                    ],
+                }
+            ]
+        )
+        payload = service.sessions_payload()
+
+        self.assertTrue(accepted)
+        self.assertEqual([item["session_id"] for item in payload], ["process-102"])
+        self.assertEqual(payload[0]["window_id"], "42")
+
+    def test_native_inventory_prefers_exact_project_segment_over_prefix_window(self):
+        session = SessionUpdate(
+            "process-101",
+            "Claude Code CLI - SellerBooks",
+            ToolKind.CLAUDE_CODE,
+            SurfaceKind.TERMINAL,
+            SessionStatus.IDLE,
+            "Process detected",
+            SessionUpdate.now(),
+            source="process",
+            process_id=101,
+            focus_process_id=478,
+            focus_app_name="Zed",
+            cwd="/Users/Gao/Documents/SellerBooks",
+        )
+        service = MonitorService(
+            [VolatileProcessSource([[session]])],
+            SessionStore(),
+            ActionExecutor(),
+        )
+        self.assertTrue(
+            service.set_native_project_window_inventory(
+                [
+                    {
+                        "process_id": 478,
+                        "available": True,
+                        "windows": [
+                            {"window_id": "wrong", "title": "SellerBooks-old — README.md"},
+                            {"window_id": "correct", "title": "SellerBooks — app.py"},
+                        ],
+                    }
+                ]
+            )
+        )
+
+        payload = service.sessions_payload()
+
+        self.assertEqual([item["session_id"] for item in payload], ["process-101"])
+        self.assertEqual(payload[0]["window_id"], "correct")
+
+    def test_native_inventory_does_not_treat_prefixed_project_as_open_session(self):
+        session = SessionUpdate(
+            "process-101",
+            "Claude Code CLI - SellerBooks",
+            ToolKind.CLAUDE_CODE,
+            SurfaceKind.TERMINAL,
+            SessionStatus.IDLE,
+            "Process detected",
+            SessionUpdate.now(),
+            source="process",
+            process_id=101,
+            focus_process_id=478,
+            focus_app_name="Zed",
+            cwd="/Users/Gao/Documents/SellerBooks",
+        )
+        service = MonitorService(
+            [VolatileProcessSource([[session]])],
+            SessionStore(),
+            ActionExecutor(),
+        )
+        self.assertTrue(
+            service.set_native_project_window_inventory(
+                [
+                    {
+                        "process_id": 478,
+                        "available": True,
+                        "windows": [
+                            {"window_id": "other", "title": "SellerBooks-old — README.md"},
+                        ],
+                    }
+                ]
+            )
+        )
+
+        self.assertEqual(service.sessions_payload(), [])
+
+    def test_refresh_treats_empty_native_inventory_as_no_open_project_windows(self):
+        session = SessionUpdate(
+            "process-101",
+            "Claude Code CLI - 日报推送",
+            ToolKind.CLAUDE_CODE,
+            SurfaceKind.TERMINAL,
+            SessionStatus.IDLE,
+            "Process detected",
+            SessionUpdate.now(),
+            source="process",
+            process_id=101,
+            focus_process_id=478,
+            focus_app_name="Zed",
+            cwd="/Users/Gao/Documents/日报推送",
+        )
+        service = MonitorService(
+            [VolatileProcessSource([[session]])],
+            SessionStore(),
+            ActionExecutor(),
+        )
+
+        self.assertTrue(service.set_native_project_window_inventory([]))
+
+        self.assertEqual(service.sessions_payload(), [])
+
+    def test_refresh_preserves_ide_session_when_native_app_window_list_is_unavailable(self):
+        session = SessionUpdate(
+            "process-101",
+            "Claude Code CLI - 日报推送",
+            ToolKind.CLAUDE_CODE,
+            SurfaceKind.TERMINAL,
+            SessionStatus.IDLE,
+            "Process detected",
+            SessionUpdate.now(),
+            source="process",
+            process_id=101,
+            focus_process_id=478,
+            focus_app_name="Zed",
+            cwd="/Users/Gao/Documents/日报推送",
+        )
+        service = MonitorService(
+            [VolatileProcessSource([[session]])],
+            SessionStore(),
+            ActionExecutor(),
+        )
+
+        self.assertTrue(
+            service.set_native_project_window_inventory(
+                [
+                    {
+                        "process_id": 478,
+                        "available": False,
+                        "windows": [],
+                    }
+                ]
+            )
+        )
+
+        self.assertEqual([item["session_id"] for item in service.sessions_payload()], ["process-101"])
+
+    def test_refresh_ignores_expired_native_project_window_inventory(self):
+        clock = FakeClock()
+        session = SessionUpdate(
+            "process-101",
+            "Claude Code CLI - 日报推送",
+            ToolKind.CLAUDE_CODE,
+            SurfaceKind.TERMINAL,
+            SessionStatus.IDLE,
+            "Process detected",
+            SessionUpdate.now(),
+            source="process",
+            process_id=101,
+            focus_process_id=478,
+            focus_app_name="Zed",
+            cwd="/Users/Gao/Documents/日报推送",
+        )
+        service = MonitorService(
+            [VolatileProcessSource([[session]])],
+            SessionStore(),
+            ActionExecutor(),
+            clock=clock.now,
+            native_window_inventory_ttl_seconds=5,
+        )
+        self.assertTrue(service.set_native_project_window_inventory([]))
+        clock.advance(6)
+
+        payload = service.sessions_payload()
+
+        self.assertEqual([item["session_id"] for item in payload], ["process-101"])
+
+    def test_native_project_window_inventory_rejects_malformed_payload(self):
+        service = MonitorService([], SessionStore(), ActionExecutor())
+
+        for payload in [
+            None,
+            {},
+            [{"process_id": True, "available": True, "windows": []}],
+            [{"process_id": 478, "available": "yes", "windows": []}],
+            [{"process_id": 478, "available": True, "windows": {}}],
+            [{"process_id": 478, "available": True, "windows": [{"window_id": 42, "title": "日报推送"}]}],
+            [{"process_id": 478, "available": True, "windows": [{"window_id": "42"}]}],
+        ]:
+            with self.subTest(payload=payload):
+                self.assertFalse(service.set_native_project_window_inventory(payload))
+
     def test_refresh_polls_independent_sources_concurrently_for_visibility_budget(self):
         sources = [DelayedEmptySource(0.2), DelayedEmptySource(0.2)]
         service = MonitorService(sources, SessionStore(), ActionExecutor())
@@ -454,6 +932,137 @@ class MonitorServiceTests(unittest.TestCase):
 
         self.assertEqual([session["session_id"] for session in payload], ["window-42"])
         self.assertEqual(payload[0]["monitoring_level"], "full")
+
+    def test_workbuddy_runtime_log_session_remains_visible_with_db_session_on_same_process(self):
+        updated_at = datetime(2026, 7, 24, 5, 18, 51, tzinfo=timezone.utc)
+        completed = SessionUpdate(
+            "workbuddy-completed",
+            "WorkBuddy Desktop - Test session",
+            ToolKind.UNKNOWN,
+            SurfaceKind.DESKTOP,
+            SessionStatus.NEEDS_ACTION,
+            "WorkBuddy 任务已完成或需要用户处理。",
+            updated_at,
+            source="process",
+            process_id=46529,
+            focus_process_id=46529,
+            focus_app_name="WorkBuddy",
+            view_ack_required=True,
+            status_source="workbuddy-db",
+            tool_display_name="WorkBuddy",
+        )
+        running = SessionUpdate(
+            "workbuddy-running",
+            "WorkBuddy Desktop - Test again",
+            ToolKind.UNKNOWN,
+            SurfaceKind.DESKTOP,
+            SessionStatus.RUNNING,
+            "WorkBuddy 正在处理任务。",
+            updated_at,
+            source="process",
+            process_id=46529,
+            focus_process_id=46529,
+            focus_app_name="WorkBuddy",
+            status_source="workbuddy-log",
+            tool_display_name="WorkBuddy",
+        )
+        service = MonitorService(
+            [VolatileProcessSource([[completed, running]])],
+            SessionStore(),
+            ActionExecutor(),
+            now=lambda: updated_at,
+        )
+
+        payload = service.sessions_payload()
+
+        self.assertEqual(
+            [(session["session_id"], session["status"]) for session in payload],
+            [
+                ("workbuddy-completed", "needs_action"),
+                ("workbuddy-running", "running"),
+            ],
+        )
+        self.assertEqual({session["monitoring_level"] for session in payload}, {"full"})
+
+    def test_workbuddy_runtime_log_session_survives_one_missing_poll_and_accepts_completion(self):
+        running_at = datetime(2026, 7, 24, 5, 18, 51, tzinfo=timezone.utc)
+        completed_at = datetime(2026, 7, 24, 5, 19, 26, tzinfo=timezone.utc)
+        existing = SessionUpdate(
+            "workbuddy-existing",
+            "WorkBuddy Desktop - Test session",
+            ToolKind.UNKNOWN,
+            SurfaceKind.DESKTOP,
+            SessionStatus.NEEDS_ACTION,
+            "WorkBuddy 任务已完成或需要用户处理。",
+            running_at,
+            source="process",
+            process_id=46529,
+            focus_process_id=46529,
+            focus_app_name="WorkBuddy",
+            view_ack_required=True,
+            status_source="workbuddy-db",
+            tool_display_name="WorkBuddy",
+        )
+        running = SessionUpdate(
+            "workbuddy-running",
+            "WorkBuddy Desktop - Test again",
+            ToolKind.UNKNOWN,
+            SurfaceKind.DESKTOP,
+            SessionStatus.RUNNING,
+            "WorkBuddy 正在处理任务。",
+            running_at,
+            source="process",
+            process_id=46529,
+            focus_process_id=46529,
+            focus_app_name="WorkBuddy",
+            status_source="workbuddy-log",
+            tool_display_name="WorkBuddy",
+        )
+        completed = replace(
+            running,
+            status=SessionStatus.NEEDS_ACTION,
+            summary="WorkBuddy 任务已完成或需要用户处理。",
+            updated_at=completed_at,
+            view_ack_required=True,
+            status_source="workbuddy-db",
+        )
+        source = VolatileProcessSource(
+            [
+                [existing, running],
+                [existing],
+                [existing, completed],
+            ]
+        )
+        clock = FakeDateTimeClock(running_at)
+        service = MonitorService([source], SessionStore(), ActionExecutor(), now=clock.now)
+
+        first = service.sessions_payload()
+        retained = service.sessions_payload()
+        clock.advance(seconds=35)
+        finished = service.sessions_payload()
+
+        self.assertEqual(
+            [(session["session_id"], session["status"]) for session in first],
+            [
+                ("workbuddy-existing", "needs_action"),
+                ("workbuddy-running", "running"),
+            ],
+        )
+        self.assertEqual(
+            [(session["session_id"], session["status"]) for session in retained],
+            [
+                ("workbuddy-existing", "needs_action"),
+                ("workbuddy-running", "running"),
+            ],
+        )
+        self.assertEqual(
+            [(session["session_id"], session["status"]) for session in finished],
+            [
+                ("workbuddy-running", "needs_action"),
+                ("workbuddy-existing", "needs_action"),
+            ],
+        )
+        self.assertEqual({session["monitoring_level"] for session in retained}, {"full"})
 
     def test_visible_sessions_hide_generic_desktop_fallback_when_full_desktop_session_exists(self):
         full_session = SessionUpdate(
@@ -731,6 +1340,128 @@ class MonitorServiceTests(unittest.TestCase):
             self.assertEqual([session["session_id"] for session in payload], ["process-codex"])
             self.assertEqual(payload[0]["status"], "idle")
             self.assertEqual(payload[0]["monitoring_level"], "process_only")
+
+    def test_viewed_chatgpt_conversation_survives_source_dropout_while_app_is_running(self):
+        clock = FakeDateTimeClock(datetime(2026, 7, 2, 9, 0, tzinfo=timezone.utc))
+        chatgpt_session = SessionUpdate(
+            "chatgpt-session-alpha",
+            "ChatGPT Desktop - Test again",
+            ToolKind.CHATGPT,
+            SurfaceKind.DESKTOP,
+            SessionStatus.NEEDS_ACTION,
+            "ChatGPT reply",
+            datetime(2026, 7, 2, 9, 0, tzinfo=timezone.utc),
+            source="chatgpt-session",
+            focus_app_name="ChatGPT",
+            view_ack_required=True,
+            tool_display_name="ChatGPT",
+        )
+        app_fallback = SessionUpdate(
+            "process-40001",
+            "ChatGPT Desktop",
+            ToolKind.CHATGPT,
+            SurfaceKind.DESKTOP,
+            SessionStatus.IDLE,
+            "ChatGPT app is running",
+            datetime(2026, 7, 2, 9, 0, tzinfo=timezone.utc),
+            source="process",
+            process_id=40001,
+            focus_process_id=40001,
+            focus_app_name="ChatGPT",
+            status_source="desktop-process",
+            tool_display_name="ChatGPT",
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = MonitorService(
+                [
+                    VolatileChatGPTSource([[chatgpt_session], [], []]),
+                    VolatileProcessSource([[app_fallback], [app_fallback], [app_fallback]]),
+                ],
+                SessionStore(audit_dir=Path(temp_dir)),
+                ActionExecutor(),
+                focus_manager=WindowFocusManager(sender=lambda target: FocusResult(True, "focused-chatgpt")),
+                now=clock.now,
+            )
+
+            self.assertEqual(
+                [session["session_id"] for session in service.sessions_payload()],
+                ["chatgpt-session-alpha"],
+            )
+            self.assertTrue(service.focus_session("chatgpt-session-alpha").ok)
+
+            clock.advance(seconds=14 * 60 + 59)
+            retained_payload = service.sessions_payload()
+
+            self.assertEqual(
+                [(session["session_id"], session["status"]) for session in retained_payload],
+                [("chatgpt-session-alpha", "idle")],
+            )
+
+            clock.advance(seconds=1)
+            expired_payload = service.sessions_payload()
+
+            self.assertEqual([session["session_id"] for session in expired_payload], ["process-40001"])
+            self.assertEqual(expired_payload[0]["monitoring_level"], "process_only")
+
+    def test_viewed_chatgpt_conversation_does_not_survive_after_app_exits(self):
+        clock = FakeDateTimeClock(datetime(2026, 7, 2, 9, 0, tzinfo=timezone.utc))
+        process_clock = FakeClock()
+        chatgpt_session = SessionUpdate(
+            "chatgpt-session-alpha",
+            "ChatGPT Desktop - Test again",
+            ToolKind.CHATGPT,
+            SurfaceKind.DESKTOP,
+            SessionStatus.NEEDS_ACTION,
+            "ChatGPT reply",
+            datetime(2026, 7, 2, 9, 0, tzinfo=timezone.utc),
+            source="chatgpt-session",
+            focus_app_name="ChatGPT",
+            view_ack_required=True,
+            tool_display_name="ChatGPT",
+        )
+        app_fallback = SessionUpdate(
+            "process-40001",
+            "ChatGPT Desktop",
+            ToolKind.CHATGPT,
+            SurfaceKind.DESKTOP,
+            SessionStatus.IDLE,
+            "ChatGPT app is running",
+            datetime(2026, 7, 2, 9, 0, tzinfo=timezone.utc),
+            source="process",
+            process_id=40001,
+            focus_process_id=40001,
+            focus_app_name="ChatGPT",
+            status_source="desktop-process",
+            tool_display_name="ChatGPT",
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = MonitorService(
+                [
+                    VolatileChatGPTSource([[chatgpt_session], [], []]),
+                    VolatileProcessSource([[app_fallback], [], []]),
+                ],
+                SessionStore(audit_dir=Path(temp_dir)),
+                ActionExecutor(),
+                focus_manager=WindowFocusManager(sender=lambda target: FocusResult(True, "focused-chatgpt")),
+                now=clock.now,
+                clock=process_clock.now,
+                process_empty_grace_seconds=0,
+            )
+
+            self.assertEqual(
+                [session["session_id"] for session in service.sessions_payload()],
+                ["chatgpt-session-alpha"],
+            )
+            self.assertTrue(service.focus_session("chatgpt-session-alpha").ok)
+
+            clock.advance(seconds=60)
+            self.assertEqual(
+                [session["session_id"] for session in service.sessions_payload()],
+                ["chatgpt-session-alpha"],
+            )
+            process_clock.advance(seconds=1)
+
+            self.assertEqual(service.sessions_payload(), [])
 
     def test_viewed_qoder_process_conversation_survives_process_fallback_for_retention_window(self):
         clock = FakeDateTimeClock(datetime(2026, 7, 14, 9, 0, tzinfo=timezone.utc))
@@ -1231,6 +1962,28 @@ class VolatileProcessSource:
         if not self.batches:
             return []
         return self.batches.pop(0)
+
+
+class VolatileChatGPTSource(VolatileProcessSource):
+    volatile_source = "chatgpt-session"
+
+
+class FakeProjectWindowSource:
+    volatile_source = "os-window"
+
+    def __init__(self, matches, available=True):
+        self.matches = dict(matches)
+        self.available = available
+
+    def poll(self):
+        return [] if self.available else None
+
+    def project_window_match(self, process_id, app_name, cwd):
+        if not self.available:
+            return None
+        key = (process_id, app_name, cwd)
+        window_id = self.matches.get(key)
+        return window_id is not None, window_id
 
 
 class DelayedEmptySource:

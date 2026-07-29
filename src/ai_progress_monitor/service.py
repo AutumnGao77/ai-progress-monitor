@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from datetime import datetime, timezone
+from pathlib import Path
 import time
-from typing import Callable, Iterable, List, Optional
+from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 from .actions import ActionExecutor, is_low_risk_action
 from .models import ActionResult, SessionStatus, SessionUpdate, SurfaceKind, ToolKind
@@ -11,10 +13,26 @@ from .notifier import NotificationManager
 from .preferences import MonitorPreferences
 from .store import SessionStore
 from .terminal_bridge import clean_terminal_text
-from .window_focus import FocusResult, WindowFocusManager
+from .window_focus import (
+    FocusResult,
+    WindowFocusManager,
+    is_project_editor_app,
+    project_window_title_match_score,
+)
 
 
 VIEWED_DESKTOP_IDLE_VISIBLE_SECONDS = 15 * 60
+NATIVE_PROJECT_WINDOW_INVENTORY_TTL_SECONDS = 8.0
+FULL_PROCESS_DESKTOP_STATUS_SOURCES = frozenset(
+    {
+        "qoder-log",
+        "workbuddy-db",
+        "workbuddy-log",
+    }
+)
+ProjectWindowMatcher = Callable[[int, str, str], Optional[Tuple[bool, Optional[str]]]]
+NativeProjectWindowRows = Tuple[Tuple[Optional[str], str], ...]
+NativeProjectWindowInventory = Dict[int, Optional[NativeProjectWindowRows]]
 
 
 class MonitorService:
@@ -31,6 +49,7 @@ class MonitorService:
         now: Optional[Callable[[], datetime]] = None,
         viewed_desktop_idle_visible_seconds: float = VIEWED_DESKTOP_IDLE_VISIBLE_SECONDS,
         notifications_forced_off: bool = False,
+        native_window_inventory_ttl_seconds: float = NATIVE_PROJECT_WINDOW_INVENTORY_TTL_SECONDS,
     ):
         self.sources = list(sources)
         self.store = store
@@ -44,17 +63,33 @@ class MonitorService:
         self.now = now or (lambda: datetime.now(timezone.utc))
         self.viewed_desktop_idle_visible_seconds = viewed_desktop_idle_visible_seconds
         self._notifications_forced_off = bool(notifications_forced_off)
+        self.native_window_inventory_ttl_seconds = native_window_inventory_ttl_seconds
+        self._native_project_window_inventory: Optional[NativeProjectWindowInventory] = None
+        self._native_project_window_inventory_updated_at: Optional[float] = None
         self._process_empty_started_at: Optional[float] = None
         self._sync_notifications_enabled([])
 
     def refresh(self) -> List[SessionUpdate]:
         if not self.paused:
-            for source, updates in self._poll_sources():
+            poll_results = self._poll_sources()
+            project_window_matcher = self._native_project_window_matcher()
+            if project_window_matcher is None:
+                project_window_matcher = self._project_window_matcher(poll_results)
+            desktop_process_updates = self._desktop_process_updates_for_poll(poll_results)
+            for source, updates in poll_results:
                 if updates is None:
                     continue
                 volatile_source = getattr(source, "volatile_source", None)
                 if volatile_source:
-                    self._replace_volatile_source_updates(str(volatile_source), updates)
+                    poll_had_updates = bool(updates)
+                    if volatile_source == "process":
+                        updates = self._reconcile_project_editor_sessions(updates, project_window_matcher)
+                    self._replace_volatile_source_updates(
+                        str(volatile_source),
+                        updates,
+                        poll_had_updates=poll_had_updates,
+                        desktop_process_updates=desktop_process_updates,
+                    )
                 else:
                     self.store.apply_updates(updates)
         sessions = self.visible_sessions()
@@ -99,24 +134,184 @@ class MonitorService:
                 results.append((source, updates))
             return results
 
-    def _replace_volatile_source_updates(self, source: str, updates: Optional[List[SessionUpdate]]) -> None:
+    @staticmethod
+    def _project_window_matcher(
+        poll_results: List[tuple[object, Optional[List[SessionUpdate]]]],
+    ) -> Optional[ProjectWindowMatcher]:
+        for source, updates in poll_results:
+            matcher = getattr(source, "project_window_match", None)
+            if updates is not None and callable(matcher):
+                return matcher
+        return None
+
+    def set_native_project_window_inventory(self, applications) -> bool:
+        if not isinstance(applications, list):
+            return False
+        parsed: NativeProjectWindowInventory = {}
+        for application in applications:
+            if not isinstance(application, dict) or set(application) != {"process_id", "available", "windows"}:
+                return False
+            process_id = application["process_id"]
+            available = application["available"]
+            windows = application["windows"]
+            if isinstance(process_id, bool) or not isinstance(process_id, int) or process_id <= 0:
+                return False
+            if not isinstance(available, bool) or not isinstance(windows, list) or process_id in parsed:
+                return False
+            if not available:
+                if windows:
+                    return False
+                parsed[process_id] = None
+                continue
+            parsed_windows = []
+            for window in windows:
+                if not isinstance(window, dict) or set(window) != {"window_id", "title"}:
+                    return False
+                window_id = window["window_id"]
+                title = window["title"]
+                if not isinstance(window_id, str) or not isinstance(title, str):
+                    return False
+                parsed_windows.append((window_id.strip() or None, title.strip()))
+            parsed[process_id] = tuple(parsed_windows)
+        self._native_project_window_inventory = parsed
+        self._native_project_window_inventory_updated_at = self.clock()
+        return True
+
+    def clear_native_project_window_inventory(self) -> None:
+        self._native_project_window_inventory = None
+        self._native_project_window_inventory_updated_at = None
+
+    def _native_project_window_matcher(self) -> Optional[ProjectWindowMatcher]:
+        inventory = self._native_project_window_inventory
+        updated_at = self._native_project_window_inventory_updated_at
+        if inventory is None or updated_at is None:
+            return None
+        age = self.clock() - updated_at
+        if age < 0 or age > self.native_window_inventory_ttl_seconds:
+            return None
+
+        def match(process_id: int, app_name: str, cwd: str) -> Optional[Tuple[bool, Optional[str]]]:
+            if process_id not in inventory:
+                return False, None
+            windows = inventory[process_id]
+            if windows is None:
+                return None
+            folder_name = Path(cwd).name.strip().casefold()
+            if not folder_name or not app_name.strip():
+                return None
+            best_match: Optional[Tuple[Optional[str], str]] = None
+            best_score = 0
+            for window_id, title in windows:
+                score = project_window_title_match_score(folder_name, title)
+                if score > best_score:
+                    best_match = (window_id, title)
+                    best_score = score
+            if best_match is not None:
+                return True, best_match[0]
+            return False, None
+
+        return match
+
+    @staticmethod
+    def _reconcile_project_editor_sessions(
+        updates: List[SessionUpdate],
+        matcher: Optional[ProjectWindowMatcher],
+    ) -> List[SessionUpdate]:
+        if matcher is None:
+            return updates
+        reconciled: List[SessionUpdate] = []
+        for update in updates:
+            if (
+                update.surface != SurfaceKind.TERMINAL
+                or not update.focus_app_name
+                or not is_project_editor_app(update.focus_app_name)
+                or update.focus_process_id is None
+                or not update.cwd
+            ):
+                reconciled.append(update)
+                continue
+            match = matcher(update.focus_process_id, update.focus_app_name, update.cwd)
+            if match is None:
+                reconciled.append(update)
+                continue
+            matched, window_id = match
+            if not matched:
+                continue
+            reconciled.append(replace(update, window_id=window_id) if window_id else update)
+        return reconciled
+
+    def _replace_volatile_source_updates(
+        self,
+        source: str,
+        updates: Optional[List[SessionUpdate]],
+        poll_had_updates: bool = False,
+        desktop_process_updates: Optional[List[SessionUpdate]] = None,
+    ) -> None:
         if updates is None:
             return
-        if source == "process" and not updates and self._has_source_sessions("process"):
+        if source == "process" and not updates and not poll_had_updates and self._has_source_sessions("process"):
             now = self.clock()
             if self._process_empty_started_at is None:
                 self._process_empty_started_at = now
                 return
             if now - self._process_empty_started_at < self.process_empty_grace_seconds:
                 return
-        if source == "process" and updates:
+        if source == "process" and (updates or poll_had_updates):
             self._process_empty_started_at = None
         if source == "process":
             updates = self._retain_recent_full_process_desktop_sessions(updates)
             updates = self._add_desktop_app_fallbacks(updates)
+        elif source == "chatgpt-session":
+            updates = self._retain_viewed_chatgpt_sessions(updates, desktop_process_updates)
         self.store.replace_source_updates(source, updates)
         if source == "process" and not updates:
             self._process_empty_started_at = None
+
+    def _desktop_process_updates_for_poll(
+        self,
+        poll_results: List[tuple[object, Optional[List[SessionUpdate]]]],
+    ) -> Optional[List[SessionUpdate]]:
+        for source, updates in poll_results:
+            if getattr(source, "volatile_source", None) != "process":
+                continue
+            if updates is None:
+                return None
+            if updates:
+                return [update for update in updates if update.surface == SurfaceKind.DESKTOP]
+            if not self._has_source_sessions("process"):
+                return []
+            empty_started_at = self._process_empty_started_at
+            if empty_started_at is None or self.clock() - empty_started_at < self.process_empty_grace_seconds:
+                return [
+                    session
+                    for session in self.store.sessions(now=self.now())
+                    if session.source == "process" and session.surface == SurfaceKind.DESKTOP
+                ]
+            return []
+        return None
+
+    def _retain_viewed_chatgpt_sessions(
+        self,
+        updates: List[SessionUpdate],
+        desktop_process_updates: Optional[List[SessionUpdate]],
+    ) -> List[SessionUpdate]:
+        if desktop_process_updates is not None and not any(
+            update.tool == ToolKind.CHATGPT for update in desktop_process_updates
+        ):
+            return updates
+        live_ids = {update.session_id for update in updates}
+        current = self.now()
+        retained = [
+            session
+            for session in self.store.sessions(now=current)
+            if session.source == "chatgpt-session"
+            and session.session_id not in live_ids
+            and session.surface == SurfaceKind.DESKTOP
+            and session.status == SessionStatus.IDLE
+            and self.store.session_viewed_at(session.session_id) is not None
+            and not self._is_expired_viewed_desktop_idle_session(session, current)
+        ]
+        return updates + retained
 
     def _has_source_sessions(self, source: str) -> bool:
         return any(session.source == source for session in self.store.sessions())
@@ -354,7 +549,7 @@ def _is_full_process_desktop_session(session: SessionUpdate) -> bool:
     return (
         session.source == "process"
         and session.surface == SurfaceKind.DESKTOP
-        and session.status_source in {"qoder-log", "workbuddy-db"}
+        and session.status_source in FULL_PROCESS_DESKTOP_STATUS_SOURCES
     )
 
 

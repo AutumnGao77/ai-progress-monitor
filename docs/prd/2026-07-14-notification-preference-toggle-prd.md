@@ -1,6 +1,6 @@
 # Pet 系统通知开关功能迭代 PRD
 
-> 状态：通知偏好、发送边界、API 和“系统通知 > / 开启 / 关闭”二级菜单已在功能分支完成开发与验收。整体尚未提交、推送或发布，不属于 v0.2.1 已发布能力。
+> 状态：通知偏好、发送边界、API 和“系统通知 > / 开启 / 关闭”二级菜单已在功能分支完成开发、自动化、Browser 与 macOS Dev App 验收，并已有一次本地提交；本轮回归修复尚未提交。整个分支尚未推送或发布，不属于 v0.2.1 已发布能力。
 
 ## 1. 结论
 
@@ -260,6 +260,7 @@ API 速记：`GET /api/preferences`、`POST /api/preferences/notifications`。
 | 关闭通知 | 点击二级菜单“关闭”后系统通知不再弹出 |
 | 开启通知 | 点击二级菜单“开启”后系统通知恢复 |
 | 重启保存 | 重启 App 后保持上次通知设置 |
+| 同值选择 | 选择当前已经生效的“开启”或“关闭”时返回成功，但不重复写入偏好文件 |
 | Pet 状态 | 关闭通知不影响空闲、进行中、待处理三态 |
 | 角标气泡 | 关闭通知不影响红色角标、气泡列表和排序 |
 | 点击跳转 | 关闭通知不影响点击气泡回到对应窗口 |
@@ -276,6 +277,7 @@ API 速记：`GET /api/preferences`、`POST /api/preferences/notifications`。
 | `tests/test_preferences.py` | `test_notifications_enabled_reads_false` | 可读取关闭状态 |
 | `tests/test_preferences.py` | `test_notifications_enabled_uses_safe_default_for_invalid_values` | 非布尔值、缺失值和损坏 JSON 均回退开启 |
 | `tests/test_preferences.py` | `test_set_notifications_enabled_preserves_existing_preferences` | 不丢失外观、隐藏会话、别名和自定义资源 |
+| `tests/test_preferences.py` | `test_set_notifications_enabled_does_not_rewrite_effectively_unchanged_value` | 当前实际状态相同时返回成功且不重复写盘 |
 | `tests/test_notifier.py` | `test_disabled_notifications_track_state_without_replaying_old_events` | 关闭后不发三类通知，重新开启不补发旧状态 |
 | `tests/test_service.py` | `test_notification_preference_controls_notifier_immediately` | API 保存后无需重启 |
 | `tests/test_web_launch.py` | `test_preferences_api_reads_and_updates_system_notifications` | GET/POST 返回实际状态和锁定态 |

@@ -149,27 +149,42 @@ class MacOSNativeCompanionTests(unittest.TestCase):
         self.assertIn("focusSpecificWindow(", source)
         self.assertLess(source.index("accessibilityWindowNumber(for: window)"), source.index("let folderName = URL(fileURLWithPath: cwd).lastPathComponent"))
 
+    def test_native_focus_scores_project_titles_instead_of_taking_first_substring(self):
+        source = native_sources()
+
+        self.assertIn("private func bestProjectWindow(", source)
+        self.assertIn("FloatingMonitorFocusPolicy.projectWindowTitleMatchScore(", source)
+        self.assertIn("if score > bestScore", source)
+        self.assertNotIn("windowTitle.contains(folderName)", source)
+
     def test_native_focus_matches_common_ide_name_variants(self):
         source = native_sources()
 
-        self.assertIn("prefixMatchedAppNameTargets", source)
+        self.assertIn("exactProjectEditorApplicationNames", source)
+        self.assertIn("prefixProjectEditorApplicationNames", source)
+        self.assertIn("FloatingMonitorFocusPolicy.projectEditorApplicationNameMatches(", source)
         for app_name in [
             "android studio",
             "clion",
+            "eclipse",
+            "fleet",
             "goland",
             "intellij idea",
+            "kiro",
             "phpstorm",
             "pycharm",
             "rider",
             "rubymine",
             "sublime text",
+            "trae",
+            "vscodium",
             "visual studio code",
             "webstorm",
         ]:
             self.assertIn(f'"{app_name}"', source)
-        self.assertIn('target == "visual studio code"', source)
-        self.assertIn('candidate == "code"', source)
-        self.assertIn("candidate.hasPrefix", source)
+        self.assertIn('normalizedTarget == "visual studio code"', source)
+        self.assertIn('normalizedCandidate == "code"', source)
+        self.assertIn("normalizedCandidate.hasPrefix", source)
 
     def test_native_focus_tries_all_matching_apps_before_window_list_failure(self):
         source = native_sources()
@@ -191,7 +206,9 @@ class MacOSNativeCompanionTests(unittest.TestCase):
         self.assertIn("private func activateRunningApplication", source)
         self.assertIn("app.activate(options: [])", source)
         self.assertIn('return (true, "activated-app")', source)
-        self.assertIn("if isDesktopAIApp(appName), let app = apps.first", source)
+        self.assertIn("private func canActivateWholeApp(appName: String, cwd: String) -> Bool", source)
+        self.assertIn("if canActivateWholeApp(appName: appName, cwd: cwd), let app = apps.first", source)
+        self.assertIn("!FloatingMonitorFocusPolicy.isProjectEditorApplicationName(appName)", source)
 
     def test_native_focus_activates_ai_app_without_accessibility_permission(self):
         source = native_sources()
@@ -200,7 +217,7 @@ class MacOSNativeCompanionTests(unittest.TestCase):
 
         self.assertLess(focus_body.index("let apps = runningApplications"), focus_body.index("AXIsProcessTrustedWithOptions"))
         self.assertIn("if !AXIsProcessTrustedWithOptions(options)", focus_body)
-        self.assertIn("if isDesktopAIApp(appName), let app = apps.first", focus_body)
+        self.assertIn("if canActivateWholeApp(appName: appName, cwd: cwd), let app = apps.first", focus_body)
         self.assertIn("completion(activateRunningApplication(app))", focus_body)
         self.assertIn('completion((false, "accessibility-permission-required"))', focus_body)
 
@@ -464,6 +481,25 @@ class MacOSNativeCompanionTests(unittest.TestCase):
         source = native_sources()
 
         self.assertNotIn('"--no-windows"', source)
+
+    def test_native_companion_publishes_fresh_project_window_inventory(self):
+        source = native_sources()
+
+        self.assertIn("private var projectWindowInventoryTimer: Timer?", source)
+        self.assertIn("startProjectWindowInventoryPublishing()", source)
+        self.assertIn("projectWindowInventoryTimer?.invalidate()", source)
+        self.assertIn("AXIsProcessTrusted()", source)
+        self.assertIn("isProjectEditorApplication", source)
+        self.assertIn("FloatingMonitorFocusPolicy.isProjectEditorApplicationName", source)
+        self.assertIn("accessibilityWindows(for: appElement)", source)
+        self.assertIn("result == .noValue", source)
+        self.assertIn("accessibilityWindowNumber(for: window)", source)
+        self.assertIn("accessibilityTitle(for: window)", source)
+        self.assertIn("/api/native/project-windows", source)
+        self.assertIn("window.MONITOR_TOKEN", source)
+        self.assertIn('"available": false, "applications": []', source)
+        self.assertIn('writeLog("Project window inventory: \\(summary)")', source)
+        self.assertNotIn("Native project window title:", source)
 
     def test_release_build_uses_writable_swift_module_caches(self):
         source = (ROOT / "scripts" / "build_release.py").read_text()

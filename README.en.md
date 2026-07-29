@@ -27,11 +27,11 @@ The current stable delivery focus is the local Web Companion plus the validated 
 | Three-state Pet UI | Idle, running, and needs-action images |
 | Numeric badge | Shows the total number of visible session bubbles |
 | Bubble list | Shows session/tool labels and status without exposing content |
-| Click to focus | Clicking a bubble returns to the matching AI tool window when possible |
+| Click to focus | Clicking a bubble returns to the matching AI tool window when possible; project editors share one project-window validation and exact-focus policy rather than a Zed-specific path |
 | Direct CLI detection | Detects configured AI CLI sessions conservatively, including Claude Code, Codex, Qoder, WorkBuddy, and `codebuddy` |
 | ChatGPT Desktop session detection | Reads explicitly identified ChatGPT/Codex Desktop-originated events from the compatible local `~/.codex/sessions` store; Codex CLI remains separate |
-| Qoder desktop status detection | Reads local Qoder/Qoder CN logs when available and falls back to a desktop idle entry when only the app is running |
-| WorkBuddy desktop status detection | Reads explicit local WorkBuddy session database states when available and falls back to a desktop idle entry when only the app is running |
+| Qoder desktop status detection | Reads local Qoder/Qoder CN logs and cache metadata; ordinary results can be acknowledged after viewing, while explicit quota, plan, or model-configuration blockers remain needs-action until the source state changes |
+| WorkBuddy desktop status detection | Reads explicit local WorkBuddy session database and runtime-log states, and falls back to a desktop idle entry when only the app is running |
 | JSON event source | Supported for reliable integrations |
 | Local notifications | User-controllable system notifications with a persistent Pet menu toggle |
 | Asset overrides | Configurable Pet and app avatar images |
@@ -87,6 +87,8 @@ scripts/run_macos_floating_dev.sh
 ```
 
 ChatGPT Desktop sessions are read compatibly from `~/.codex/sessions`, but only records explicitly marked with the `Codex Desktop` or `ChatGPT Desktop` originator are accepted. Codex CLI and unidentified records remain separate and cannot appear as ChatGPT bubbles. When accessibility permission is unavailable, clicking a ChatGPT bubble still falls back to activating the ChatGPT app instead of reporting a false navigation failure.
+
+Integrated terminals in project editors share the same macOS lifecycle and focus policy. The current registry covers Zed, Cursor, Visual Studio Code / Insiders, VSCodium, Windsurf, Xcode, Nova, Sublime Text, Kiro, Trae / Trae CN, Eclipse, Fleet, Android Studio, and the JetBrains IDE family. A live project window from the recorded parent app must match the session cwd by exact title, standard segment, or a safe boundary; similarly prefixed projects do not qualify. Standalone terminals such as Terminal, iTerm, Warp, WezTerm, kitty, Alacritty, Ghostty, Hyper, Tabby, and Rio remain tied to the AI child-process lifecycle instead of requiring a project-window inventory, while click-to-focus still uses their parent GUI process and bounded cwd matching.
 
 Check the dev app state and manual acceptance evidence:
 

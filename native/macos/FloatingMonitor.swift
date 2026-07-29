@@ -16,6 +16,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     private var monitorRestartAttempt = 0
     private var isTerminating = false
     private var dragTimer: Timer?
+    private var projectWindowInventoryTimer: Timer?
+    private var lastProjectWindowInventorySummary: String?
     private var lastDragMouseLocation: NSPoint?
     private var focusOperationID: UUID?
     private var focusStabilizationWorkItem: DispatchWorkItem?
@@ -26,19 +28,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     private var compactWindowSize: NSSize {
         NSSize(width: compactWindowWidth, height: compactWindowHeight)
     }
-    private let prefixMatchedAppNameTargets: Set<String> = [
-        "android studio",
-        "clion",
-        "goland",
-        "intellij idea",
-        "phpstorm",
-        "pycharm",
-        "rider",
-        "rubymine",
-        "sublime text",
-        "visual studio code",
-        "webstorm",
-    ]
     private let aiDesktopApps: Set<String> = [
         "claude",
         "claude code",
@@ -64,6 +53,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         isTerminating = true
         monitorRestartWorkItem?.cancel()
         monitorRestartWorkItem = nil
+        projectWindowInventoryTimer?.invalidate()
+        projectWindowInventoryTimer = nil
         cancelCurrentFocusOperation()
         stopWindowDrag()
         stdoutPipe?.fileHandleForReading.readabilityHandler = nil
@@ -161,6 +152,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         writeLog("WebView finished loading")
         resizeWindow(width: 170, height: 150)
         showMonitor()
+        startProjectWindowInventoryPublishing()
         let script = """
         (() => {
           const pet = document.querySelector('#pet');
@@ -286,7 +278,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         }
         let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
         if !AXIsProcessTrustedWithOptions(options) {
-            if isDesktopAIApp(appName), let app = apps.first {
+            if canActivateWholeApp(appName: appName, cwd: cwd), let app = apps.first {
                 completion(activateRunningApplication(app))
                 return
             }
@@ -315,10 +307,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
                 return
             }
             let folderName = URL(fileURLWithPath: cwd).lastPathComponent
-            if let window = windows.first(where: { window in
-                let windowTitle = accessibilityTitle(for: window)
-                return !folderName.isEmpty && (windowTitle == folderName || windowTitle.contains(folderName))
-            }) {
+            if let window = bestProjectWindow(in: windows, folderName: folderName) {
                 focusSpecificWindow(
                     window: window,
                     app: app,
@@ -344,7 +333,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
                 return
             }
         }
-        if isDesktopAIApp(appName), let app = apps.first {
+        if canActivateWholeApp(appName: appName, cwd: cwd), let app = apps.first {
             completion(activateRunningApplication(app))
             return
         }
@@ -392,6 +381,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         let result = AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &value)
         guard result == .success else { return nil }
         return value as? [AXUIElement]
+    }
+
+    private func bestProjectWindow(
+        in windows: [AXUIElement],
+        folderName: String
+    ) -> AXUIElement? {
+        guard !folderName.isEmpty else { return nil }
+        var bestWindow: AXUIElement?
+        var bestScore = 0
+        for window in windows {
+            let score = FloatingMonitorFocusPolicy.projectWindowTitleMatchScore(
+                folderName: folderName,
+                windowTitle: accessibilityTitle(for: window)
+            )
+            if score > bestScore {
+                bestWindow = window
+                bestScore = score
+            }
+        }
+        return bestWindow
     }
 
     private func accessibilityTitle(for window: AXUIElement) -> String {
@@ -835,13 +844,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     }
 
     private func appNameMatches(candidate: String, target: String) -> Bool {
-        if candidate == target {
-            return true
-        }
-        if target == "visual studio code" && (candidate == "code" || candidate.hasPrefix("code - insiders")) {
-            return true
-        }
-        return prefixMatchedAppNameTargets.contains(target) && candidate.hasPrefix(target)
+        FloatingMonitorFocusPolicy.projectEditorApplicationNameMatches(
+            candidate: candidate,
+            target: target
+        )
     }
 
     private func appNameAliases(for target: String) -> Set<String> {
@@ -854,6 +860,115 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     private func isDesktopAIApp(_ appName: String) -> Bool {
         let normalized = normalizedAppName(appName)
         return !aiDesktopApps.isDisjoint(with: appNameAliases(for: normalized))
+    }
+
+    private func canActivateWholeApp(appName: String, cwd: String) -> Bool {
+        guard isDesktopAIApp(appName) else { return false }
+        return cwd.isEmpty
+            || !FloatingMonitorFocusPolicy.isProjectEditorApplicationName(appName)
+    }
+
+    private func startProjectWindowInventoryPublishing() {
+        projectWindowInventoryTimer?.invalidate()
+        publishProjectWindowInventory()
+        let timer = Timer(timeInterval: 2.0, repeats: true) { [weak self] _ in
+            self?.publishProjectWindowInventory()
+        }
+        projectWindowInventoryTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    private func publishProjectWindowInventory() {
+        guard AXIsProcessTrusted() else {
+            logProjectWindowInventorySummary("trusted=false")
+            sendProjectWindowInventory(["available": false, "applications": []])
+            return
+        }
+        var applications: [[String: Any]] = []
+        var windowCount = 0
+        var unavailableApplicationCount = 0
+        for app in NSWorkspace.shared.runningApplications where isProjectEditorApplication(app) {
+            let appElement = AXUIElementCreateApplication(app.processIdentifier)
+            var rawWindows: CFTypeRef?
+            let result = AXUIElementCopyAttributeValue(
+                appElement,
+                kAXWindowsAttribute as CFString,
+                &rawWindows
+            )
+            let windows: [AXUIElement]
+            if result == .success {
+                windows = rawWindows as? [AXUIElement] ?? []
+            } else if result == .noValue {
+                windows = []
+            } else {
+                unavailableApplicationCount += 1
+                applications.append(
+                    [
+                        "process_id": Int(app.processIdentifier),
+                        "available": false,
+                        "windows": [],
+                    ]
+                )
+                continue
+            }
+            windowCount += windows.count
+            let windowPayloads: [[String: Any]] = windows.map { window in
+                [
+                    "window_id": accessibilityWindowNumber(for: window),
+                    "title": accessibilityTitle(for: window),
+                ]
+            }
+            applications.append(
+                [
+                    "process_id": Int(app.processIdentifier),
+                    "available": true,
+                    "windows": windowPayloads,
+                ]
+            )
+        }
+        logProjectWindowInventorySummary(
+            "trusted=true apps=\(applications.count) windows=\(windowCount) unavailable=\(unavailableApplicationCount)"
+        )
+        sendProjectWindowInventory(["available": true, "applications": applications])
+    }
+
+    private func logProjectWindowInventorySummary(_ summary: String) {
+        guard summary != lastProjectWindowInventorySummary else { return }
+        lastProjectWindowInventorySummary = summary
+        writeLog("Project window inventory: \(summary)")
+    }
+
+    private func isProjectEditorApplication(_ app: NSRunningApplication) -> Bool {
+        let candidateNames = [
+            app.localizedName,
+            app.bundleURL?.deletingPathExtension().lastPathComponent,
+        ].compactMap { $0 }
+        return candidateNames.contains { candidateName in
+            FloatingMonitorFocusPolicy.isProjectEditorApplicationName(candidateName)
+        }
+    }
+
+    private func sendProjectWindowInventory(_ payload: [String: Any]) {
+        guard let data = try? JSONSerialization.data(withJSONObject: payload),
+              let json = String(data: data, encoding: .utf8) else {
+            return
+        }
+        let script = """
+        (() => {
+          const token = window.MONITOR_TOKEN;
+          if (!token) return;
+          fetch(`/api/native/project-windows?token=${encodeURIComponent(token)}`, {
+            method: 'POST',
+            headers: {'content-type': 'application/json'},
+            body: JSON.stringify(\(json))
+          }).catch(() => {});
+        })()
+        """
+        webView.evaluateJavaScript(script) { [weak self] _result, error in
+            if let error = error {
+                self?.writeLog("Project window inventory publish failed: \(error)")
+            }
+        }
     }
 
     private func resizeWindow(width: CGFloat, height: CGFloat) {

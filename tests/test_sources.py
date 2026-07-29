@@ -1,4 +1,5 @@
 import json
+import os
 import sqlite3
 import subprocess
 import tempfile
@@ -14,9 +15,11 @@ from ai_progress_monitor.sources import (
     ChatGPTSessionSource,
     SOURCE_COMMAND_TIMEOUT_SECONDS,
     JsonSessionSource,
+    OsWindowSource,
     _classify_process_rows,
     _classify_window_rows,
     _is_generated_conversation_path,
+    _macos_window_command,
     _posix_process_command,
     _run_command,
 )
@@ -208,6 +211,44 @@ class SourceTests(unittest.TestCase):
         self.assertEqual(updates[0].process_id, 1234)
         self.assertEqual(updates[0].process_name, "Codex")
         self.assertEqual(updates[0].title, "Codex Desktop - PRD polish")
+
+    def test_macos_window_source_tracks_project_windows_that_are_not_ai_sessions(self):
+        source = OsWindowSource()
+        rows = [
+            "window_id=41\tprocess_id=478\tprocess_name=Zed\ttitle=SellerBooks — main.py",
+            "window_id=42\tprocess_id=478\tprocess_name=Zed\ttitle=日报推送 — SKILL.md",
+        ]
+
+        with mock.patch("ai_progress_monitor.sources.platform.system", return_value="Darwin"), mock.patch(
+            "ai_progress_monitor.sources._run_command",
+            return_value=rows,
+        ):
+            updates = source.poll()
+
+        self.assertEqual(updates, [])
+        self.assertEqual(
+            source.project_window_match(478, "Zed", "/Users/Gao/Documents/日报推送"),
+            (True, "42"),
+        )
+        self.assertEqual(
+            source.project_window_match(478, "Zed", "/Users/Gao/Documents/SellerBooks-closed"),
+            (False, None),
+        )
+
+        with mock.patch("ai_progress_monitor.sources.platform.system", return_value="Darwin"), mock.patch(
+            "ai_progress_monitor.sources._run_command",
+            return_value=None,
+        ):
+            self.assertIsNone(source.poll())
+
+        self.assertIsNone(source.project_window_match(478, "Zed", "/Users/Gao/Documents/日报推送"))
+
+    def test_macos_window_command_keeps_title_when_window_id_is_unavailable(self):
+        script = _macos_window_command()[-1]
+
+        self.assertIn('set windowID to ""', script)
+        self.assertIn("set windowID to id of win as string", script)
+        self.assertIn('"window_id=" & windowID', script)
 
     def test_classifies_direct_claude_process_as_idle_when_process_is_quiet(self):
         rows = [
@@ -1806,6 +1847,50 @@ class SourceTests(unittest.TestCase):
             self.assertTrue(updates[0].view_ack_required)
             self.assertEqual(updates[0].status_source, "workbuddy-db")
 
+    def test_workbuddy_runtime_user_attention_overrides_completed_db_view_ack(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "workbuddy.db"
+            db_updated_at = datetime(2026, 7, 15, 13, 48, 24, 388000).astimezone(timezone.utc)
+            self._write_workbuddy_session_db(
+                db_path,
+                [
+                    {
+                        "id": "wb-waiting",
+                        "cwd": "/Users/Gao/WorkBuddy/2026-07-15-13-12-11",
+                        "title": "等待用户输入",
+                        "status": "Completed",
+                        "updated_at": int(db_updated_at.timestamp() * 1000),
+                        "last_activity_at": int(db_updated_at.timestamp() * 1000),
+                    },
+                ],
+            )
+            log_path = Path(temp_dir) / "logs" / "2026-07-15" / "workspace.log"
+            log_path.parent.mkdir(parents=True)
+            log_path.write_text(
+                "[7/15/2026, 1:48:24 PM.500] [Info] [SessionRunStateMachine] transition | "
+                "sessionId=wb-waiting | event=USER_INPUT_REQUIRED | from=model_done | "
+                "to=waiting_for_input | lifecycle=waiting_for_user | busy=false | queueBusy=false\n",
+                encoding="utf-8",
+            )
+            rows = [
+                "process_id=51007\tprocess_name=/Applications/WorkBuddy.app/Contents/MacOS/Electron\tcommand=/Applications/WorkBuddy.app/Contents/MacOS/Electron --app-path=/Applications/WorkBuddy.app/Contents/Resources/app.asar"
+            ]
+
+            updates = list(
+                _classify_process_rows(
+                    rows,
+                    workbuddy_db_paths=(db_path,),
+                    now=db_updated_at + timedelta(seconds=1),
+                    source_started_at=db_updated_at - timedelta(seconds=5),
+                )
+            )
+
+            self.assertEqual(len(updates), 1)
+            self.assertEqual(updates[0].session_id, "workbuddy-wb-waiting")
+            self.assertEqual(updates[0].status, SessionStatus.NEEDS_ACTION)
+            self.assertFalse(updates[0].view_ack_required)
+            self.assertEqual(updates[0].status_source, "workbuddy-log")
+
     def test_workbuddy_runtime_log_latest_idle_clears_running_db_status(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / "workbuddy.db"
@@ -2385,6 +2470,173 @@ class SourceTests(unittest.TestCase):
             self.assertTrue(updates[0].view_ack_required)
             self.assertEqual(updates[0].status_source, "qoder-log")
 
+    def test_qoder_shared_cache_db_plan_blocker_requires_resolution(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app_root = Path(temp_dir) / "QoderCN"
+            db_path = app_root / "SharedClientCache" / "cache" / "db" / "local.db"
+            db_path.parent.mkdir(parents=True)
+            updated_at = datetime(2026, 7, 24, 7, 21, 59, tzinfo=timezone.utc)
+            connection = sqlite3.connect(db_path)
+            try:
+                connection.execute(
+                    """
+                    CREATE TABLE chat_session (
+                        session_id TEXT,
+                        session_title TEXT,
+                        project_uri TEXT,
+                        project_name TEXT,
+                        status TEXT,
+                        stop_reason TEXT,
+                        extra TEXT,
+                        last_user_query_at INTEGER,
+                        gmt_create INTEGER,
+                        gmt_modified INTEGER
+                    )
+                    """
+                )
+                connection.execute(
+                    """
+                    INSERT INTO chat_session (
+                        session_id, session_title, project_uri, project_name, status, stop_reason, extra,
+                        last_user_query_at, gmt_create, gmt_modified
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "task-plan-blocked.session.execution",
+                        "测试任务",
+                        "/Users/Gao/Documents/QoderCN/2026-07-24/chat-1",
+                        "chat-1",
+                        "Running",
+                        "Stopped",
+                        json.dumps(
+                            {
+                                "acp_session_chat_finish_reason": json.dumps(
+                                    {
+                                        "code": "112",
+                                        "message": json.dumps(
+                                            {"pricingUrl": "https://qoder.com.cn/pricing?client=qoder"}
+                                        ),
+                                    }
+                                ),
+                                "acp_session_status_code": 112,
+                            }
+                        ),
+                        int(updated_at.timestamp() * 1000),
+                        int(updated_at.timestamp() * 1000),
+                        int(updated_at.timestamp() * 1000),
+                    ),
+                )
+                connection.commit()
+            finally:
+                connection.close()
+            rows = [
+                "process_id=51005\tprocess_name=/Applications/Qo\tcommand=/Applications/Qoder CN.app/Contents/MacOS/Electron --aicoding-open-agents-window\tcpu_percent=0.0\tstat=S"
+            ]
+
+            updates = list(
+                _classify_process_rows(
+                    rows,
+                    qoder_logs_dir=app_root / "SharedClientCache" / "logs",
+                    source_started_at=updated_at + timedelta(seconds=1),
+                    now=updated_at + timedelta(seconds=10),
+                )
+            )
+
+            self.assertEqual(len(updates), 1)
+            self.assertEqual(updates[0].session_id, "qoder-task-plan-blocked")
+            self.assertEqual(updates[0].title, "Qoder CN Desktop - 测试任务")
+            self.assertEqual(updates[0].status, SessionStatus.NEEDS_ACTION)
+            self.assertFalse(updates[0].view_ack_required)
+            self.assertEqual(updates[0].status_source, "qoder-log")
+
+    def test_qoder_new_run_clears_older_cached_plan_blocker(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app_root = Path(temp_dir) / "QoderCN"
+            log_path = app_root / "logs" / "20260724T152141" / "questWindow" / "agent.log"
+            db_path = app_root / "SharedClientCache" / "cache" / "db" / "local.db"
+            log_path.parent.mkdir(parents=True)
+            db_path.parent.mkdir(parents=True)
+            log_path.write_text(
+                "2026-07-24 15:25:00.000 [info] [ACPProgressStateMachine] State transition: initial -> prompting, trigger: user_message_chunk, sessionId: task-a1b2c3d4.session.execution\n"
+                "2026-07-24 15:25:02.000 [info] [ACPProgressStateMachine] State transition: prompting -> error, trigger: chat_finish:net/http: request canceled (Client.Timeout or context cancellation while reading body):500, sessionId: task-a1b2c3d4.session.execution\n"
+                '2026-07-24 15:25:02.001 [info] [ChatSessionService] ACP stream completed: {"sessionId":"task-a1b2c3d4.session.execution","state":"error","totalUpdates":4}\n'
+                "2026-07-24 15:25:02.002 [info] [ACPProgressStateMachine] State transition: error -> cancelled, trigger: session/prompt:cancelled, sessionId: task-a1b2c3d4.session.execution\n"
+                '2026-07-24 15:25:02.003 [info] [ChatPanel.acpBlocks] {"taskId":"task-a1b2c3d4","sessionId":"task-a1b2c3d4.session.execution","state":"error"}\n',
+                encoding="utf-8",
+            )
+            old_blocker_at = datetime(2026, 7, 24, 7, 21, 59, tzinfo=timezone.utc)
+            connection = sqlite3.connect(db_path)
+            try:
+                connection.execute(
+                    """
+                    CREATE TABLE chat_session (
+                        session_id TEXT,
+                        session_title TEXT,
+                        project_uri TEXT,
+                        project_name TEXT,
+                        status TEXT,
+                        stop_reason TEXT,
+                        extra TEXT,
+                        last_user_query_at INTEGER,
+                        gmt_create INTEGER,
+                        gmt_modified INTEGER
+                    )
+                    """
+                )
+                connection.execute(
+                    """
+                    INSERT INTO chat_session (
+                        session_id, session_title, project_uri, project_name, status, stop_reason, extra,
+                        last_user_query_at, gmt_create, gmt_modified
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "task-a1b2c3d4.session.execution",
+                        "测试任务",
+                        "/Users/Gao/Documents/QoderCN/2026-07-24/chat-1",
+                        "chat-1",
+                        "Running",
+                        "Stopped",
+                        json.dumps(
+                            {
+                                "acp_session_chat_finish_reason": json.dumps(
+                                    {
+                                        "code": "112",
+                                        "message": json.dumps(
+                                            {"pricingUrl": "https://qoder.com.cn/pricing?client=qoder"}
+                                        ),
+                                    }
+                                ),
+                                "acp_session_status_code": 112,
+                            }
+                        ),
+                        int(old_blocker_at.timestamp() * 1000),
+                        int(old_blocker_at.timestamp() * 1000),
+                        int(old_blocker_at.timestamp() * 1000),
+                    ),
+                )
+                connection.commit()
+            finally:
+                connection.close()
+            rows = [
+                "process_id=51005\tprocess_name=/Applications/Qo\tcommand=/Applications/Qoder CN.app/Contents/MacOS/Electron --aicoding-open-agents-window\tcpu_percent=0.0\tstat=S"
+            ]
+
+            updates = list(
+                _classify_process_rows(
+                    rows,
+                    qoder_logs_dir=app_root / "logs",
+                    source_started_at=datetime(2026, 7, 24, 15, 24, 0).astimezone(timezone.utc),
+                    now=datetime(2026, 7, 24, 15, 25, 20).astimezone(timezone.utc),
+                )
+            )
+
+            self.assertEqual(len(updates), 1)
+            self.assertEqual(updates[0].session_id, "qoder-task-a1b2c3d4")
+            self.assertEqual(updates[0].status, SessionStatus.NEEDS_ACTION)
+            self.assertTrue(updates[0].view_ack_required)
+            self.assertEqual(updates[0].status_source, "qoder-log")
+
     def test_qoder_cn_cache_history_before_source_start_falls_back_to_single_idle_entry(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             app_root = Path(temp_dir) / "QoderCN"
@@ -2850,6 +3102,37 @@ class SourceTests(unittest.TestCase):
             self.assertEqual(updates[0].session_id, "qoder-task-b251")
             self.assertEqual(updates[0].status, SessionStatus.NEEDS_ACTION)
             self.assertTrue(updates[0].view_ack_required)
+            self.assertEqual(updates[0].status_source, "qoder-log")
+
+    def test_qoder_plan_blocker_survives_cancelled_cleanup_and_monitor_restart(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / "20260724T152141" / "questWindow" / "agent.log"
+            log_path.parent.mkdir(parents=True)
+            log_path.write_text(
+                '2026-07-24 15:21:59.989 [info] [ACPProgressStateMachine] State transition: prompting -> error, trigger: chat_finish:{"code":"112","message":"{\\"pricingUrl\\":\\"https://qoder.com.cn/pricing?client=qoder\\"}"}:112, sessionId: task-a1b2c3d4.session.execution\n'
+                '2026-07-24 15:21:59.989 [info] [ChatSessionService] ACP stream completed: {"sessionId":"task-a1b2c3d4.session.execution","state":"error","totalUpdates":8}\n'
+                "2026-07-24 15:22:00.003 [info] [ACPProgressStateMachine] State transition: error -> cancelled, trigger: session/prompt:cancelled, sessionId: task-a1b2c3d4.session.execution\n"
+                '2026-07-24 15:22:00.004 [info] [ChatPanel.acpBlocks] {"taskId":"task-a1b2c3d4","sessionId":"task-a1b2c3d4.session.execution","state":"cancelled"}\n'
+                '2026-07-24 15:22:00.020 [info] [ChatPanel.acpBlocks] {"taskId":"task-a1b2c3d4","sessionId":"task-a1b2c3d4.session.execution","state":"error"}\n',
+                encoding="utf-8",
+            )
+            rows = [
+                "process_id=51005\tprocess_name=/Applications/Qo\tcommand=/Applications/Qoder CN.app/Contents/MacOS/Electron --aicoding-open-agents-window\tcpu_percent=0.0\tstat=S"
+            ]
+
+            updates = list(
+                _classify_process_rows(
+                    rows,
+                    qoder_logs_dir=Path(temp_dir),
+                    source_started_at=datetime(2026, 7, 24, 15, 22, 5).astimezone(timezone.utc),
+                    now=datetime(2026, 7, 24, 15, 22, 10).astimezone(timezone.utc),
+                )
+            )
+
+            self.assertEqual(len(updates), 1)
+            self.assertEqual(updates[0].session_id, "qoder-task-a1b2c3d4")
+            self.assertEqual(updates[0].status, SessionStatus.NEEDS_ACTION)
+            self.assertFalse(updates[0].view_ack_required)
             self.assertEqual(updates[0].status_source, "qoder-log")
 
     def test_qoder_suspended_payload_state_counts_as_needs_action(self):
@@ -3528,6 +3811,45 @@ class SourceTests(unittest.TestCase):
         self.assertIn("IntelliJ\\ IDEA*.app", script)
         self.assertIn("/PyCharm*.app/", script)
         self.assertIn("/Windsurf.app/", script)
+        self.assertIn("/Kiro.app/", script)
+        self.assertIn("/Trae.app/", script)
+        self.assertIn("/VSCodium.app/", script)
+        self.assertIn("/Eclipse.app/", script)
+        self.assertIn("/Fleet.app/", script)
+        self.assertIn("/Ghostty.app/", script)
+        self.assertIn("/Hyper.app/", script)
+        self.assertIn("/Tabby.app/", script)
+        self.assertIn("/Rio.app/", script)
+
+    def test_posix_process_command_climbs_past_editor_helper_to_main_app(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fake_ps = Path(temp_dir) / "ps"
+            fake_ps.write_text(
+                "#!/bin/sh\n"
+                "printf '%s\\n' "
+                "'100 200 100 S+ 0.0 /tmp/codex /tmp/codex 300' "
+                "'200 300 100 S+ 0.0 /bin/zsh /bin/zsh -il' "
+                "'300 400 100 S 0.0 /Applications/Vi /Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper.app/Contents/MacOS/Code Helper --type=utility' "
+                "'400 1 400 S 0.0 /Applications/Vi /Applications/Visual Studio Code.app/Contents/MacOS/Code'\n",
+                encoding="utf-8",
+            )
+            fake_ps.chmod(0o755)
+            environment = dict(os.environ)
+            environment["PATH"] = f"{temp_dir}:{environment['PATH']}"
+
+            completed = subprocess.run(
+                _posix_process_command(),
+                capture_output=True,
+                text=True,
+                env=environment,
+                check=False,
+            )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("process_id=100", completed.stdout)
+        self.assertIn("focus_process_id=400", completed.stdout)
+        self.assertIn("focus_app_name=Visual Studio Code", completed.stdout)
+        self.assertNotIn("focus_process_id=300", completed.stdout)
 
     def test_posix_process_command_includes_configured_ai_tools(self):
         script = _posix_process_command()[-1]

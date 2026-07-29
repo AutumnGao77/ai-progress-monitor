@@ -192,6 +192,19 @@ class MonitorPreferencesTests(unittest.TestCase):
             self.assertFalse(prefs.set_notifications_enabled("false"))
             self.assertFalse(path.exists())
 
+    def test_set_notifications_enabled_does_not_rewrite_effectively_unchanged_value(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "preferences.json"
+            prefs = MonitorPreferences(path)
+            writes = []
+            prefs._write_payload = lambda payload: writes.append(payload)
+
+            self.assertTrue(prefs.set_notifications_enabled(True))
+
+            path.write_text('{"notifications_enabled": false}', encoding="utf-8")
+            self.assertTrue(prefs.set_notifications_enabled(False))
+            self.assertEqual(writes, [])
+
     def test_concurrent_appearance_and_notification_writes_preserve_both_fields(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "preferences.json"

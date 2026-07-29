@@ -297,6 +297,57 @@ class WebLaunchTests(unittest.TestCase):
             second = _json_request(f"{base_url}/api/preferences?token=secret")
             self.assertFalse(second["notifications_enabled"])
 
+    def test_native_project_windows_api_accepts_companion_inventory(self):
+        with _running_server() as base_url:
+            updated = _json_request(
+                f"{base_url}/api/native/project-windows?token=secret",
+                data={
+                    "available": True,
+                    "applications": [
+                        {
+                            "process_id": 478,
+                            "available": True,
+                            "windows": [{"window_id": "42", "title": "日报推送 — SKILL.md"}],
+                        }
+                    ],
+                },
+            )
+            cleared = _json_request(
+                f"{base_url}/api/native/project-windows?token=secret",
+                data={"available": False, "applications": []},
+            )
+
+        self.assertEqual(updated, {"ok": True})
+        self.assertEqual(cleared, {"ok": True})
+
+    def test_native_project_windows_api_rejects_missing_token_and_invalid_payload(self):
+        with _running_server() as base_url:
+            with self.assertRaises(HTTPError) as unauthorized:
+                _json_request(
+                    f"{base_url}/api/native/project-windows",
+                    data={"available": True, "applications": []},
+                )
+            self.assertEqual(unauthorized.exception.code, 403)
+
+            for payload in [
+                {},
+                {"available": "yes", "applications": []},
+                {"available": False, "applications": [{"process_id": 478}]},
+                {"available": True, "applications": {}},
+                {"available": True, "applications": [{"process_id": 478, "available": True, "windows": {}}]},
+            ]:
+                with self.subTest(payload=payload):
+                    with self.assertRaises(HTTPError) as invalid:
+                        _json_request(
+                            f"{base_url}/api/native/project-windows?token=secret",
+                            data=payload,
+                        )
+                    self.assertEqual(invalid.exception.code, 400)
+                    self.assertEqual(
+                        json.loads(invalid.exception.read()),
+                        {"ok": False, "error": "invalid_project_window_inventory"},
+                    )
+
     def test_preferences_api_rejects_system_notification_update_without_token(self):
         with _running_server() as base_url:
             with self.assertRaises(HTTPError) as error:

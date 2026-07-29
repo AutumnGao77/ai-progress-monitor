@@ -11,10 +11,69 @@ from ai_progress_monitor.window_focus import (
     focus_fallback_command,
     focus_native_window,
     build_windows_focus_command,
+    is_project_editor_app,
+    project_window_title_match_score,
 )
 
 
 class WindowFocusTests(unittest.TestCase):
+    def test_supported_project_editors_share_the_same_project_window_policy(self):
+        app_names = [
+            "Android Studio",
+            "CLion",
+            "Code",
+            "Cursor",
+            "Eclipse",
+            "Fleet",
+            "GoLand 2026.1",
+            "IntelliJ IDEA Ultimate",
+            "Kiro",
+            "Nova",
+            "PhpStorm",
+            "PyCharm CE",
+            "Rider",
+            "RubyMine",
+            "Sublime Text",
+            "Trae",
+            "Trae CN",
+            "VSCodium",
+            "Visual Studio Code",
+            "Visual Studio Code - Insiders",
+            "WebStorm",
+            "Windsurf",
+            "Xcode",
+            "Zed",
+        ]
+
+        for app_name in app_names:
+            with self.subTest(app_name=app_name):
+                self.assertTrue(is_project_editor_app(app_name))
+
+    def test_standalone_terminals_are_not_treated_as_project_editors(self):
+        for app_name in [
+            "Terminal",
+            "iTerm",
+            "Warp",
+            "WezTerm",
+            "kitty",
+            "Alacritty",
+            "Ghostty",
+            "Hyper",
+            "Tabby",
+            "Rio",
+        ]:
+            with self.subTest(app_name=app_name):
+                self.assertFalse(is_project_editor_app(app_name))
+
+    def test_project_window_title_match_prefers_real_project_segment_over_prefix(self):
+        exact_segment = project_window_title_match_score("SellerBooks", "SellerBooks — app.py")
+        prefix_only = project_window_title_match_score("SellerBooks", "SellerBooks-old — README.md")
+
+        self.assertGreater(exact_segment, prefix_only)
+        self.assertEqual(prefix_only, 0)
+        self.assertEqual(project_window_title_match_score("日报推送", "SKILL.md — 日报推送 — Zed"), exact_segment)
+        self.assertGreater(project_window_title_match_score("SellerBooks", "[SellerBooks] app.py"), 0)
+
     def test_builds_macos_focus_command(self):
         command = build_macos_focus_command("Claude Code - task")
 
@@ -68,7 +127,7 @@ class WindowFocusTests(unittest.TestCase):
         self.assertIn("unix id of proc as string is \"75407\"", command[-1])
         self.assertIn("AXRaise", command[-1])
 
-    def test_macos_focus_command_directly_targets_known_app_instead_of_scanning_all_processes(self):
+    def test_macos_focus_command_scopes_known_parent_process_by_pid(self):
         command = build_macos_focus_command(
             FocusTarget(
                 title="Claude Code CLI - 6SAI",
@@ -78,8 +137,42 @@ class WindowFocusTests(unittest.TestCase):
             )
         )
 
-        self.assertIn('tell application process "Zed"', command[-1])
-        self.assertNotIn("repeat with proc in application processes", command[-1])
+        self.assertIn("repeat with proc in application processes", command[-1])
+        self.assertIn('if unix id of proc as string is "75407" then', command[-1])
+        self.assertNotIn('tell application process "Zed"', command[-1])
+
+    def test_macos_cwd_focus_targets_parent_pid_instead_of_ide_process_name(self):
+        command = build_macos_focus_command(
+            FocusTarget(
+                title="Codex CLI - ProjectAlpha",
+                process_id=12812,
+                app_name="Visual Studio Code",
+                cwd="/private/tmp/ProjectAlpha",
+            )
+        )
+
+        self.assertIn('if unix id of proc as string is "12812" then', command[-1])
+        self.assertIn("repeat with proc in application processes", command[-1])
+        self.assertNotIn('tell application process "Visual Studio Code"', command[-1])
+
+    def test_macos_cwd_focus_uses_safe_project_segments_for_every_host_type(self):
+        for app_name in ["Cursor", "Visual Studio Code", "PyCharm CE", "Terminal", "Ghostty"]:
+            with self.subTest(app_name=app_name):
+                command = build_macos_focus_command(
+                    FocusTarget(
+                        title="Claude Code CLI - ProjectAlpha",
+                        process_id=75407,
+                        app_name=app_name,
+                        cwd="/Users/Gao/Documents/projects/ProjectAlpha",
+                    )
+                )
+                script = command[-1]
+
+                self.assertIn('set windowName to name of win as string', script)
+                self.assertIn('windowName contains " — ProjectAlpha — "', script)
+                self.assertIn('windowName starts with "ProjectAlpha — "', script)
+                self.assertNotIn('name of win contains "ProjectAlpha"', script)
+                self.assertNotIn('name of win contains "Claude Code CLI - ProjectAlpha"', script)
 
     def test_macos_process_only_terminal_fallback_does_not_activate_project_editor_group(self):
         command = focus_fallback_command(
@@ -94,7 +187,18 @@ class WindowFocusTests(unittest.TestCase):
         self.assertIsNone(command)
 
     def test_macos_project_editor_fallback_does_not_activate_all_windows_when_cwd_is_available(self):
-        for app_name in ["Zed", "Cursor", "Visual Studio Code", "IntelliJ IDEA Ultimate", "PyCharm CE"]:
+        for app_name in [
+            "Zed",
+            "Cursor",
+            "Visual Studio Code",
+            "IntelliJ IDEA Ultimate",
+            "PyCharm CE",
+            "Kiro",
+            "Trae",
+            "VSCodium",
+            "Eclipse",
+            "Fleet",
+        ]:
             with self.subTest(app_name=app_name):
                 command = focus_fallback_command(
                     FocusTarget(
@@ -106,6 +210,17 @@ class WindowFocusTests(unittest.TestCase):
                 )
 
                 self.assertIsNone(command)
+
+    def test_macos_kiro_without_project_context_can_still_activate_as_ai_desktop_app(self):
+        command = focus_fallback_command(
+            FocusTarget(
+                title="Kiro Desktop",
+                process_id=11063,
+                app_name="Kiro",
+            )
+        )
+
+        self.assertEqual(command, ["open", "-a", "Kiro"])
 
     def test_macos_ai_desktop_fallback_activates_app_even_when_cwd_is_available(self):
         command = focus_fallback_command(
@@ -178,8 +293,11 @@ class WindowFocusTests(unittest.TestCase):
             )
         )
 
-        self.assertNotIn('unix id of proc as string is "75407"', command[-1])
-        self.assertIn('if name of win contains "Claude Code CLI - 网点抛扔"', command[-1])
+        self.assertIn('if unix id of proc as string is "75407" then', command[-1])
+        self.assertNotIn("set frontmost of proc to true", command[-1])
+        self.assertIn('set windowName to name of win as string', command[-1])
+        self.assertIn('windowName starts with "网点抛扔 — "', command[-1])
+        self.assertNotIn('name of win contains "Claude Code CLI - 网点抛扔"', command[-1])
 
     def test_macos_focus_command_matches_project_folder_window_when_cwd_is_available(self):
         command = build_macos_focus_command(
@@ -191,10 +309,13 @@ class WindowFocusTests(unittest.TestCase):
             )
         )
 
-        self.assertIn('tell application process "Zed"', command[-1])
-        self.assertIn('if name of win is "网点清场" or name of win contains "网点清场" then', command[-1])
+        self.assertIn('if unix id of proc as string is "75407" then', command[-1])
+        self.assertNotIn('tell application process "Zed"', command[-1])
+        self.assertIn('windowName is "网点清场"', command[-1])
+        self.assertIn('windowName contains " — 网点清场 — "', command[-1])
+        self.assertNotIn('name of win contains "网点清场"', command[-1])
         self.assertIn('perform action "AXRaise" of win', command[-1])
-        self.assertNotIn('if name of win is "网点清场" then\nset frontmost of proc to true', command[-1])
+        self.assertNotIn('set frontmost of proc to true', command[-1])
 
     def test_macos_focus_command_matches_real_editor_title_containing_project_folder(self):
         command = build_macos_focus_command(
@@ -206,7 +327,9 @@ class WindowFocusTests(unittest.TestCase):
             )
         )
 
-        self.assertIn('if name of win is "6SAI" or name of win contains "6SAI" then', command[-1])
+        self.assertIn('windowName is "6SAI"', command[-1])
+        self.assertIn('windowName ends with " — 6SAI"', command[-1])
+        self.assertNotIn('name of win contains "6SAI"', command[-1])
         self.assertIn('return "focused-project-window"', command[-1])
 
     def test_macos_focus_success_reports_safe_method(self):

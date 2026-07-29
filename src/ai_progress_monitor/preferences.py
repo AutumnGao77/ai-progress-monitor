@@ -91,6 +91,10 @@ class MonitorPreferences:
             return False
         with self._mutation_lock:
             payload = self._read()
+            current = payload.get("notifications_enabled")
+            current_enabled = current if isinstance(current, bool) else True
+            if current_enabled == enabled:
+                return True
             payload["notifications_enabled"] = enabled
             self._write_payload(payload)
         return True

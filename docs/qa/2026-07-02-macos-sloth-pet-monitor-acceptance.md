@@ -4,9 +4,17 @@
 
 macOS 版本已完成 PRD 主路径验收并已正式发布：默认 Pet、三色角标、气泡列表、同文件夹多对话区分、隐私保护、点击气泡聚焦、拖动不误展开、右键隐藏/退出、Show 恢复链路、再次打开 app 恢复、桌面端具体对话已查看后 15 分钟收口。2026-07-14 增量已完成 Pet 外观主题切换，以及 WorkBuddy、Qoder、Qoder CN 监控扩展。2026-07-17 已完成桌面产品从 Codex 到 ChatGPT 的身份迁移，并修复 Claude Code CLI 工作目录串扰。v0.2.1 已于 2026-07-20 发布，用户已完成 GitHub 回下载与首次打开、Pet、菜单、气泡、窗口跳转验收。
 
-2026-07-21，系统通知开关增量已在功能分支完成开发态自动化、浏览器和 macOS Dev App 实机验收；该增量尚未提交、推送或发布，不属于已发布的 v0.2.1。
+2026-07-21，系统通知开关增量已在功能分支完成开发态自动化、浏览器和 macOS Dev App 实机验收；相关实现已进入本地提交 `12e1391`，尚未推送或发布，不属于已发布的 v0.2.1。
 
-2026-07-23，针对 macOS 原生 Pet 在 Zed 多窗口、多显示器环境中点击一个项目气泡却同时带出另一个 Zed 窗口的问题，已完成事件驱动修复、自动化、Swift 编译和发布门禁。用户已用真实鼠标完成正反向视觉验收：点击 SellerBooks 只出现 SellerBooks，点击“日报推送”只出现“日报推送”。随后发现最小化 SellerBooks 时 Zed 会显示“日报推送”；不经过 Pet 的对照实验得到完全相同结果，且 AX 状态证明 SellerBooks 为单窗口最小化、Zed App 未隐藏、“日报推送”由 Zed 接替为主窗口，因此该现象不属于 Pet 聚焦回归。本次修复尚未提交、推送或发布。
+2026-07-23，针对 macOS 原生 Pet 在 Zed 多窗口、多显示器环境中点击一个项目气泡却同时带出另一个 Zed 窗口的问题，已完成事件驱动修复、自动化、Swift 编译和发布门禁。用户已用真实鼠标完成正反向视觉验收：点击 SellerBooks 只出现 SellerBooks，点击“日报推送”只出现“日报推送”。随后发现最小化 SellerBooks 时 Zed 会显示“日报推送”；不经过 Pet 的对照实验得到完全相同结果，且 AX 状态证明 SellerBooks 为单窗口最小化、Zed App 未隐藏、“日报推送”由 Zed 接替为主窗口，因此该现象不属于 Pet 聚焦回归。事件驱动聚焦修复已进入本地提交 `12e1391`，后续 Zed 残留会话修复仍在工作区；当前分支尚未推送或发布。
+
+2026-07-24，修复 WorkBuddy 真实运行时 Pet 仍显示空闲、完成后才直接变为待处理的回归。根因是服务层只把 `workbuddy-db` 认作完整桌面会话，漏掉了同样能精确绑定会话的 `workbuddy-log`；当同一 WorkBuddy 进程还有旧数据库会话时，运行中的 runtime-log 会话会被误当成低层级重复项过滤。修复只补齐完整会话来源契约，不改 WorkBuddy 状态解析、通知、冷却、聚焦或前端状态优先级。全量 487 项测试、发布校验和真实 Dev App 状态链路均通过；本次修复仍在工作区，尚未提交、推送或发布。
+
+2026-07-24，修复 Qoder CN 额度/套餐限制会话点击后先变空闲、数秒后又回到待处理的问题。根因是 Qoder 把持续账户阻塞写入嵌套完成原因，同时继续产生通用 `Error` 和短暂 `cancelled` 清理快照；监控器只识别到普通失败，因此聚焦成功时错误执行了查看确认。修复后，明确的账户、套餐、额度或模型配置阻塞使用 `view_ack_required=false`，并跨紧邻的清理快照保留；新的真实运行会清除旧阻塞，后续普通超时/失败仍可查看确认。Qoder/服务层 184 项、全量 491 项测试和发布校验均通过；真实 Qoder CN 会话在点击聚焦后连续三个完整扫描周期保持待处理，Browser 可见气泡仍为待处理且控制台无错误。开发版已重建并启动；本次修复仍在工作区，尚未提交、推送或发布。
+
+2026-07-28，完成当前功能分支的全面回归审计。审计新增并修复四个边界缺陷：ChatGPT 已查看会话在 App 仍运行时遇到一次来源缺失会提前消失、WorkBuddy 更新的 runtime 待处理信号错误继承旧数据库完成态的查看确认标记、通知接口收到与实际状态相同的值仍重复写盘、相似项目前缀窗口可能抢先匹配真实项目。随后将原先以 Zed 现场问题触发的项目窗口能力扩展为所有已注册 IDE 共用规则，并补齐常见 IDE 与独立终端宿主映射。真实 VS Code 进程树进一步暴露 Electron `Code Helper` 会被误认作窗口宿主，现已统一继续向上解析到 Code 主进程。修复前失败测试均能复现对应问题，修复后跨 IDE 专项 284 项、全量 511 项测试通过；发布校验和最终 Dev App 证据见本节对应门禁记录。重新授予辅助功能权限后，真实 VS Code alpha / beta 双窗口已完成正反向 Pet 点击、精确 AX focused/main 复核、关闭单窗后气泡清理和剩余窗口再聚焦验收。非本机安装 IDE 只记录自动化契约，不冒充实机验收。本轮修复仍在工作区，尚未提交、推送或发布。
+
+2026-07-29，用户手动在 Visual Studio Code 的 IDE 窗口内启动真实 Claude Code，确认 Pet 能正常发现并监测该会话。该记录只代表用户明确验证的 VS Code 监测主路径；双窗口精准聚焦、关闭窗口后的气泡清理继续使用 2026-07-28 的独立实机证据。
 
 ChatGPT 与多工具功能回归范围、445 项自动化结果和最小人工验收结论以 `docs/qa/2026-07-17-chatgpt-and-multi-tool-regression-test-cases.md` 为准；v0.2.1 最终双包、SHA-256 和发布后人工验收以 `docs/qa/2026-07-17-v0.2.1-release-packaging-validation.md` 为准。下文较早章节保留历史测试名、测试数和产物名时，不代表当前用户界面或发布结构仍采用旧版本。
 
@@ -15,7 +23,7 @@ ChatGPT 与多工具功能回归范围、445 项自动化结果和最小人工�
 | 项目 | 结论 |
 |---|---|
 | 当前本地源码状态 | 已验证，用户本地测试通过 |
-| 自动化测试 | v0.2.1 发布基线 445 项均取得通过结果；2026-07-14 的 `421 tests OK` 保留在对应历史章节 |
+| 自动化测试 | v0.2.1 发布基线 445 项均取得通过结果；当前功能分支最终全量为 `511 tests OK`；2026-07-14 的 `421 tests OK` 保留在对应历史章节 |
 | Swift 编译 | 通过 |
 | 发布包构建 | 通过，v0.2.1 最终发布 `AI-Progress-Monitor-v0.2.1-macOS-arm64.zip` 与 `ai-progress-monitor-v0.2.1-portable.zip` |
 | 本地校验 | 通过，包含 release 校验、JS 语法、敏感信息扫描、e2e smoke |
@@ -98,7 +106,7 @@ ChatGPT 与多工具功能回归范围、445 项自动化结果和最小人工�
 | 执行 PRD | `docs/prd/2026-07-14-notification-preference-toggle-prd.md` 记录 Mac + Web 范围、菜单、偏好、API、启动参数优先级和验收矩阵 | 通过 |
 | 偏好与兼容 | `notifications_enabled` 仅接受布尔值，缺失、非法或损坏配置默认开启；写入保留外观、隐藏会话、别名、自定义资源和未知字段；外观与通知并发保存使用同一进程内原子更新锁，不会互相覆盖 | 自动化通过 |
 | API 契约 | `GET /api/preferences` 返回实际状态和锁定态；通知写接口只接受且必须只包含一个布尔 `enabled` 字段，成功、非法请求、无令牌、启动参数锁定和写入失败分别覆盖 `200 / 400 / 403 / 409 / 500` | 自动化通过 |
-| 菜单与并发 | 右键 Pet 主菜单为“外观 > / 系统通知 > / 隐藏 Pet / 退出程序”；通知二级菜单为“开启 / 关闭”互斥勾选，同值不重复写入；串行保存保证快速连点后的最终落盘值等于最后选择，失败时回滚并提示 | 自动化通过 |
+| 菜单与并发 | 右键 Pet 主菜单为“外观 > / 系统通知 > / 隐藏 Pet / 退出程序”；通知二级菜单为“开启 / 关闭”互斥勾选；串行保存保证快速连点后的最终落盘值等于最后选择，失败时回滚并提示。前端原本会跳过重复选择，但 2026-07-28 复查发现服务接口收到同值请求仍会写盘，现已补失败测试并修复为按实际状态幂等 | 自动化通过 |
 | 通知边界 | 关闭后不调用系统通知 sender，但仍记录状态基线；重新开启不补发旧待处理、完成或疑似卡住通知，新状态变化恢复提醒 | 自动化通过 |
 | 启动参数锁定 | `--no-notifications` 优先于用户偏好，二级菜单显示“✓ 关闭”，“开启 / 关闭”均置灰，本次运行不改写偏好文件 | 自动化通过 |
 | Browser 验收 | 普通模式右键主菜单仅显示“系统通知 >”，点击父菜单不切换；子菜单显示“✓ 开启 / 关闭”或“开启 / ✓ 关闭”，选择后刷新保持。`--no-notifications` 模式显示“开启 / ✓ 关闭”，两个选项均置灰；两种模式均无控制台错误，并留存界面截图 | 通过 |
@@ -115,6 +123,7 @@ ChatGPT 与多工具功能回归范围、445 项自动化结果和最小人工�
 | Qoder / Qoder CN 桌面监控 | 普通 Qoder 和 Qoder CN 分别识别产品边界，读取对应日志、project session 和本地缓存标题；App 仅存活时显示空闲入口；有具体任务时显示具体气泡 | 通过 |
 | Qoder 标题与多会话 | 优先使用真实会话标题；缺少真实标题时前端兜底为 `Qoder 对话 #1/#2`，不展示 `chat-1/chat-3`、task id、UUID 或内部 session 碎片；多个 task 不合并为一个桌面入口 | 通过 |
 | Qoder 状态映射 | Running / streaming / prompting 显示进行中；Completed 显示完成待查看；Action Required / suspended / requiresApproval / waitingForInput 显示待处理且点击后不误清空 | 通过 |
+| Qoder 持续阻塞 | 明确的额度、套餐、账户或模型配置阻塞显示待处理且 `view_ack_required=false`；紧邻的 `error -> cancelled -> error` 清理快照不误清除；同一会话出现更新的 running 后清除旧阻塞，普通超时/失败仍可查看确认 | 通过 |
 | WorkBuddy 桌面监控 | WorkBuddy 桌面主程序存活时显示空闲入口；本地 sessions 数据库和 runtime log 出现明确 Running / Completed / Failed / pending-with-activity 等状态时生成 full 具体会话 | 通过 |
 | WorkBuddy 标题与项目上下文 | 具体会话气泡显示软件名；对话发生在项目/文件夹下时标题包含项目/文件夹上下文，例如 `WorkBuddy Desktop - 项目名 - 对话标题` | 通过 |
 | WorkBuddy 状态映射 | 运行中显示进行中；完成待查看可点击后转空闲；真正等待用户操作的 pending / approval / input 类状态保持待处理，不因点击气泡变空闲 | 通过 |
@@ -123,6 +132,17 @@ ChatGPT 与多工具功能回归范围、445 项自动化结果和最小人工�
 | 既有工具回归 | Claude Code CLI 打开但无交互保持空闲；ChatGPT Plan 模式等待用户输入显示待处理；ChatGPT Desktop / Claude Code / Codex CLI 状态规则未被新增工具改坏 | 通过 |
 | 自动化测试 | 全量 `PYTHONPATH=src python3 -m unittest discover -s tests` 通过，421 个测试 OK；相关回归覆盖 `tests.test_sources`、`tests.test_service`、`tests.test_store`、`tests.test_web_ui_behavior`、`tests.test_window_focus` | 通过 |
 | 发布与开发态检查 | `scripts/run_macos_floating_dev.sh --build-only`、`scripts/run_macos_floating_dev.sh --launch-only`、`scripts/check_macos_floating_dev.sh`、`python3 scripts/validate_release.py`、`python3 scripts/build_release.py` 均通过 | 通过 |
+
+### 2026-07-24 Qoder CN 持续阻塞补充验收
+
+| 项目 | 证据 | 结果 |
+|---|---|---|
+| 真实输入 | 当前 Qoder CN 会话的本地日志持续为错误，缓存完成原因包含套餐升级信号；修复前实际输出为 `needs_action + view_ack_required=true` | 已复现 |
+| 测试先行 | 新增缓存套餐阻塞、清理快照继承、新运行清除旧阻塞、聚焦后持续待处理四类回归；实现前两个源测试按预期失败，实现后全部通过 | 通过 |
+| 兼容边界 | 原有普通 500/timeout 失败继续为 `view_ack_required=true`；更新的 running 会阻止旧缓存阻塞污染后续普通失败 | 通过 |
+| 完整回归 | `tests.test_sources` + `tests.test_service` 共 184 项通过；正常权限下全量 491 项通过；`python3 scripts/validate_release.py` 输出 `release-validation-ok`；`git diff --check` 无输出 | 通过 |
+| 真实交互 | 重建并启动 Dev App；本机页面点击真实 Qoder CN 待处理气泡后成功激活 App，连续三个完整扫描周期均为 `needs_action + view_ack_required=false`，可见气泡仍显示待处理 | 通过 |
+| 页面质量 | Browser 页面身份和非空渲染正常；点击前后会话气泡可见，控制台错误/警告为 0 | 通过 |
 
 ## PRD P0 验收矩阵
 
@@ -196,6 +216,7 @@ ChatGPT 与多工具功能回归范围、445 项自动化结果和最小人工�
 | 终端 Claude/Codex 对话监控不到 | 根因是 macOS 进程扫描可能超过旧预算，但旧代码超时后整批丢弃；同时直接 CLI 会话曾把“进程存在”误当作“正在工作”。已把扫描超时预算调整为 4 秒，修复 `basename -zsh` 兼容问题；Claude CLI 优先读取 Claude 自己的会话状态，读不到时再回退 CPU 和进程运行态 | `test_classifies_direct_claude_process_as_idle_when_process_is_quiet`、`test_classifies_direct_claude_process_as_running_when_cpu_or_child_is_active`、`test_classifies_direct_claude_process_status_from_claude_session_file_before_cpu`、`test_classifies_direct_claude_process_running_from_claude_session_file`、`test_classifies_direct_codex_process_as_running_basic_detection_session`、`test_external_source_timeout_allows_macos_cwd_lookup_within_poll_budget`、真实源码扫描识别到 Claude Code CLI 且均为空闲 |
 | Claude 空闲状态闪成进行中 | 根因是 Claude CLI 下常驻 MCP 辅助进程或 Claude 自身短暂 CPU 活跃，叠加旧逻辑把超过 30 秒的 idle 状态视为过期并回退到进程活跃度，导致空闲会话短暂误判为进行中。已过滤常驻 MCP 辅助进程，并让 Claude CLI 明确 idle 状态持续优先于瞬时进程活跃；只有读不到、状态不匹配或过期 running 才回退到进程活跃度 | `test_posix_process_command_ignores_background_mcp_helpers_for_activity`、`test_classifies_direct_claude_process_status_from_claude_session_file_before_cpu`、`test_stale_claude_idle_session_file_stays_idle_despite_transient_process_activity` |
 | 退出 Claude Code 后气泡仍残留 | 根因是 Claude 子进程仍挂在 IDE 父进程下，但已不处于前台交互终端状态。修复后直接 CLI 只有仍处于前台交互终端状态才进入气泡列表；IDE/终端/项目窗口打开只用于聚焦，不证明 Claude/Codex 会话存在 | `test_ignores_detached_direct_claude_process_after_terminal_closes`；真实 `ProcessSource` 扫描已不返回对应测试项目，开发版日志从 `total=3` 变为 `total=2` |
+| 关闭单个 Zed 项目窗口后仍残留气泡并提示“无法定位窗口” | 根因是 Zed 可能短暂保留仍带前台终端标记的 Claude 子进程，单看进程不足以证明项目窗口仍可导航；Python 子进程调用的 osascript 又没有原生 App 的辅助功能权限，不能作为 App 内主清单。2026-07-24 起，原生伴随程序通过 token 保护的本地接口发布短时 AX 清单，服务按父 GUI 进程 ID 和 cwd 文件夹名核对；无匹配窗口时立即移除，匹配时回填窗口 ID。AX 未授权、单 App 读取失败、清单过期或扫描禁用时保留原进程结果，普通 Terminal/iTerm 不受该规则影响 | 自动化覆盖原生清单回传、token 鉴权、8 秒过期、空清单、单 App 失败、窗口 ID 回填及 Python 扫描降级。最终 Dev App 重新授权后，真实 AX 清单从 `1 IDE / 2 windows / 0 unavailable` 变为 `1 IDE / 1 window / 0 unavailable`；SellerBooks 气泡消失，日报推送保留且再次点击只跳对应窗口，用户确认通过 |
 | 会话计数偶发从 4 闪成 0 | 根因是 `ProcessSource` 一次空扫描会被当作进程全部消失，`replace_source_updates("process", [])` 立即清空 process-only 会话。已增加 process 源一次空扫描防抖：首次空结果保留，连续两次空才清除 | `test_refresh_debounces_one_empty_process_poll_before_removing_sessions`；重启开发态后需以最新 session snapshots 为准 |
 | ChatGPT 桌面端运行中对话监控不到 | 旧实现只看已退役的 `Codex.app` 主进程，既会漏掉真实运行中对话，也会把 App 打开误当成进行中。现兼容读取 `~/.codex/sessions` 中明确的桌面 originator：未完成 `task_started` 显示进行中，`task_complete` 后按刷新规则收口；ChatGPT 主程序存活只显示空闲入口，具体会话存在时该入口被去重 | `test_codex_session_source_marks_unfinished_task_as_running`、`test_codex_session_source_drops_old_completed_sessions`、`test_configured_desktop_ai_app_process_creates_idle_fallback_entry`、`test_visible_sessions_hide_generic_desktop_fallback_when_full_desktop_session_exists`、真实服务层 payload 识别到 ChatGPT 桌面会话和空闲入口去重 |
 | 点击终端 process-only 气泡可能无法回到原窗口 | 直接 CLI 子进程不是 GUI 应用，旧实现只拿子进程 ID 或生成标题，无法可靠聚焦真实终端/编辑器窗口。已新增 `focus_process_id` / `focus_app_name`，从父进程链识别 IDE、Terminal、iTerm、Codex 等 GUI 应用；带 cwd 的 process-only 先按 cwd 文件夹名匹配 IDE/终端窗口，再 `AXRaise` 目标窗口。真实点击曾因 fallback 5 秒超时出现 `ok=false`，已把 fallback 超时放宽到 15 秒，并修复验收脚本只接受 `ok=true` | `test_focus_session_uses_window_metadata_when_available`、`test_macos_focus_command_does_not_raise_parent_app_first_when_cwd_is_available`、`test_macos_focus_command_matches_project_folder_window_when_cwd_is_available`、`test_focus_fallback_timeout_allows_slow_project_activation`、`test_macos_dev_acceptance_helper_rejects_failed_focus_as_manual_evidence`、真实点击 `sample-project · 空闲` 后日志 `AI Progress Monitor focus: ok=true` |
@@ -231,7 +252,7 @@ ChatGPT 与多工具功能回归范围、445 项自动化结果和最小人工�
 | 同一文件夹多个 wrapper 对话不互相覆盖 | macOS/Linux wrapper 在未设置 `AI_MONITOR_SESSION_ID` 时按文件夹名、时间戳和进程号生成默认唯一会话 ID；真实执行同一目录连续两次生成 2 个 session JSON | 已证明 |
 | 直接终端已配置 AI CLI 会话至少可见 | 直接运行 `claude`、`codex`、`qoder`、`workbuddy`、`codebuddy` 等已配置 AI CLI 时，即使没有 wrapper，也必须生成 process-only 气泡；退出 CLI 后，即使 IDE/终端/项目窗口仍打开，也不能继续保留气泡；Claude CLI 优先使用 Claude 会话状态，回复完成后或同一会话出现新的空闲完成时间后待处理，点击气泡成功回到系统终端或 IDE 内置终端后空闲；其他直接 CLI 按进程活跃度保守判断 | 已证明；当前源码真实服务层 payload 识别到直接 CLI，并带父 GUI 聚焦信息 |
 | Qoder 新增工具 full 监控 | Qoder 支持 CLI、Qoder Desktop、Qoder CN Desktop 存活入口；普通 Qoder 和 Qoder CN 的 macOS `Electron` 主进程都可识别，空闲入口和 full 会话分别显示为 `Qoder` / `Qoder CN`；Qoder/Qoder CN 日志按 `taskId` / `sessionId` 拆成具体对话，并优先使用本地缓存库或 project session 的真实标题；缺少真实标题时前端兜底显示 `Qoder 对话 #1/#2`，不展示 `chat-1/chat-3`、task id、UUID 或长内部 ID；Completed/ActionRequired/suspended/requiresApproval 转待处理，Running/streaming/prompting 转进行中，且同时间戳下待处理信号不能被 streaming 渲染快照覆盖；启动前历史完成不误弹，启动前已经处于 suspended / requiresApproval 的用户介入态仍显示待处理，启动后新完成必须待处理；Qoder 气泡点击支持 `Qoder` 与 `Qoder CN` 名称别名并回到对应 AI 工具窗口 | `test_qoder_completed_task_log_creates_needs_action_conversation`、`test_qoder_completion_after_monitor_start_is_not_filtered_as_history`、`test_qoder_completion_before_monitor_start_falls_back_to_idle_desktop_entry`、`test_qoder_user_attention_state_before_monitor_start_still_needs_action`、`test_qoder_multiple_task_logs_create_separate_conversation_updates`、`test_qoder_suspended_transition_is_not_overridden_by_same_timestamp_streaming_snapshot`、`test_qoder_suspended_payload_state_counts_as_needs_action`、`test_qoder_payload_requiring_user_input_counts_as_needs_action`、`test_qoder_log_desktop_session_payload_is_full_and_view_acknowledged_after_focus`、`test_pet_frontend_behaviors_match_prd`、`test_qoder_cn_desktop_ignores_regular_qoder_logs`、`test_regular_qoder_desktop_ignores_qoder_cn_logs`、`test_native_focus_matches_qoder_cn_when_payload_uses_qoder_display_name` |
-| WorkBuddy 新增工具 full 接入 | WorkBuddy 已进入通用 AI 工具定义表，支持 `workbuddy` / `codebuddy` CLI、真实 macOS `Electron` 桌面主进程存活入口和桌面点击聚焦，并忽略 daemon / sidecar / `codebuddy --serve` 等 Electron 服务进程，避免重复气泡；直接运行 WorkBuddy CLI 仍按进程活跃度保守判断；WorkBuddy Desktop 会读取本地 sessions 数据库中明确的 `Running` / `Completed` / `Failed` 等状态和 runtime log 状态，并生成 full 级具体会话；默认 `Pending` 且无活动时间的空白会话不误报；WorkBuddy full 会话气泡必须显示软件名，且对项目/文件夹下的会话显示项目上下文，例如 `WorkBuddy Desktop - 项目名 - Start new chat session`；使用 `monitor_workbuddy.sh` / `monitor_workbuddy.bat` 或 `emit_event.py --tool unknown --tool-display-name WorkBuddy` 时，也可写出 full 级会话、待处理、聚焦字段和已查看收口语义；JSON 事件默认跟随 `AI_PROGRESS_MONITOR_HOME` 并原子写入 | `test_new_configured_ai_tools_create_generic_process_entries`、`test_workbuddy_desktop_scan_ignores_electron_service_processes`、`test_workbuddy_db_sessions_create_full_desktop_conversation_entries`、`test_workbuddy_db_ignores_history_and_ambiguous_pending_sessions`、`test_workbuddy_db_desktop_session_payload_is_full_and_view_acknowledged_after_focus`、`test_terminal_bridge_writes_generic_tool_display_name_for_full_monitoring`、`test_emit_event_default_session_dir_follows_monitor_home_and_writes_atomically`、`test_emit_event_can_publish_generic_ai_tool_full_session`、`test_generic_full_session_is_view_acknowledged_after_focus`、`test_generic_shell_wrapper_writes_tool_display_name`、`test_native_focus_only_activates_ai_desktop_apps_as_last_resort` |
+| WorkBuddy 新增工具 full 接入 | WorkBuddy 已进入通用 AI 工具定义表，支持 `workbuddy` / `codebuddy` CLI、真实 macOS `Electron` 桌面主进程存活入口和桌面点击聚焦，并忽略 daemon / sidecar / `codebuddy --serve` 等 Electron 服务进程，避免重复气泡；直接运行 WorkBuddy CLI 仍按进程活跃度保守判断；WorkBuddy Desktop 会读取本地 sessions 数据库中明确的 `Running` / `Completed` / `Failed` 等状态和 runtime log 状态，并生成 full 级具体会话；`workbuddy-db` 与 `workbuddy-log` 都属于完整会话来源，同 PID 存在旧数据库会话时不得过滤当前 runtime-log 运行会话；默认 `Pending` 且无活动时间的空白会话不误报；WorkBuddy full 会话气泡必须显示软件名，且对项目/文件夹下的会话显示项目上下文，例如 `WorkBuddy Desktop - 项目名 - Start new chat session`；使用 `monitor_workbuddy.sh` / `monitor_workbuddy.bat` 或 `emit_event.py --tool unknown --tool-display-name WorkBuddy` 时，也可写出 full 级会话、待处理、聚焦字段和已查看收口语义；JSON 事件默认跟随 `AI_PROGRESS_MONITOR_HOME` 并原子写入 | `test_new_configured_ai_tools_create_generic_process_entries`、`test_workbuddy_desktop_scan_ignores_electron_service_processes`、`test_workbuddy_db_sessions_create_full_desktop_conversation_entries`、`test_workbuddy_db_ignores_history_and_ambiguous_pending_sessions`、`test_workbuddy_db_desktop_session_payload_is_full_and_view_acknowledged_after_focus`、`test_workbuddy_runtime_log_session_remains_visible_with_db_session_on_same_process`、`test_workbuddy_runtime_log_session_survives_one_missing_poll_and_accepts_completion`、`test_terminal_bridge_writes_generic_tool_display_name_for_full_monitoring`、`test_emit_event_default_session_dir_follows_monitor_home_and_writes_atomically`、`test_emit_event_can_publish_generic_ai_tool_full_session`、`test_generic_full_session_is_view_acknowledged_after_focus`、`test_generic_shell_wrapper_writes_tool_display_name`、`test_native_focus_only_activates_ai_desktop_apps_as_last_resort` |
 | ChatGPT 桌面运行中对话可见 | macOS 窗口扫描权限不可用时，运行中的 ChatGPT 桌面会话仍要基于 `~/.codex/sessions` 中明确的桌面 originator 生成气泡；ChatGPT 主程序存活只生成空闲入口，具体会话优先 | 已证明；当前源码真实服务层 payload 识别到 ChatGPT 桌面会话并对通用入口去重 |
 | 已查看桌面会话自动收口 | 已查看后转为空闲的桌面端具体对话保留 15 分钟后移出；桌面 App 仍存活时，App 空闲入口重新显示 | 已证明 |
 | 进程级检测聚焦字段贯通 | source 识别出的 `focus_process_id` / `focus_app_name` 必须进入 `/api/sessions` payload，并被 `/api/focus` 使用 | `test_process_only_payload_includes_focus_metadata_for_bubble_navigation`、`test_focus_session_uses_window_metadata_when_available` |
@@ -264,11 +285,62 @@ ChatGPT 与多工具功能回归范围、445 项自动化结果和最小人工�
 | pyz 视觉资源检查 | 通过；包含三态 Pet PNG、APP 头像 PNG，资源头有效；不包含候选素材目录或 `.DS_Store` |
 | macOS app 签名检查 | 通过；两个 `.app` 均为本地 ad-hoc 签名，未 Apple notarized |
 
+## 2026-07-24 Zed 残留会话增量验证
+
+| 验证 | 结果 |
+|---|---|
+| 新增失败测试 | 第一轮修复前窗口清单接口缺失，SellerBooks 与日报推送同时保留；真实 Dev App 又证明 Python osascript 因 AX 权限不可用而降级保留，两个失败原因都与现场现象一致 |
+| 原生清单定向测试 | 8 tests OK，覆盖原生清单过滤与窗口 ID 回填、空清单、单 App 读取失败、8 秒过期、畸形载荷、token 鉴权和 Swift 发布钩子 |
+| sources/service/聚焦/API 相关回归 | 275 tests OK |
+| 完整测试套件 | 正常本机权限下 485 tests OK |
+| `python3 scripts/validate_release.py` | 正常本机权限下输出 `release-validation-ok` |
+| 最新 Dev App 现场复测 | 最终构建重新授权后日志为 `trusted=true`。双窗口基线同时识别 SellerBooks 与日报推送；只关闭 SellerBooks 后 AX 窗口数从 2 变 1，SellerBooks 气泡消失，日报推送保留；用户再次点击日报推送，确认只跳对应 Zed 窗口。通过 |
+
+## 2026-07-24 WorkBuddy 运行态回归修复验证
+
+| 验证 | 证据 | 结果 |
+|---|---|---|
+| 真实现象 | WorkBuddy 的 `Test again` 明确处于生成中，但 Pet 只有 WorkBuddy 空闲入口；生成结束后才出现 `WorkBuddy · Test again · 待处理` | 已复现 |
+| 根因 | `ProcessSource` 在整个真实运行期均能生成 `status=running`、`status_source=workbuddy-log` 的具体会话；服务层完整进程桌面会话集合却只有 `qoder-log` 和 `workbuddy-db`。同一 PID 还有旧 `workbuddy-db` 会话时，`workbuddy-log` 被标成 `process_only` 并作为重复项过滤；完成后来源回到 `workbuddy-db`，气泡才突然出现 | 已证明 |
+| 替代根因排除 | WorkBuddy GUI 主进程持续可识别，`codebuddy --serve` Agent 始终按服务进程排除；数据库行数、读取顺序、通知开关和前端渲染均不是运行态缺失原因 | 已排除 |
+| 稳定修复 | 完整进程桌面会话来源统一为 `qoder-log / workbuddy-db / workbuddy-log`；只补齐来源语义，不修改状态映射、日志/数据库解析、通知、冷却、标题、会话 ID、聚焦和 UI 优先级 | 通过 |
+| 定向回归 | 新增 `test_workbuddy_runtime_log_session_remains_visible_with_db_session_on_same_process` 与 `test_workbuddy_runtime_log_session_survives_one_missing_poll_and_accepts_completion`，覆盖同 PID 新旧会话并存、运行态保持、一次缺失轮询和完成态接续；`tests.test_service` 51 项、`tests.test_sources` 129 项通过 | 通过 |
+| 相关功能回归 | store、Web 启动、Web 行为、macOS 原生伴随、通知与偏好共 125 项通过；Zed 关闭窗口清理和精确项目聚焦测试保持通过 | 通过 |
+| 完整门禁 | `PYTHONPATH=src python3 -m unittest discover -s tests` 为 487 项全部通过；`python3 scripts/validate_release.py` 输出 `release-validation-ok`；`git diff --check` 通过 | 通过 |
+| Browser 与服务现场 | Browser 页面非空、气泡与右键菜单正常、控制台无应用错误。`Test again` 连续 3 个 5 秒周期显示“进行中”，随后连续 4 个周期显示“待处理”；原生日志在 06:52:03 至 06:52:50 连续 13 次为 `running=2 / full=2`，06:52:54 起稳定为 `needs_action=1 / running=1 / full=2` | 通过 |
+| 完成后查看 | 点击 `WorkBuddy · Test again · 待处理` 后变为空闲；审计记录 `focus-window / activated-app`，保持原有“完成待查看”收口语义 | 通过 |
+| Zed 与原生壳回归 | “日报推送”气泡聚焦审计为 `focused-project-window`；SellerBooks 已关闭且未重新出现。真实右键隐藏与菜单栏 `Show Monitor` 恢复后，`scripts/check_macos_floating_dev.sh --strict` 六项均为 `[OK]` 并输出 `Manual acceptance complete` | 通过 |
+
+## 2026-07-28 全面回归审计与最终验收
+
+| 验证 | 证据 | 结果 |
+|---|---|---|
+| ChatGPT 15 分钟收口 | 新增 App 存活时一次 `chatgpt-session` 来源缺失仍保留已查看具体对话、App 明确退出后不保留两项测试；修复前第一项提前退化为空闲入口，修复后按 15 分钟口径保持 | 通过 |
+| WorkBuddy 状态合并 | 新增 runtime 显式待处理覆盖旧数据库完成态测试；更新的 `waiting_for_input` 使用 `view_ack_required=false`，普通完成待查看仍保持原语义 | 通过 |
+| 通知偏好幂等 | 新增“实际状态相同不重复写盘”测试；缺失或非法值仍按默认开启计算，同值请求返回成功且不改写文件，其他偏好和未知字段保留 | 通过 |
+| 相似项目窗口 | Python 服务、Python 聚焦助手和 Swift 原生策略统一使用“完整标题 > 标准标题分段 > 有边界词元”评分；自动化证明 `ProjectAlpha-old` 不会冒充 `ProjectAlpha`，仅剩前缀窗口时目标气泡会移除 | 通过 |
+| 定向回归 | 跨 IDE 窗口、服务、进程宿主、命令包装器、Swift 聚焦策略和原生伴随 284 项通过；通知偏好/通知管理/服务/API/UI/文档既有回归保持通过；Swift 解析通过 | 通过 |
+| 跨 IDE 统一策略 | Zed、Cursor、Visual Studio Code / Insiders、VSCodium、Windsurf、Xcode、Nova、Sublime Text、Kiro、Trae / Trae CN、Eclipse、Fleet、Android Studio 和 JetBrains 系列均由自动化证明进入同一窗口清单、失效清理、窗口 ID 回填和安全聚焦策略；Terminal、iTerm、Warp、WezTerm、kitty、Alacritty、Ghostty、Hyper、Tabby、Rio 保持 AI 子进程生命周期，不因缺少项目窗口被误删 | 自动化通过；Zed 与 Visual Studio Code 已实机，其他宿主不冒充实机验收 |
+| VS Code 宿主归属 | 隔离测试目录中的真实进程树为 `AI CLI → shell → Code Helper → Code 主进程`；修复前会停在 Helper PID，修复后来源扫描器与命令包装器都继续向上并返回同一个 Code 主进程 PID。原生 AX 清单重新授权后持续为 `trusted=true` | 通过 |
+| VS Code 双窗口精确聚焦 | alpha / beta 两个真实项目窗口各启动一个隔离 AI CLI。真实点击 Pet 的 `#1` 后，精确 Code PID 的 AX focused/main 均为 alpha；点击 `#2` 后两项均为 beta。三次原生聚焦结果均为 `ok=true / focused-project-window`，没有使用按进程名查询的同名窗口结果作为证据 | 通过 |
+| VS Code 单窗关闭清理 | 通过精确 Code PID 和完整窗口标题只关闭 alpha；alpha AI CLI 同步退出，下一轮 Pet 会话中 alpha 消失、beta 仍存在。再次真实点击 beta 后，AX focused/main 仍均为 beta | 通过；“窗口已关但子进程短暂残留”边界由自动化测试覆盖 |
+| VS Code 用户人工监测 | 用户手动在 VS Code IDE 窗口内启动真实 Claude Code，确认 Pet 监测功能正常 | 通过；只记录用户明确验证的监测主路径 |
+| 进程扫描余量 | 清除上轮 VS Code 恢复的旧隔离进程后，在两个隔离 AI CLI 与现有真实会话共存条件下连续执行 6 次 `ProcessSource.poll()`，全部成功，耗时 `2.095–3.025 秒`，低于 4 秒命令预算。此前接近超时的结果来自人为堆积的过期验收进程，不作为正常基线，也未通过增加超时规避 | 通过 |
+| 完整门禁 | `PYTHONPATH=src python3 -m unittest discover -s tests` 在正常本机权限下运行 511 项并输出 `OK`；受限环境中的 13 项仅因 `127.0.0.1` 绑定被拒绝而未执行；`python3 scripts/validate_release.py` 输出全部 `[OK]` 和 `release-validation-ok`；Swift 解析通过 | 通过 |
+| 受限环境区分 | 受限环境中的发布校验曾有 13 项本机端口绑定 `PermissionError`，没有断言失败；同一命令在正常本机权限下全部通过，确认属于执行环境限制而非 Web/API 回归 | 已区分 |
+| Browser 页面 | 页面身份为 `AI Progress Monitor`，页面非空；实时显示 4 个会话，其中 1 个进行中。右键主菜单顺序为“外观 / 系统通知 / 隐藏 Pet / 退出程序”，通知子菜单完整显示“开启 / ✓关闭”，无裁切，控制台错误和警告为 0；未改写用户通知偏好 | 通过 |
+| 最新 Dev App | 使用既有脚本重新构建、临时签名并启动最新源码；服务持续输出会话快照，衬衫资源路由与批准源一致且禁用缓存。真实完成气泡展开/收起、约 30 像素往返拖动、右键隐藏、菜单栏恢复 | 通过 |
+| 辅助功能与精确聚焦 | 重建后的临时签名使旧辅助功能授权失效，首次点击明确返回 `accessibility-permission-required`，未误记为通过。重新授权后清单为 `trusted=true / 1 IDE / 3 windows / 0 unavailable`；目标气泡返回 `ok=true / focused-project-window`，前台为 Zed 的目标项目窗口 | 通过 |
+| 严格原生验收 | `scripts/check_macos_floating_dev.sh --strict` 的会话、开合、拖动、隐藏、菜单恢复、气泡聚焦和资源检查全部 `[OK]`，退出码 0，输出 `Manual acceptance complete` | 通过 |
+
 ## 当前运行日志关键证据
 
 | 日志 | 含义 |
 |---|---|
 | `AI Progress Monitor sessions` | 开发态 Pet 服务已被 WebView 轮询；最新逻辑应显示 ChatGPT 桌面运行中会话为 `full`，直接已配置 AI CLI 为 `process_only`，数量会随真实会话实时变化 |
+| `Project window inventory: trusted=true apps=1 windows=2 unavailable=0` → `windows=1` | 最终 Dev App 的原生 AX 清单可用；关闭 SellerBooks 项目窗口后只减少一个 Zed 窗口，无窗口清单读取失败 |
+| `Native focus result: ok=true method=focused-project-window` | 真实 VS Code 双窗口正反向点击和关闭 alpha 后再次点击 beta 均走精确项目窗口路径 |
+| alpha 气泡消失、beta 气泡保留 | 精确关闭 alpha 后，下一轮受保护会话接口只保留 beta；再次点击 beta 后其 AX focused/main 均为 beta |
 | `Manual acceptance evidence: [OK] sessions visible` | 开发态 Pet 已识别监控对象 |
 | `Manual acceptance evidence: [OK] left-click open/close evidence` | 前一轮真实 CGEvent 左键展开/收起日志已通过，且没有 hide；本轮按要求未重复测试 |
 | `Manual acceptance evidence: [OK] drag evidence` | 前一轮真实拖动日志已通过，窗口从外接屏区域拖到主屏可见区域；本轮按要求未重复测试 |

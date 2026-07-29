@@ -16,6 +16,7 @@ from scripts.monitor_command import (
     default_response_dir,
     default_session_dir,
     detect_focus_app_from_process_rows,
+    focus_app_name_from_args,
     run_monitored_command,
 )
 
@@ -377,6 +378,58 @@ class TerminalBridgeTests(unittest.TestCase):
 
         self.assertEqual(focus_pid, 75407)
         self.assertEqual(app_name, "Zed")
+
+    def test_focus_detection_climbs_past_electron_helper_to_main_ide(self):
+        rows = [
+            "100 200 /tmp/codex 300",
+            "200 300 /bin/zsh -il",
+            "300 400 /Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper.app/Contents/MacOS/Code Helper --type=utility",
+            "400 1 /Applications/Visual Studio Code.app/Contents/MacOS/Code",
+        ]
+
+        focus_pid, app_name = detect_focus_app_from_process_rows(100, rows)
+
+        self.assertEqual(focus_pid, 400)
+        self.assertEqual(app_name, "Visual Studio Code")
+
+    def test_wrapper_focus_registry_covers_supported_ide_and_terminal_hosts(self):
+        cases = [
+            ("/Applications/Terminal.app/Contents/MacOS/Terminal", "Terminal"),
+            ("/Applications/iTerm.app/Contents/MacOS/iTerm2", "iTerm"),
+            ("/Applications/Warp.app/Contents/MacOS/stable", "Warp"),
+            ("/Applications/WezTerm.app/Contents/MacOS/wezterm-gui", "WezTerm"),
+            ("/Applications/kitty.app/Contents/MacOS/kitty", "kitty"),
+            ("/Applications/Alacritty.app/Contents/MacOS/alacritty", "Alacritty"),
+            ("/Applications/Ghostty.app/Contents/MacOS/ghostty", "Ghostty"),
+            ("/Applications/Hyper.app/Contents/MacOS/Hyper", "Hyper"),
+            ("/Applications/Tabby.app/Contents/MacOS/Tabby", "Tabby"),
+            ("/Applications/Rio.app/Contents/MacOS/rio", "Rio"),
+            ("/Applications/Zed.app/Contents/MacOS/zed", "Zed"),
+            ("/Applications/Cursor.app/Contents/MacOS/Cursor", "Cursor"),
+            ("/Applications/Visual Studio Code - Insiders.app/Contents/MacOS/Electron", "Visual Studio Code"),
+            ("/Applications/VSCodium.app/Contents/MacOS/Electron", "VSCodium"),
+            ("/Applications/Windsurf.app/Contents/MacOS/Electron", "Windsurf"),
+            ("/Applications/Sublime Text.app/Contents/MacOS/sublime_text", "Sublime Text"),
+            ("/Applications/Nova.app/Contents/MacOS/Nova", "Nova"),
+            ("/Applications/Xcode.app/Contents/MacOS/Xcode", "Xcode"),
+            ("/Applications/Kiro.app/Contents/MacOS/Kiro", "Kiro"),
+            ("/Applications/Trae CN.app/Contents/MacOS/Trae CN", "Trae"),
+            ("/Applications/Eclipse.app/Contents/MacOS/eclipse", "Eclipse"),
+            ("/Applications/Fleet.app/Contents/MacOS/Fleet", "Fleet"),
+            ("/Applications/Android Studio.app/Contents/MacOS/studio", "Android Studio"),
+            ("/Applications/CLion.app/Contents/MacOS/clion", "CLion"),
+            ("/Applications/GoLand.app/Contents/MacOS/goland", "GoLand"),
+            ("/Applications/IntelliJ IDEA CE.app/Contents/MacOS/idea", "IntelliJ IDEA"),
+            ("/Applications/PhpStorm.app/Contents/MacOS/phpstorm", "PhpStorm"),
+            ("/Applications/PyCharm CE.app/Contents/MacOS/pycharm", "PyCharm"),
+            ("/Applications/Rider.app/Contents/MacOS/rider", "Rider"),
+            ("/Applications/RubyMine.app/Contents/MacOS/rubymine", "RubyMine"),
+            ("/Applications/WebStorm.app/Contents/MacOS/webstorm", "WebStorm"),
+        ]
+
+        for command, expected in cases:
+            with self.subTest(command=command):
+                self.assertEqual(focus_app_name_from_args(command), expected)
 
     @unittest.skipUnless(os.name == "posix", "PTY behavior is only available on POSIX systems")
     def test_monitored_command_runs_child_in_terminal_on_posix(self):
