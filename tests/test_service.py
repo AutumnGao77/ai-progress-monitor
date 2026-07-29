@@ -1,4 +1,5 @@
 import tempfile
+import threading
 import time
 import unittest
 from dataclasses import replace
@@ -297,6 +298,59 @@ class MonitorServiceTests(unittest.TestCase):
             self.assertTrue(service.notifications_enabled())
             self.assertTrue(notifier.enabled)
             self.assertTrue(MonitorPreferences(preferences.path).notifications_enabled())
+
+    def test_notification_toggle_cannot_be_overwritten_by_stale_refresh(self):
+        class PausingPreferences:
+            def __init__(self):
+                self.enabled = True
+                self.refresh_read_started = threading.Event()
+                self.allow_refresh_read_to_finish = threading.Event()
+
+            def notifications_enabled(self):
+                value = self.enabled
+                if threading.current_thread().name == "notification-refresh":
+                    self.refresh_read_started.set()
+                    self.allow_refresh_read_to_finish.wait(timeout=2)
+                return value
+
+            def set_notifications_enabled(self, enabled):
+                self.enabled = enabled
+                return True
+
+            def is_hidden(self, _session_id):
+                return False
+
+        preferences = PausingPreferences()
+        notifier = NotificationManager(sender=lambda _title, _message: None)
+        service = MonitorService(
+            [],
+            SessionStore(),
+            ActionExecutor(),
+            notifier=notifier,
+            preferences=preferences,
+        )
+        refresh_thread = threading.Thread(target=service.refresh, name="notification-refresh")
+        refresh_thread.start()
+        self.assertTrue(preferences.refresh_read_started.wait(timeout=1))
+
+        toggle_finished = threading.Event()
+        toggle_result = []
+
+        def disable_notifications():
+            toggle_result.append(service.set_notifications_enabled(False))
+            toggle_finished.set()
+
+        toggle_thread = threading.Thread(target=disable_notifications)
+        toggle_thread.start()
+        returned_before_refresh_finished = toggle_finished.wait(timeout=0.1)
+        preferences.allow_refresh_read_to_finish.set()
+        refresh_thread.join(timeout=2)
+        toggle_thread.join(timeout=2)
+
+        self.assertFalse(returned_before_refresh_finished)
+        self.assertEqual(toggle_result, [True])
+        self.assertFalse(preferences.enabled)
+        self.assertFalse(notifier.enabled)
 
     def test_no_notifications_argument_locks_runtime_without_changing_preference(self):
         with tempfile.TemporaryDirectory() as temp_dir:

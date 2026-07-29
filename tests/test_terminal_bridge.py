@@ -431,6 +431,11 @@ class TerminalBridgeTests(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertEqual(focus_app_name_from_args(command), expected)
 
+    def test_focus_app_detection_does_not_treat_project_path_as_trae(self):
+        command = "/usr/bin/python3 /Users/Gao/Documents/TraeProject/scripts/worker.py"
+
+        self.assertIsNone(focus_app_name_from_args(command))
+
     @unittest.skipUnless(os.name == "posix", "PTY behavior is only available on POSIX systems")
     def test_monitored_command_runs_child_in_terminal_on_posix(self):
         with tempfile.TemporaryDirectory() as temp_dir:

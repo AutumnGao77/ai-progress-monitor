@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
+from threading import RLock
 import time
 from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
@@ -67,7 +68,9 @@ class MonitorService:
         self._native_project_window_inventory: Optional[NativeProjectWindowInventory] = None
         self._native_project_window_inventory_updated_at: Optional[float] = None
         self._process_empty_started_at: Optional[float] = None
-        self._sync_notifications_enabled([])
+        self._notification_lock = RLock()
+        with self._notification_lock:
+            self._sync_notifications_enabled([])
 
     def refresh(self) -> List[SessionUpdate]:
         if not self.paused:
@@ -94,8 +97,9 @@ class MonitorService:
                     self.store.apply_updates(updates)
         sessions = self.visible_sessions()
         if self.notifier is not None:
-            self._sync_notifications_enabled(sessions)
-            self.notifier.notify_for_sessions(sessions)
+            with self._notification_lock:
+                self._sync_notifications_enabled(sessions)
+                self.notifier.notify_for_sessions(sessions)
         return sessions
 
     def notifications_enabled(self) -> bool:
@@ -105,12 +109,13 @@ class MonitorService:
         return self._notifications_forced_off
 
     def set_notifications_enabled(self, enabled: bool) -> bool:
-        if self.notifications_locked():
-            return False
-        changed = self.preferences.set_notifications_enabled(enabled)
-        if changed:
-            self._sync_notifications_enabled(self.visible_sessions())
-        return changed
+        with self._notification_lock:
+            if self.notifications_locked():
+                return False
+            changed = self.preferences.set_notifications_enabled(enabled)
+            if changed:
+                self._sync_notifications_enabled(self.visible_sessions())
+            return changed
 
     def _sync_notifications_enabled(self, sessions: Iterable[SessionUpdate]) -> None:
         if self.notifier is not None:

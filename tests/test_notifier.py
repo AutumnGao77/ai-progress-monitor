@@ -1,3 +1,4 @@
+import threading
 import unittest
 from datetime import datetime, timedelta, timezone
 
@@ -174,6 +175,40 @@ class NotifierTests(unittest.TestCase):
 
         self.assertEqual(len(sent), 1)
         self.assertIn("需要处理", sent[0][0])
+
+    def test_disabling_waits_for_in_flight_delivery_before_confirming(self):
+        sender_started = threading.Event()
+        release_sender = threading.Event()
+        disabled = threading.Event()
+        now = datetime(2026, 6, 30, tzinfo=timezone.utc)
+
+        def sender(_title, _message):
+            sender_started.set()
+            release_sender.wait(timeout=2)
+
+        manager = NotificationManager(sender=sender)
+        notify_thread = threading.Thread(
+            target=manager.notify_for_sessions,
+            args=([make_session("s1", SessionStatus.NEEDS_ACTION, now)],),
+            kwargs={"now": now},
+        )
+        notify_thread.start()
+        self.assertTrue(sender_started.wait(timeout=1))
+
+        def disable():
+            manager.set_enabled(False, sessions=[make_session("s1", SessionStatus.NEEDS_ACTION, now)])
+            disabled.set()
+
+        disable_thread = threading.Thread(target=disable)
+        disable_thread.start()
+        returned_while_sender_was_blocked = disabled.wait(timeout=0.1)
+        release_sender.set()
+        notify_thread.join(timeout=2)
+        disable_thread.join(timeout=2)
+
+        self.assertFalse(returned_while_sender_was_blocked)
+        self.assertTrue(disabled.is_set())
+        self.assertFalse(manager.enabled)
 
 
 def make_session(session_id: str, status: SessionStatus, updated_at: datetime) -> SessionUpdate:
