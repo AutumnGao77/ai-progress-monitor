@@ -7,9 +7,18 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SRC = ROOT / "src"
-if str(SRC) not in sys.path:
-    sys.path.insert(0, str(SRC))
+
+
+def runtime_import_path(root: Path) -> Path:
+    source_root = root / "src"
+    if source_root.is_dir():
+        return source_root
+    return root / "ai-progress-monitor.pyz"
+
+
+RUNTIME_IMPORT_PATH = runtime_import_path(ROOT)
+if str(RUNTIME_IMPORT_PATH) not in sys.path:
+    sys.path.insert(0, str(RUNTIME_IMPORT_PATH))
 
 from ai_progress_monitor.doctor import run_diagnostics
 

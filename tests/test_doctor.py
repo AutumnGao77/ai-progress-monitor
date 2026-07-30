@@ -3,9 +3,18 @@ import unittest
 from pathlib import Path
 
 from ai_progress_monitor.doctor import CheckStatus, run_diagnostics
+from scripts.doctor import runtime_import_path
 
 
 class DoctorTests(unittest.TestCase):
+    def test_doctor_uses_sibling_pyz_without_source_tree(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            artifact = root / "ai-progress-monitor.pyz"
+            artifact.touch()
+
+            self.assertEqual(runtime_import_path(root), artifact)
+
     def test_run_diagnostics_reports_core_checks(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             result = run_diagnostics(session_dir=Path(temp_dir) / "sessions", response_dir=Path(temp_dir) / "responses")

@@ -17,6 +17,7 @@ from scripts.monitor_command import (
     default_session_dir,
     detect_focus_app_from_process_rows,
     focus_app_name_from_args,
+    runtime_import_path,
     run_monitored_command,
 )
 
@@ -36,6 +37,14 @@ def write_response_when_prompt_seen(root: Path, session_id: str, response: str) 
 
 
 class TerminalBridgeTests(unittest.TestCase):
+    def test_monitor_command_uses_sibling_pyz_without_source_tree(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            artifact = root / "ai-progress-monitor.pyz"
+            artifact.touch()
+
+            self.assertEqual(runtime_import_path(root), artifact)
+
     def test_monitor_command_defaults_follow_monitor_home(self):
         root = Path("/tmp/ai-monitor-test-home")
 
