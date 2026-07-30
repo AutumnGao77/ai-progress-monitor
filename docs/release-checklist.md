@@ -2,21 +2,21 @@
 
 结论：每次交付前必须先证明核心逻辑、事件接入、原生悬浮入口、进程探测边界、Pet 左键/右键边界和隐私减负主路径都可用。
 
-Pet 外观主题切换的执行 PRD 是 `docs/prd/2026-07-11-pet-appearance-theme-switching-prd.md`；系统通知开关的执行 PRD 是 `docs/prd/2026-07-14-notification-preference-toggle-prd.md`；新增 AI 工具监控的执行 PRD 是 `docs/prd/2026-07-14-ai-tool-monitoring-expansion-prd.md`；ChatGPT 迁移与多工具回归记录是 `docs/qa/2026-07-17-chatgpt-and-multi-tool-regression-test-cases.md`；v0.2.1 历史双包记录是 `docs/qa/2026-07-17-v0.2.1-release-packaging-validation.md`；v0.3.0 候选构建、校验和回下载证据记录在 `docs/qa/2026-07-30-v0.3.0-release-packaging-validation.md`。发布前需确认 PRD、README、QA 报告和本清单中的菜单、资源、偏好、API、App 验收描述一致。
+Pet 外观主题切换的执行 PRD 是 `docs/prd/2026-07-11-pet-appearance-theme-switching-prd.md`；系统通知开关的执行 PRD 是 `docs/prd/2026-07-14-notification-preference-toggle-prd.md`；新增 AI 工具监控的执行 PRD 是 `docs/prd/2026-07-14-ai-tool-monitoring-expansion-prd.md`；ChatGPT 迁移与多工具回归记录是 `docs/qa/2026-07-17-chatgpt-and-multi-tool-regression-test-cases.md`；v0.2.1 历史双包记录是 `docs/qa/2026-07-17-v0.2.1-release-packaging-validation.md`；v0.3.0 正式发布、校验和与回下载证据记录在 `docs/qa/2026-07-30-v0.3.0-release-packaging-validation.md`。发布前需确认 PRD、README、QA 报告和本清单中的菜单、资源、偏好、API、App 验收描述一致。
 
-## v0.3.0 发布目标
+## v0.3.0 发布结果
 
 | 项目 | 放行要求 | 当前状态 |
 |---|---|---|
-| Release | `v0.3.0`，目标发布日期 2026-07-30；发布前不得把候选状态写成已通过 | 待执行 |
-| 源码基线 | PR #5 合并提交 `770d447` 与测试稳定性 PR #6 合并提交 `ed468b8`，再叠加本次版本、发布文档和 portable 解压态入口修复 | 本地候选已固定，待 Release PR 合并 |
-| 附件 | `AI-Progress-Monitor-v0.3.0-macOS-arm64.zip`、`ai-progress-monitor-v0.3.0-portable.zip` | 本地最终候选已生成并计算 SHA-256 |
-| 自动化门 | 完整测试、`scripts/validate_release.py`、PR CI 和合并后 `main` CI 全部通过 | 本地 517 项与发布校验通过；两轮 CI 待执行 |
+| Release | `v0.3.0`，目标发布日期 2026-07-30；发布前不得把候选状态写成已通过 | [已发布](https://github.com/AutumnGao77/ai-progress-monitor/releases/tag/v0.3.0)，非 Draft、非 Prerelease |
+| 源码基线 | PR #5 合并提交 `770d447` 与测试稳定性 PR #6 合并提交 `ed468b8`，再叠加本次版本、发布文档和 portable 解压态入口修复 | PR #7 已合并；最终 `main` 为 `ff667a3813d90cd701a016d6ae5a0f08612587a8` |
+| 附件 | `AI-Progress-Monitor-v0.3.0-macOS-arm64.zip`、`ai-progress-monitor-v0.3.0-portable.zip` | 已上传；远端字节数与 SHA-256 均和本地候选一致 |
+| 自动化门 | 完整测试、`scripts/validate_release.py`、PR CI 和合并后 `main` CI 全部通过 | 517 项、发布校验、PR CI 与合并后 `main` CI 全部通过 |
 | 本地候选门 | 双包结构、版本、架构、最低系统、签名、资源、SHA-256、最终 ZIP 内 App 启动与核心交互全部通过 | 已通过 |
-| GitHub 门 | annotated tag 指向最终合并提交；Release 非 Draft / Prerelease；两个附件上传完成；回下载哈希与本地候选一致 | 待执行 |
-| 权威证据 | `docs/qa/2026-07-30-v0.3.0-release-packaging-validation.md`；未实际执行的项目必须保留“待执行”，不得提前标记通过 | 本地证据已更新；发布后证据待补 |
+| GitHub 门 | annotated tag 指向最终合并提交；Release 非 Draft / Prerelease；两个附件上传完成；回下载哈希与本地候选一致 | 已通过；下载副本的 portable E2E、macOS 验签、启动和正常退出均通过 |
+| 权威证据 | `docs/qa/2026-07-30-v0.3.0-release-packaging-validation.md`；未实际执行的项目必须保留“待执行”，不得提前标记通过 | 已完整回填 |
 
-## 上一稳定发布基线
+## v0.2.1 历史发布基线
 
 | 项目 | 结果 |
 |---|---|

@@ -16,7 +16,7 @@
 | macOS 用户包 | [下载 macOS 13+ Apple Silicon 版本](https://github.com/AutumnGao77/ai-progress-monitor/releases/download/v0.3.0/AI-Progress-Monitor-v0.3.0-macOS-arm64.zip)；需要 Python 3.9+ |
 | 新手使用说明 | [查看 v0.3.0 macOS 使用说明](docs/ai-progress-monitor-v0.3.0-user-guide.md)；包含下载、首次打开、系统通知开关、常用操作和使用限制 |
 | 便携/集成包 | [下载 portable 版本](https://github.com/AutumnGao77/ai-progress-monitor/releases/download/v0.3.0/ai-progress-monitor-v0.3.0-portable.zip)；用于 Web/CLI 集成、诊断和 Windows 轻量预览 |
-| 发布验收 | v0.3.0 自动化、双包构建、macOS 发布候选和 GitHub 回下载证据见 `docs/qa/2026-07-30-v0.3.0-release-packaging-validation.md` |
+| 发布验收 | v0.3.0 自动化、双包构建、macOS 候选与 GitHub 回下载验收均已通过；证据见 `docs/qa/2026-07-30-v0.3.0-release-packaging-validation.md` |
 
 ## 当前能力
 
