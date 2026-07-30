@@ -12,10 +12,10 @@ The current stable delivery focus is the local Web Companion plus the validated 
 
 | Item | Details |
 |---|---|
-| Stable release | [v0.2.1](https://github.com/AutumnGao77/ai-progress-monitor/releases/tag/v0.2.1), published on 2026-07-20 |
-| macOS package | [Download for macOS 13+ on Apple silicon](https://github.com/AutumnGao77/ai-progress-monitor/releases/download/v0.2.1/AI-Progress-Monitor-v0.2.1-macOS-arm64.zip); Python 3.9+ required |
-| Portable package | [Download the portable package](https://github.com/AutumnGao77/ai-progress-monitor/releases/download/v0.2.1/ai-progress-monitor-v0.2.1-portable.zip) for Web/CLI integrations, diagnostics, and the Windows preview |
-| Release acceptance | The v0.2.1 baseline passed 445 automated tests; GitHub re-download, first launch, Pet, menu, bubbles, and window focus were manually accepted on 2026-07-20 |
+| Stable release | [v0.3.0](https://github.com/AutumnGao77/ai-progress-monitor/releases/tag/v0.3.0), published on 2026-07-30 |
+| macOS package | [Download for macOS 13+ on Apple silicon](https://github.com/AutumnGao77/ai-progress-monitor/releases/download/v0.3.0/AI-Progress-Monitor-v0.3.0-macOS-arm64.zip); Python 3.9+ required |
+| Portable package | [Download the portable package](https://github.com/AutumnGao77/ai-progress-monitor/releases/download/v0.3.0/ai-progress-monitor-v0.3.0-portable.zip) for Web/CLI integrations, diagnostics, and the Windows preview |
+| Release acceptance | Automated validation, package checks, macOS release-candidate acceptance, and GitHub re-download evidence are recorded in `docs/qa/2026-07-30-v0.3.0-release-packaging-validation.md` |
 
 ## Features
 

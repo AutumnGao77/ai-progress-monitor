@@ -12,11 +12,11 @@
 
 | 项目 | 内容 |
 |---|---|
-| 当前稳定版 | [v0.2.1](https://github.com/AutumnGao77/ai-progress-monitor/releases/tag/v0.2.1)，发布于 2026-07-20 |
-| macOS 用户包 | [下载 macOS 13+ Apple Silicon 版本](https://github.com/AutumnGao77/ai-progress-monitor/releases/download/v0.2.1/AI-Progress-Monitor-v0.2.1-macOS-arm64.zip)；需要 Python 3.9+ |
-| 新手使用说明 | [查看 v0.2.1 macOS 使用说明](docs/ai-progress-monitor-v0.2.1-user-guide.md)；包含下载、首次打开、常用操作和使用限制 |
-| 便携/集成包 | [下载 portable 版本](https://github.com/AutumnGao77/ai-progress-monitor/releases/download/v0.2.1/ai-progress-monitor-v0.2.1-portable.zip)；用于 Web/CLI 集成、诊断和 Windows 轻量预览 |
-| 发布验收 | v0.2.1 基线 445 项自动化测试通过；GitHub 回下载、首次打开、Pet、菜单、气泡和窗口跳转已于 2026-07-20 人工验收通过 |
+| 当前稳定版 | [v0.3.0](https://github.com/AutumnGao77/ai-progress-monitor/releases/tag/v0.3.0)，发布于 2026-07-30 |
+| macOS 用户包 | [下载 macOS 13+ Apple Silicon 版本](https://github.com/AutumnGao77/ai-progress-monitor/releases/download/v0.3.0/AI-Progress-Monitor-v0.3.0-macOS-arm64.zip)；需要 Python 3.9+ |
+| 新手使用说明 | [查看 v0.3.0 macOS 使用说明](docs/ai-progress-monitor-v0.3.0-user-guide.md)；包含下载、首次打开、系统通知开关、常用操作和使用限制 |
+| 便携/集成包 | [下载 portable 版本](https://github.com/AutumnGao77/ai-progress-monitor/releases/download/v0.3.0/ai-progress-monitor-v0.3.0-portable.zip)；用于 Web/CLI 集成、诊断和 Windows 轻量预览 |
+| 发布验收 | v0.3.0 自动化、双包构建、macOS 发布候选和 GitHub 回下载证据见 `docs/qa/2026-07-30-v0.3.0-release-packaging-validation.md` |
 
 ## 当前能力
 
@@ -29,6 +29,7 @@
 | 拖动宠物位置并记忆 | 已支持 |
 | 右键隐藏 Pet | 已支持，程序继续运行，可从菜单栏/托盘恢复 |
 | 右键退出程序 | 已支持，关闭桌面 Pet 和本地服务 |
+| 系统通知开关 | 已支持；右键 Pet →“系统通知”可选择开启或关闭，重启后保留，不影响 Pet 三态、角标、气泡和窗口跳转 |
 | 同文件夹/无文件夹多对话区分 | 已支持；有文件夹时用文件夹名 + 工具名和稳定序号区分；桌面版无真实文件夹时用 `工具名 对话` / `工具名 对话 #1`，不展示不可读 session_id 碎片；自动聊天目录由工具定义表配置识别 |
 | Claude Code / ChatGPT / Codex CLI 状态模型 | 已支持 |
 | JSON 事件源 | 已支持，推荐作为可靠接入方式 |

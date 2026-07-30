@@ -56,6 +56,39 @@ def required_portable_names() -> set[str]:
 
 
 class ReleaseBundleTests(unittest.TestCase):
+    def test_portable_runtime_verification_uses_packaged_entries(self):
+        with mock.patch.object(build_release, "run") as run:
+            build_release.verify_portable_runtime_entries()
+
+        portable = build_release.PORTABLE_RELEASE_DIR
+        artifact = portable / "ai-progress-monitor.pyz"
+        run.assert_has_calls(
+            [
+                mock.call(
+                    [
+                        build_release.sys.executable,
+                        str(portable / "scripts" / "monitor_command.py"),
+                        "--help",
+                    ]
+                ),
+                mock.call(
+                    [
+                        build_release.sys.executable,
+                        str(portable / "scripts" / "doctor.py"),
+                        "--help",
+                    ]
+                ),
+                mock.call(
+                    [
+                        build_release.sys.executable,
+                        str(portable / "scripts" / "e2e_smoke.py"),
+                        "--artifact",
+                        str(artifact),
+                    ]
+                ),
+            ]
+        )
+
     def test_validate_release_js_syntax_accepts_rendered_html_template(self):
         env = os.environ.copy()
         env["PYTHONPATH"] = "src"

@@ -105,6 +105,7 @@ def main() -> int:
     run([sys.executable, str(ARTIFACT), "--help"])
     run([sys.executable, "scripts/e2e_smoke.py", "--artifact", str(ARTIFACT)])
     build_release_bundles()
+    verify_portable_runtime_entries()
     verify_release_bundles()
     print(f"release-artifact-ok {ARTIFACT}")
     print(f"macos-release-ok {MACOS_RELEASE_ZIP}")
@@ -132,6 +133,32 @@ def build_release_bundles() -> None:
     build_portable_release_bundle()
 
 
+def verify_portable_runtime_entries() -> None:
+    artifact = PORTABLE_RELEASE_DIR / ARTIFACT.name
+    run(
+        [
+            sys.executable,
+            str(PORTABLE_RELEASE_DIR / "scripts" / "monitor_command.py"),
+            "--help",
+        ]
+    )
+    run(
+        [
+            sys.executable,
+            str(PORTABLE_RELEASE_DIR / "scripts" / "doctor.py"),
+            "--help",
+        ]
+    )
+    run(
+        [
+            sys.executable,
+            str(PORTABLE_RELEASE_DIR / "scripts" / "e2e_smoke.py"),
+            "--artifact",
+            str(artifact),
+        ]
+    )
+
+
 def build_macos_release_bundle() -> None:
     MACOS_RELEASE_DIR.mkdir(parents=True, exist_ok=True)
     create_macos_app_bundle(MACOS_RELEASE_DIR / "AI Progress Monitor.app")
@@ -146,6 +173,7 @@ def build_macos_release_bundle() -> None:
                 "  1. Python 3.9+ is required. Check with: python3 --version",
                 "  2. Double-click AI Progress Monitor.app.",
                 "  3. The Pet stays on top; closing hides it. Restore or quit from the menu bar avatar.",
+                "  4. Right-click the Pet > System Notifications > Disable to stop macOS notification popups without stopping monitoring.",
                 "",
                 "Compatibility:",
                 f"  This package requires macOS {MACOS_MINIMUM_VERSION} or later.",
@@ -214,6 +242,8 @@ def build_portable_release_bundle() -> None:
                 "  Right-click Pet -> Appearance to switch between the default three-state sloth and the shirt sloth.",
                 "  The shirt sloth theme uses /assets/pet/shirt.png for idle, running, and needs-action states.",
                 "  The app avatar is served at /assets/app-avatar.png.",
+                "  Right-click Pet -> System Notifications -> Enable / Disable to control native notification popups.",
+                "  Disabling notifications does not stop Pet states, badges, bubbles, monitoring, or click-to-focus.",
                 "  The separate macOS package includes app-avatar.png and AppIcon.icns; the menu bar item uses the avatar icon instead of AI text.",
                 "  To replace only the visual appearance, set local paths in ~/.ai-progress-monitor/preferences.json.",
                 "  Supported keys are pet_assets.idle, pet_assets.running, pet_assets.needs_action, and pet_assets.app_avatar.",
