@@ -64,6 +64,32 @@ class MonitorPreferences:
             aliases.pop(str(session_id), None)
             self._write_aliases(aliases)
 
+    def migrate_session_identity(self, previous_id: str, current_id: str) -> None:
+        previous_id = str(previous_id).strip()
+        current_id = str(current_id).strip()
+        if not previous_id or not current_id or previous_id == current_id:
+            return
+        with self._mutation_lock:
+            payload = self._read()
+            changed = False
+            hidden = payload.get("hidden_sessions")
+            if isinstance(hidden, list):
+                hidden_ids = {str(value) for value in hidden if str(value)}
+                if previous_id in hidden_ids:
+                    hidden_ids.discard(previous_id)
+                    hidden_ids.add(current_id)
+                    payload["hidden_sessions"] = sorted(hidden_ids)
+                    changed = True
+            aliases = payload.get("session_aliases")
+            if isinstance(aliases, dict) and previous_id in aliases:
+                migrated_aliases = dict(aliases)
+                previous_alias = migrated_aliases.pop(previous_id)
+                migrated_aliases.setdefault(current_id, previous_alias)
+                payload["session_aliases"] = dict(sorted(migrated_aliases.items()))
+                changed = True
+            if changed:
+                self._write_payload(payload)
+
     def pet_asset_path(self, key: str) -> Optional[Path]:
         assets = self._pet_assets()
         value = assets.get(str(key))

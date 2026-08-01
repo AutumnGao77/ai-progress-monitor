@@ -130,6 +130,45 @@ class NotifierTests(unittest.TestCase):
 
         self.assertEqual(sent, [])
 
+    def test_pid_reuse_does_not_emit_completion_for_new_process_generation(self):
+        sent = []
+        manager = NotificationManager(sender=lambda title, message: sent.append((title, message)))
+        now = datetime(2026, 7, 31, 5, 25, tzinfo=timezone.utc)
+        old_started_at = now - timedelta(days=1)
+        new_started_at = now - timedelta(hours=1)
+
+        manager.notify_for_sessions(
+            [make_process_session(SessionStatus.RUNNING, now, old_started_at)],
+            now=now,
+        )
+        manager.notify_for_sessions(
+            [make_process_session(SessionStatus.IDLE, now + timedelta(seconds=5), new_started_at)],
+            now=now + timedelta(seconds=5),
+        )
+
+        self.assertEqual(sent, [])
+
+    def test_pid_reuse_does_not_inherit_needs_action_notification_cooldown(self):
+        sent = []
+        manager = NotificationManager(
+            sender=lambda title, message: sent.append((title, message)),
+            cooldown_seconds=60,
+        )
+        now = datetime(2026, 7, 31, 5, 25, tzinfo=timezone.utc)
+        old_started_at = now - timedelta(days=1)
+        new_started_at = now - timedelta(hours=1)
+
+        manager.notify_for_sessions(
+            [make_process_session(SessionStatus.NEEDS_ACTION, now, old_started_at)],
+            now=now,
+        )
+        manager.notify_for_sessions(
+            [make_process_session(SessionStatus.NEEDS_ACTION, now + timedelta(seconds=5), new_started_at)],
+            now=now + timedelta(seconds=5),
+        )
+
+        self.assertEqual(len(sent), 2)
+
     def test_disabled_notifications_track_state_without_replaying_old_events(self):
         sent = []
         manager = NotificationManager(
@@ -220,6 +259,25 @@ def make_session(session_id: str, status: SessionStatus, updated_at: datetime) -
         status=status,
         summary="Do you want to continue?",
         updated_at=updated_at,
+    )
+
+
+def make_process_session(
+    status: SessionStatus,
+    updated_at: datetime,
+    process_started_at: datetime,
+) -> SessionUpdate:
+    return SessionUpdate(
+        session_id="process-24645",
+        title="Claude Code CLI - task",
+        tool=ToolKind.CLAUDE_CODE,
+        surface=SurfaceKind.TERMINAL,
+        status=status,
+        summary="Claude Code state",
+        updated_at=updated_at,
+        source="process",
+        process_id=24645,
+        process_started_at=process_started_at,
     )
 
 

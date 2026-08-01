@@ -52,6 +52,8 @@ class MonitorServiceTests(unittest.TestCase):
 
         self.assertEqual(payload[0]["status_source"], "qoder-log")
         self.assertEqual(payload[0]["tool_display_name"], "Qoder")
+        self.assertNotIn("observed_at", payload[0])
+        self.assertNotIn("process_started_at", payload[0])
 
     def test_qoder_log_desktop_session_payload_is_full_and_view_acknowledged_after_focus(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -203,6 +205,99 @@ class MonitorServiceTests(unittest.TestCase):
             self.assertEqual(before["status"], "needs_action")
             self.assertTrue(result.ok)
             self.assertEqual(after["status"], "idle")
+
+    def test_verified_claude_running_to_reply_and_view_is_stable_across_refresh(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            running_at = datetime(2026, 7, 31, 5, 23, tzinfo=timezone.utc)
+            clock = FakeDateTimeClock(datetime(2026, 7, 31, 5, 25, tzinfo=timezone.utc))
+            running = SessionUpdate(
+                session_id="process-24645",
+                title="Claude Code CLI - long-task",
+                tool=ToolKind.CLAUDE_CODE,
+                surface=SurfaceKind.TERMINAL,
+                status=SessionStatus.RUNNING,
+                summary="Claude Code is running.",
+                updated_at=running_at,
+                source="process",
+                process_id=24645,
+                focus_process_id=75407,
+                focus_app_name="Zed",
+                cwd="/Users/Gao/Documents/projects/long-task",
+                status_source="claude-session-verified",
+                observed_at=clock.now(),
+            )
+            reply = replace(
+                running,
+                status=SessionStatus.IDLE,
+                summary="Claude Code reply is ready.",
+                updated_at=running_at - timedelta(seconds=1),
+                status_source="claude-session-prompt",
+            )
+            source = VolatileProcessSource([[running], [reply], [reply]])
+            sent = []
+            notifier = NotificationManager(
+                sender=lambda title, message: sent.append((title, message)),
+                cooldown_seconds=60,
+            )
+            service = MonitorService(
+                [source],
+                SessionStore(stuck_after_seconds=60, audit_dir=Path(temp_dir) / "audit"),
+                ActionExecutor(),
+                notifier=notifier,
+                focus_manager=WindowFocusManager(sender=lambda target: FocusResult(True, "focused-claude")),
+                preferences=MonitorPreferences(Path(temp_dir) / "preferences.json"),
+                now=clock.now,
+            )
+
+            first = service.sessions_payload()[0]
+            second = service.sessions_payload()[0]
+            focus_result = service.focus_session("process-24645")
+            after_focus = service.visible_sessions()[0]
+            after_repeated_reply = service.sessions_payload()[0]
+
+            self.assertEqual(first["status"], "running")
+            self.assertEqual(second["status"], "needs_action")
+            self.assertTrue(second["view_ack_required"])
+            self.assertTrue(focus_result.ok)
+            self.assertEqual(after_focus.status, SessionStatus.IDLE)
+            self.assertEqual(after_repeated_reply["status"], "idle")
+            self.assertEqual(len(sent), 1)
+            self.assertIn("需要处理", sent[0][0])
+
+    def test_verified_claude_running_becomes_stuck_during_source_failure_and_recovers(self):
+        observed_at = datetime(2026, 7, 31, 5, 25, tzinfo=timezone.utc)
+        clock = FakeDateTimeClock(observed_at)
+        running = SessionUpdate(
+            session_id="process-24645",
+            title="Claude Code CLI - long-task",
+            tool=ToolKind.CLAUDE_CODE,
+            surface=SurfaceKind.TERMINAL,
+            status=SessionStatus.RUNNING,
+            summary="Claude Code is running.",
+            updated_at=observed_at - timedelta(minutes=2),
+            source="process",
+            process_id=24645,
+            cwd="/Users/Gao/Documents/projects/long-task",
+            status_source="claude-session-verified",
+            observed_at=observed_at,
+        )
+        recovered = replace(running, observed_at=observed_at + timedelta(seconds=62))
+        service = MonitorService(
+            [VolatileProcessSource([[running], None, [recovered]])],
+            SessionStore(stuck_after_seconds=60),
+            ActionExecutor(),
+            now=clock.now,
+        )
+
+        first = service.sessions_payload()[0]
+        clock.advance(61)
+        during_failure = service.sessions_payload()[0]
+        clock.advance(1)
+        after_recovery = service.sessions_payload()[0]
+
+        self.assertEqual(first["status"], "running")
+        self.assertEqual(during_failure["status"], "stuck")
+        self.assertEqual(after_recovery["status"], "running")
 
     def test_workbuddy_db_desktop_session_payload_is_full_and_view_acknowledged_after_focus(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -904,6 +999,89 @@ class MonitorServiceTests(unittest.TestCase):
         self.assertEqual(payload, [])
         self.assertTrue(all(source.polled for source in sources))
         self.assertTrue(all(source.overlapped for source in sources))
+
+    def test_concurrent_refreshes_do_not_apply_older_process_snapshot_last(self):
+        first_started = threading.Event()
+        release_first = threading.Event()
+        second_call_attempted = threading.Event()
+        second_polled = threading.Event()
+        second_finished = threading.Event()
+        errors = []
+        now = datetime(2026, 7, 31, 5, 25, tzinfo=timezone.utc)
+        old = SessionUpdate(
+            "process-old",
+            "Old process",
+            ToolKind.CODEX,
+            SurfaceKind.TERMINAL,
+            SessionStatus.IDLE,
+            "old",
+            now,
+            source="process",
+            process_id=101,
+        )
+        new = replace(
+            old,
+            session_id="process-new",
+            title="New process",
+            summary="new",
+            updated_at=now + timedelta(seconds=1),
+            process_id=202,
+        )
+
+        class OutOfOrderProcessSource:
+            volatile_source = "process"
+
+            def __init__(self):
+                self._lock = threading.Lock()
+                self._calls = 0
+
+            def poll(self):
+                with self._lock:
+                    self._calls += 1
+                    call = self._calls
+                if call == 1:
+                    first_started.set()
+                    release_first.wait(timeout=2)
+                    return [old]
+                second_polled.set()
+                return [new]
+
+        source = OutOfOrderProcessSource()
+        store = SessionStore(stuck_after_seconds=300)
+        service = MonitorService([source], store, ActionExecutor())
+
+        def refresh(first=False):
+            if not first:
+                second_call_attempted.set()
+            try:
+                service.refresh()
+            except Exception as exc:
+                errors.append(exc)
+            finally:
+                if not first:
+                    second_finished.set()
+
+        first_thread = threading.Thread(target=refresh, kwargs={"first": True})
+        second_thread = threading.Thread(target=refresh)
+        first_thread.start()
+        self.assertTrue(first_started.wait(timeout=1))
+        second_thread.start()
+        self.assertTrue(second_call_attempted.wait(timeout=1))
+        second_entered_before_release = second_polled.wait(timeout=0.2)
+        second_completed_before_release = second_finished.wait(timeout=0.2)
+        release_first.set()
+        first_thread.join(timeout=2)
+        second_thread.join(timeout=2)
+
+        self.assertFalse(first_thread.is_alive())
+        self.assertFalse(second_thread.is_alive())
+        self.assertEqual(errors, [])
+        self.assertFalse(second_entered_before_release)
+        self.assertFalse(second_completed_before_release)
+        self.assertEqual(
+            [session.session_id for session in store.sessions(now=now + timedelta(seconds=2))],
+            ["process-new"],
+        )
 
     def test_refresh_isolates_one_failed_source_and_keeps_other_sessions_visible(self):
         class BrokenSource:
@@ -1834,6 +2012,118 @@ class MonitorServiceTests(unittest.TestCase):
             self.assertEqual(payload[0]["original_title"], "Claude Code - checkout-flow")
             self.assertTrue(result.ok)
             self.assertEqual(focused, ["Claude Code - checkout-flow"])
+
+    def test_pid_reuse_does_not_inherit_hidden_or_alias_preferences(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            now = datetime(2026, 7, 31, 5, 25, tzinfo=timezone.utc)
+            old_started_at = now - timedelta(days=1)
+            new_started_at = now - timedelta(hours=1)
+            old = SessionUpdate(
+                session_id="process-24645",
+                title="Claude Code CLI - old-task",
+                tool=ToolKind.CLAUDE_CODE,
+                surface=SurfaceKind.TERMINAL,
+                status=SessionStatus.IDLE,
+                summary="old process",
+                updated_at=now,
+                source="process",
+                process_id=24645,
+                cwd="/Users/Gao/Documents/projects/old-task",
+                status_source="process",
+                process_started_at=old_started_at,
+            )
+            new = replace(
+                old,
+                title="Claude Code CLI - new-task",
+                summary="new process",
+                updated_at=now + timedelta(seconds=5),
+                cwd="/Users/Gao/Documents/projects/new-task",
+                process_started_at=new_started_at,
+            )
+            preferences = MonitorPreferences(Path(temp_dir) / "preferences.json")
+            store = SessionStore(audit_dir=Path(temp_dir) / "audit")
+            service = MonitorService([], store, ActionExecutor(), preferences=preferences)
+
+            store.apply_updates([old])
+            self.assertTrue(service.rename_session(old.session_id, "Old task alias").ok)
+            self.assertEqual(service.sessions_payload()[0]["title"], "Old task alias")
+            self.assertTrue(service.hide_session(old.session_id).ok)
+            self.assertEqual(service.sessions_payload(), [])
+
+            store.apply_updates([new])
+            payload = service.sessions_payload()
+
+            self.assertEqual([session["session_id"] for session in payload], [new.session_id])
+            self.assertEqual(payload[0]["title"], new.title)
+
+    def test_legacy_process_preferences_are_visible_during_first_identity_migration(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            now = datetime(2026, 7, 31, 5, 25, tzinfo=timezone.utc)
+            session = SessionUpdate(
+                session_id="process-24645",
+                title="Claude Code CLI - old-task",
+                tool=ToolKind.CLAUDE_CODE,
+                surface=SurfaceKind.TERMINAL,
+                status=SessionStatus.IDLE,
+                summary="old process",
+                updated_at=now,
+                source="process",
+                process_id=24645,
+                cwd="/Users/Gao/Documents/projects/old-task",
+                status_source="process",
+                process_started_at=now - timedelta(days=1),
+            )
+            preferences = MonitorPreferences(Path(temp_dir) / "preferences.json")
+            preferences.hide_session(session.session_id)
+            preferences.rename_session(session.session_id, "Legacy alias")
+            store = SessionStore(audit_dir=Path(temp_dir) / "audit")
+            store.apply_updates([session])
+            service = MonitorService([], store, ActionExecutor(), preferences=preferences)
+
+            hidden_payload = service.hidden_sessions_payload()
+
+            self.assertEqual([item["session_id"] for item in hidden_payload], [session.session_id])
+            self.assertEqual(hidden_payload[0]["title"], "Legacy alias")
+
+    def test_preference_identity_migration_write_failure_degrades_to_legacy_key(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            now = datetime(2026, 7, 31, 5, 25, tzinfo=timezone.utc)
+            session = SessionUpdate(
+                session_id="process-24645",
+                title="Claude Code CLI - old-task",
+                tool=ToolKind.CLAUDE_CODE,
+                surface=SurfaceKind.TERMINAL,
+                status=SessionStatus.IDLE,
+                summary="old process",
+                updated_at=now,
+                source="process",
+                process_id=24645,
+                cwd="/Users/Gao/Documents/projects/old-task",
+                status_source="process",
+                process_started_at=now - timedelta(days=1),
+            )
+            preferences = MonitorPreferences(Path(temp_dir) / "preferences.json")
+            preferences.hide_session(session.session_id)
+            preferences.rename_session(session.session_id, "Legacy alias")
+            store = SessionStore(audit_dir=Path(temp_dir) / "audit")
+            store.apply_updates([session])
+            service = MonitorService([], store, ActionExecutor(), preferences=preferences)
+
+            with mock.patch.object(preferences, "_write_payload", side_effect=OSError("read-only")):
+                hidden_during_failure = service.hidden_sessions_payload()
+
+            hidden_after_recovery = service.hidden_sessions_payload()
+
+            self.assertEqual(
+                [item["session_id"] for item in hidden_during_failure],
+                [session.session_id],
+            )
+            self.assertEqual(hidden_during_failure[0]["title"], "Legacy alias")
+            self.assertEqual(
+                [item["session_id"] for item in hidden_after_recovery],
+                [session.session_id],
+            )
+            self.assertEqual(hidden_after_recovery[0]["title"], "Legacy alias")
 
     def test_rename_and_reset_session_title(self):
         with tempfile.TemporaryDirectory() as temp_dir:

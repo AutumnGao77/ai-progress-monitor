@@ -63,10 +63,26 @@ class SessionUpdate:
     status_source: Optional[str] = None
     tool_display_name: Optional[str] = None
     generated_conversation_path: bool = False
+    observed_at: Optional[datetime] = None
+    process_started_at: Optional[datetime] = None
 
     @staticmethod
     def now() -> datetime:
         return datetime.now(timezone.utc)
+
+
+def session_instance_key(session: SessionUpdate) -> str:
+    if (
+        session.source != "process"
+        or session.process_id is None
+        or session.session_id != f"process-{session.process_id}"
+        or session.process_started_at is None
+    ):
+        return session.session_id
+    started_at = session.process_started_at
+    if started_at.tzinfo is not None:
+        started_at = started_at.astimezone(timezone.utc)
+    return f"{session.session_id}@{started_at.isoformat(timespec='microseconds')}"
 
 
 @dataclass(frozen=True)

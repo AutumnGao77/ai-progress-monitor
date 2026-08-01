@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from threading import RLock
 from typing import Callable, Dict, Iterable, List, Optional, Set
 
-from .models import SessionStatus, SessionUpdate
+from .models import SessionStatus, SessionUpdate, session_instance_key
 
 
 Sender = Callable[[str, str], None]
@@ -37,43 +37,47 @@ class NotificationManager:
                 self._record_suppressed_state(sessions)
                 return
             current = now or datetime.now(timezone.utc)
-            current_needs_action_ids = {
-                session.session_id for session in sessions if session.status == SessionStatus.NEEDS_ACTION
+            current_needs_action_keys = {
+                session_instance_key(session)
+                for session in sessions
+                if session.status == SessionStatus.NEEDS_ACTION
             }
-            self._suppressed_needs_action.intersection_update(current_needs_action_ids)
+            self._suppressed_needs_action.intersection_update(current_needs_action_keys)
             needs_action = [
                 session
                 for session in sessions
                 if session.status == SessionStatus.NEEDS_ACTION
-                and session.session_id not in self._suppressed_needs_action
-                and self._can_send(session.session_id, current)
+                and session_instance_key(session) not in self._suppressed_needs_action
+                and self._can_send(session_instance_key(session), current)
             ]
             if len(needs_action) == 1:
                 session = needs_action[0]
                 self.sender("AI Monitor: 需要处理", f"{session.title}: {session.summary}")
-                self._last_sent[session.session_id] = current
+                self._last_sent[session_instance_key(session)] = current
             elif len(needs_action) > 1:
                 self.sender("AI Monitor: 需要处理", f"{len(needs_action)} 个会话需要处理")
                 for session in needs_action:
-                    self._last_sent[session.session_id] = current
+                    self._last_sent[session_instance_key(session)] = current
             for session in sessions:
-                previous = self._last_status.get(session.session_id)
+                instance_key = session_instance_key(session)
+                previous = self._last_status.get(instance_key)
                 if previous == SessionStatus.RUNNING and session.status == SessionStatus.IDLE:
                     self.sender("AI Monitor: 已完成", f"{session.title}: {session.summary}")
                 elif previous == SessionStatus.RUNNING and session.status == SessionStatus.STUCK:
                     self.sender("AI Monitor: 疑似卡住", f"{session.title}: {session.summary}")
-                self._last_status[session.session_id] = session.status
+                self._last_status[instance_key] = session.status
 
     def _record_suppressed_state(self, sessions: Iterable[SessionUpdate]) -> None:
         suppressed = set()
         for session in sessions:
-            self._last_status[session.session_id] = session.status
+            instance_key = session_instance_key(session)
+            self._last_status[instance_key] = session.status
             if session.status == SessionStatus.NEEDS_ACTION:
-                suppressed.add(session.session_id)
+                suppressed.add(instance_key)
         self._suppressed_needs_action = suppressed
 
-    def _can_send(self, session_id: str, now: datetime) -> bool:
-        last_sent = self._last_sent.get(session_id)
+    def _can_send(self, instance_key: str, now: datetime) -> bool:
+        last_sent = self._last_sent.get(instance_key)
         if last_sent is None:
             return True
         return (now - last_sent).total_seconds() >= self.cooldown_seconds

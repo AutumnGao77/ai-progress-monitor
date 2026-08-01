@@ -9,7 +9,7 @@ import time
 from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 from .actions import ActionExecutor, is_low_risk_action
-from .models import ActionResult, SessionStatus, SessionUpdate, SurfaceKind, ToolKind
+from .models import ActionResult, SessionStatus, SessionUpdate, SurfaceKind, ToolKind, session_instance_key
 from .notifier import NotificationManager
 from .preferences import MonitorPreferences
 from .store import SessionStore
@@ -68,11 +68,18 @@ class MonitorService:
         self._native_project_window_inventory: Optional[NativeProjectWindowInventory] = None
         self._native_project_window_inventory_updated_at: Optional[float] = None
         self._process_empty_started_at: Optional[float] = None
+        self._refresh_lock = RLock()
         self._notification_lock = RLock()
+        self._preference_identity_lock = RLock()
+        self._checked_preference_instance_keys: set[str] = set()
         with self._notification_lock:
             self._sync_notifications_enabled([])
 
     def refresh(self) -> List[SessionUpdate]:
+        with self._refresh_lock:
+            return self._refresh_once()
+
+    def _refresh_once(self) -> List[SessionUpdate]:
         if not self.paused:
             poll_results = self._poll_sources()
             project_window_matcher = self._native_project_window_matcher()
@@ -326,7 +333,7 @@ class MonitorService:
         sessions = [
             session
             for session in self.store.sessions(now=current)
-            if not self.preferences.is_hidden(session.session_id)
+            if not self.preferences.is_hidden(self._session_preference_key(session))
             and not self._is_expired_viewed_desktop_idle_session(session, current)
         ]
         full_process_ids = {
@@ -445,37 +452,50 @@ class MonitorService:
         self.paused = paused
 
     def hide_session(self, session_id: str) -> ActionResult:
-        if self._find_session(session_id) is None:
+        session = self._find_session(session_id)
+        if session is None:
             return ActionResult(False, "Session not found")
-        self.preferences.hide_session(session_id)
+        self.preferences.hide_session(self._session_preference_key(session))
         self.store.audit_action(session_id, "hide-session", "hidden")
         return ActionResult(True, "hidden")
 
     def unhide_session(self, session_id: str) -> ActionResult:
-        if not self.preferences.is_hidden(session_id):
+        session = self._find_session(session_id)
+        preference_key = self._session_preference_key(session) if session is not None else session_id
+        if not self.preferences.is_hidden(preference_key):
             return ActionResult(False, "Session is not hidden")
-        self.preferences.unhide_session(session_id)
+        self.preferences.unhide_session(preference_key)
         self.store.audit_action(session_id, "unhide-session", "visible")
         return ActionResult(True, "visible")
 
     def hidden_sessions_payload(self) -> List[dict]:
+        sessions_with_preference_keys = [
+            (session, self._session_preference_key(session))
+            for session in self.store.sessions()
+        ]
         hidden = self.preferences.hidden_sessions()
-        return [self._session_to_payload(session) for session in self.store.sessions() if session.session_id in hidden]
+        return [
+            self._session_to_payload(session)
+            for session, preference_key in sessions_with_preference_keys
+            if preference_key in hidden
+        ]
 
     def rename_session(self, session_id: str, title: str) -> ActionResult:
-        if self._find_session(session_id) is None:
+        session = self._find_session(session_id)
+        if session is None:
             return ActionResult(False, "Session not found")
         title = title.strip()
         if not title:
             return ActionResult(False, "Title is required")
-        self.preferences.rename_session(session_id, title)
+        self.preferences.rename_session(self._session_preference_key(session), title)
         self.store.audit_action(session_id, "rename-session", "renamed")
         return ActionResult(True, "renamed")
 
     def reset_session_title(self, session_id: str) -> ActionResult:
-        if self._find_session(session_id) is None:
+        session = self._find_session(session_id)
+        if session is None:
             return ActionResult(False, "Session not found")
-        self.preferences.reset_session_alias(session_id)
+        self.preferences.reset_session_alias(self._session_preference_key(session))
         self.store.audit_action(session_id, "reset-session-title", "reset")
         return ActionResult(True, "reset")
 
@@ -511,10 +531,25 @@ class MonitorService:
     def _session_to_payload(self, session: SessionUpdate) -> dict:
         payload = session_to_dict(session)
         payload["original_title"] = session.title
-        alias = self.preferences.session_alias(session.session_id)
+        alias = self.preferences.session_alias(self._session_preference_key(session))
         if alias:
             payload["title"] = alias
         return payload
+
+    def _session_preference_key(self, session: SessionUpdate) -> str:
+        instance_key = session_instance_key(session)
+        if instance_key == session.session_id:
+            return instance_key
+        with self._preference_identity_lock:
+            if instance_key not in self._checked_preference_instance_keys:
+                migrate = getattr(self.preferences, "migrate_session_identity", None)
+                if callable(migrate):
+                    try:
+                        migrate(session.session_id, instance_key)
+                    except OSError:
+                        return session.session_id
+                self._checked_preference_instance_keys.add(instance_key)
+        return instance_key
 
 
 def session_to_dict(session: SessionUpdate) -> dict:
