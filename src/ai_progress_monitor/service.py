@@ -4,7 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
-from threading import RLock
+from threading import Event, Lock, RLock, get_ident
 import time
 from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
@@ -34,6 +34,14 @@ FULL_PROCESS_DESKTOP_STATUS_SOURCES = frozenset(
 ProjectWindowMatcher = Callable[[int, str, str], Optional[Tuple[bool, Optional[str]]]]
 NativeProjectWindowRows = Tuple[Tuple[Optional[str], str], ...]
 NativeProjectWindowInventory = Dict[int, Optional[NativeProjectWindowRows]]
+
+
+class _RefreshFlight:
+    def __init__(self):
+        self.owner_thread_id = get_ident()
+        self.done = Event()
+        self.sessions: Tuple[SessionUpdate, ...] = ()
+        self.error: Optional[BaseException] = None
 
 
 class MonitorService:
@@ -68,7 +76,8 @@ class MonitorService:
         self._native_project_window_inventory: Optional[NativeProjectWindowInventory] = None
         self._native_project_window_inventory_updated_at: Optional[float] = None
         self._process_empty_started_at: Optional[float] = None
-        self._refresh_lock = RLock()
+        self._refresh_flight_lock = Lock()
+        self._refresh_flight: Optional[_RefreshFlight] = None
         self._notification_lock = RLock()
         self._preference_identity_lock = RLock()
         self._checked_preference_instance_keys: set[str] = set()
@@ -76,8 +85,39 @@ class MonitorService:
             self._sync_notifications_enabled([])
 
     def refresh(self) -> List[SessionUpdate]:
-        with self._refresh_lock:
-            return self._refresh_once()
+        with self._refresh_flight_lock:
+            flight = self._refresh_flight
+            if flight is None:
+                flight = _RefreshFlight()
+                self._refresh_flight = flight
+                is_leader = True
+            else:
+                is_leader = False
+
+        if not is_leader:
+            if flight.owner_thread_id == get_ident():
+                raise RuntimeError("MonitorService.refresh() cannot be called recursively")
+            flight.done.wait()
+            if flight.error is not None:
+                raise RuntimeError("Concurrent refresh failed") from flight.error
+            return list(flight.sessions)
+
+        try:
+            sessions = self._refresh_once()
+        except BaseException as error:
+            with self._refresh_flight_lock:
+                flight.error = error
+                if self._refresh_flight is flight:
+                    self._refresh_flight = None
+                flight.done.set()
+            raise
+
+        with self._refresh_flight_lock:
+            flight.sessions = tuple(sessions)
+            if self._refresh_flight is flight:
+                self._refresh_flight = None
+            flight.done.set()
+        return sessions
 
     def _refresh_once(self) -> List[SessionUpdate]:
         if not self.paused:

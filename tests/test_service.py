@@ -1000,7 +1000,7 @@ class MonitorServiceTests(unittest.TestCase):
         self.assertTrue(all(source.polled for source in sources))
         self.assertTrue(all(source.overlapped for source in sources))
 
-    def test_concurrent_refreshes_do_not_apply_older_process_snapshot_last(self):
+    def test_concurrent_refreshes_share_inflight_snapshot_then_next_refresh_advances(self):
         first_started = threading.Event()
         release_first = threading.Event()
         second_call_attempted = threading.Event()
@@ -1078,10 +1078,94 @@ class MonitorServiceTests(unittest.TestCase):
         self.assertEqual(errors, [])
         self.assertFalse(second_entered_before_release)
         self.assertFalse(second_completed_before_release)
+        self.assertFalse(second_polled.is_set())
+        self.assertEqual(
+            [session.session_id for session in store.sessions(now=now + timedelta(seconds=2))],
+            ["process-old"],
+        )
+
+        service.refresh()
+
+        self.assertTrue(second_polled.is_set())
         self.assertEqual(
             [session.session_id for session in store.sessions(now=now + timedelta(seconds=2))],
             ["process-new"],
         )
+
+    def test_concurrent_refresh_failure_releases_waiter_and_next_refresh_recovers(self):
+        first_read_started = threading.Event()
+        release_first_read = threading.Event()
+
+        class FailingOncePreferences:
+            def __init__(self):
+                self._lock = threading.Lock()
+                self._failed = False
+
+            def is_hidden(self, _session_id):
+                with self._lock:
+                    should_fail = not self._failed
+                    if should_fail:
+                        self._failed = True
+                if should_fail:
+                    first_read_started.set()
+                    release_first_read.wait(timeout=2)
+                    raise ValueError("first refresh failed")
+                return False
+
+        service = MonitorService(
+            [DemoSource()],
+            SessionStore(),
+            ActionExecutor(),
+            preferences=FailingOncePreferences(),
+        )
+        errors = {}
+
+        def refresh(label):
+            try:
+                service.refresh()
+            except BaseException as error:
+                errors[label] = error
+
+        leader = threading.Thread(target=refresh, args=("leader",))
+        waiter = threading.Thread(target=refresh, args=("waiter",))
+        leader.start()
+        self.assertTrue(first_read_started.wait(timeout=1))
+        flight = service._refresh_flight
+        self.assertIsNotNone(flight)
+        waiter_started_waiting = threading.Event()
+        original_wait = flight.done.wait
+
+        def wait_for_flight(timeout=None):
+            waiter_started_waiting.set()
+            return original_wait(timeout)
+
+        with mock.patch.object(flight.done, "wait", side_effect=wait_for_flight):
+            waiter.start()
+            self.assertTrue(waiter_started_waiting.wait(timeout=1))
+            release_first_read.set()
+            leader.join(timeout=2)
+            waiter.join(timeout=2)
+
+        self.assertFalse(leader.is_alive())
+        self.assertFalse(waiter.is_alive())
+        self.assertIsInstance(errors["leader"], ValueError)
+        self.assertIsInstance(errors["waiter"], RuntimeError)
+        self.assertIsInstance(errors["waiter"].__cause__, ValueError)
+        self.assertEqual(len(service.refresh()), 3)
+
+    def test_recursive_refresh_from_notifier_fails_without_deadlock(self):
+        service_holder = {}
+        notifier = NotificationManager(sender=lambda _title, _message: service_holder["service"].refresh())
+        service = MonitorService(
+            [DemoSource()],
+            SessionStore(),
+            ActionExecutor(),
+            notifier=notifier,
+        )
+        service_holder["service"] = service
+
+        with self.assertRaisesRegex(RuntimeError, "cannot be called recursively"):
+            service.refresh()
 
     def test_refresh_isolates_one_failed_source_and_keeps_other_sessions_visible(self):
         class BrokenSource:
