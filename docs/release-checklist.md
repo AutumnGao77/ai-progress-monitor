@@ -16,6 +16,28 @@ Pet 外观主题切换的执行 PRD 是 `docs/prd/2026-07-11-pet-appearance-them
 | GitHub 门 | annotated tag 指向最终合并提交；Release 非 Draft / Prerelease；两个附件上传完成；回下载哈希与本地候选一致 | 已通过；下载副本的 portable E2E、macOS 验签、启动和正常退出均通过 |
 | 权威证据 | `docs/qa/2026-07-30-v0.3.0-release-packaging-validation.md`；未实际执行的项目必须保留“待执行”，不得提前标记通过 | 已完整回填 |
 
+## v0.3.1 本地候选状态（截至 2026-08-06，未发布）
+
+| 项目 | 当前证据 | 状态 |
+|---|---|---|
+| 源码候选 | 分支 `codex/fix-runtime-state-and-notification-dedup`；候选包源码提交 `9d280a02f5e4d644c87c6724f54ed35adc275ffa`；版本 `0.3.1` | 本地完成，未推送、未建 PR |
+| 自动化门 | 精确提交下完整 discovery 共 608 项；`scripts/validate_release.py` 输出全部 `[OK]` 和 `release-validation-ok`；定向模块、版本契约、文档映射、diff 与敏感信息扫描通过 | 通过 |
+| macOS 候选包 | `AI-Progress-Monitor-v0.3.1-macOS-arm64.zip` 独立解包后仅含 App、README 和 LICENSE；版本、arm64、macOS 13+、资源与 ad-hoc 验签通过 | 通过；仍未 Developer ID 签名或公证 |
+| portable 候选包 | `ai-progress-monitor-v0.3.1-portable.zip` 独立解包后，入口帮助、doctor、monitor command 与包内 E2E 通过 | 通过 |
+| 包级人工门 | 精确解包的 macOS 候选 App 完成 Zed / Visual Studio Code 运行到待处理、精准单窗跳转、通知关闭与恢复、正常重启不补发、后续新通知仅一条、隐藏与恢复验收 | 用户逐项通过 |
+| 命令行锁定门 | 隔离偏好为开启时使用 `--no-notifications` 启动，实际状态为关闭且锁定；开启请求返回 `409 notifications_forced_disabled`，原偏好与未知字段未改写，文件权限为 `600` | 通过 |
+| 公开发布门 | GitHub push、PR CI、合并、annotated tag、Release、附件上传与回下载复核 | 截至 2026-08-06 待执行；不得将本地候选写成已发布 |
+
+候选包 SHA-256：
+
+| 文件 | SHA-256 |
+|---|---|
+| `AI-Progress-Monitor-v0.3.1-macOS-arm64.zip` | `5f5c5aea5a15e09f6f9a6514ab8a8cb72453448f17dbae3c8d88a16f60646f9a` |
+| `ai-progress-monitor-v0.3.1-portable.zip` | `f2efe5c69755137c5038e2cb2bf152efc8eb9614625259a1f1484ecb233c19c2` |
+| `ai-progress-monitor.pyz` | `7212855f579a893d5d38fa62b2bd486893008dd51f576fb5c4dbcfb292bf4ebd` |
+
+以上哈希只对应候选包源码提交 `9d280a02f5e4d644c87c6724f54ed35adc275ffa`。其后的验收记录提交不改变候选二进制；进入公开发布前，仍必须从最终合并或 Tag 对应提交重新构建双包并重新计算哈希，不能直接沿用本表数值。
+
 ## v0.2.1 历史发布基线
 
 | 项目 | 结果 |
@@ -58,7 +80,7 @@ python3 scripts/validate_release.py
 | 终端桥接 | `python3 scripts/monitor_command.py --help` | 正常显示参数 |
 | 一键启动 | `python3 dist/ai-progress-monitor.pyz --help` | 参数包含 `--open` |
 | 命令行通知关闭 | `python3 dist/ai-progress-monitor.pyz --help` | 参数包含 `--no-notifications` |
-| Pet 系统通知开关 | `PYTHONPATH=src python3 -m unittest tests.test_preferences tests.test_notifier tests.test_service tests.test_web_launch tests.test_web_ui tests.test_web_ui_behavior` | “系统通知 >”展开“开启 / 关闭”，当前项互斥勾选；默认开启、持久化、同值不重复写入、即时生效、失败回滚、快速连点、旧通知不补发和命令行锁定态均通过 |
+| Pet 系统通知开关 | `PYTHONPATH=src python3 -m unittest tests.test_preferences tests.test_notifier tests.test_service tests.test_web_launch tests.test_web_ui tests.test_web_ui_behavior` | “系统通知 >”展开“开启 / 关闭”，当前项互斥勾选；默认开启、持久化、同值不重复写入、即时生效、失败回滚、快速连点、旧通知不补发、持续待处理不周期重复、跨重启去重和命令行锁定态均通过 |
 | 会话清理 | `python3 dist/ai-progress-monitor.pyz --help` | 参数包含 `--cleanup-after-seconds` |
 | 响应目录 | `python3 dist/ai-progress-monitor.pyz --help` | 参数包含 `--response-dir` |
 | 环境诊断 | `python3 scripts/doctor.py` | 输出 Python、平台、目录、通知、窗口适配检查 |
@@ -75,7 +97,7 @@ python3 scripts/validate_release.py
 | macOS 用户入口 | 解压 macOS arm64 ZIP 后双击唯一的 `AI Progress Monitor.app`；原生 Pet 小窗置顶；关闭只隐藏；菜单栏头像图标可恢复/退出；无需在两个 App 之间选择 |
 | Windows 轻量预览入口 | 解压 portable ZIP 后双击 `scripts\start_floating_monitor.bat`；小窗置顶；关闭只隐藏；托盘可恢复/退出；作为预览路径记录，稳定交付需单独验收 |
 | API 令牌 | 页面能读取启动令牌并请求会话 API |
-| 系统通知 | 右键 Pet → 系统通知，展开“开启 / 关闭”；默认显示“✓ 开启”；关闭后显示“✓ 关闭”，不弹窗但 Pet 状态继续更新；重新开启不补发旧状态，新状态恢复提醒 |
+| 系统通知 | 右键 Pet → 系统通知，展开“开启 / 关闭”；默认显示“✓ 开启”；关闭后显示“✓ 关闭”，不弹窗但 Pet 状态继续更新；重新开启不补发旧状态；每次进入待处理只提醒一次，持续待处理超过 5 分钟不重复，保持待处理重启也不补发，离开后重新进入且冷却满足时恢复提醒 |
 | 需要处理状态 | 页面右下角宠物显示“待处理” |
 | 三态换图 | 空闲、进行中、待处理分别显示对应 Pet 图片；右上角数字角标仍显示总气泡数 |
 | 外观子菜单 | 右键 Pet → 外观，展开“背带裤树懒 / 衬衫树懒”；当前项显示对勾；切换衬衫树懒后三态共用衬衫图，切回背带裤树懒后三态恢复 |
@@ -107,3 +129,4 @@ python3 scripts/validate_release.py
 | 当前发布包 | macOS 13+ Apple Silicon 用户包只含一个正式 App、README 和 LICENSE；portable 包承载 Python 3.9+ Web Companion、CLI 集成、诊断和 Windows 轻量预览脚本 |
 | 诊断工具 | `scripts/doctor.py` 可用于定位权限、目录和平台适配问题 |
 | Pet 偏好配置 | `~/.ai-progress-monitor/preferences.json` 支持 `pet_appearance`、布尔值 `notifications_enabled` 和 `pet_assets.*` 本地路径；通知值缺失或非法时默认开启，资源无效时回退内置资源 |
+| 通知运行基线 | `~/.ai-progress-monitor/notification-state.json` 只包含哈希会话键、状态和通知时间，权限为 `600`；不得出现原始会话 ID、标题、项目名或摘要；损坏和写入失败安全降级 |

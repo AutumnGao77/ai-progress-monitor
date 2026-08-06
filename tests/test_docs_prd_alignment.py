@@ -449,6 +449,8 @@ class DocsPrdAlignmentTests(unittest.TestCase):
             "✓ 开启",
             "✓ 关闭",
             "两个选项均置灰",
+            "持续待处理",
+            "notification-state.json",
         ]:
             self.assertIn(phrase, prd)
 
@@ -457,6 +459,8 @@ class DocsPrdAlignmentTests(unittest.TestCase):
             "系统通知",
             "notifications_enabled",
             "开启 / 关闭",
+            "持续待处理",
+            "notification-state.json",
         ]:
             self.assertIn(phrase, maintenance_docs)
 
@@ -469,6 +473,10 @@ class DocsPrdAlignmentTests(unittest.TestCase):
             'id="systemNotificationsSubmenu"',
             'id="notificationsEnabledMenuItem"',
             'id="notificationsDisabledMenuItem"',
+            "_notification_state_key",
+            "test_does_not_notify_unchanged_needs_action_after_cooldown",
+            "test_persisted_state_prevents_duplicate_needs_action_after_restart",
+            "test_persisted_state_prunes_expired_entries_and_enforces_size_limit",
         ]:
             self.assertIn(phrase, source_and_tests)
 

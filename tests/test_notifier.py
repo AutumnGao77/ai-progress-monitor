@@ -1,10 +1,17 @@
+import hashlib
+import json
+import stat
 import threading
+import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from ai_progress_monitor.models import SessionStatus, SessionUpdate, SurfaceKind, ToolKind
 from ai_progress_monitor.notifier import (
     NOTIFICATION_COMMAND_TIMEOUT_SECONDS,
+    NOTIFICATION_STATE_MAX_ENTRIES,
+    NOTIFICATION_STATE_RETENTION_SECONDS,
     NotificationManager,
     build_macos_notification,
     build_windows_notification,
@@ -55,7 +62,168 @@ class NotifierTests(unittest.TestCase):
         self.assertEqual(len(sent), 1)
         self.assertIn("需要处理", sent[0][0])
 
-    def test_notifies_again_after_cooldown(self):
+    def test_persisted_state_prevents_duplicate_needs_action_after_restart(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            sent = []
+            state_path = Path(temp_dir) / "notification-state.json"
+            now = datetime(2026, 6, 30, tzinfo=timezone.utc)
+            session = make_session("s1", SessionStatus.NEEDS_ACTION, now)
+
+            manager = NotificationManager(
+                sender=lambda title, message: sent.append((title, message)),
+                cooldown_seconds=60,
+                state_path=state_path,
+            )
+            manager.notify_for_sessions([session], now=now)
+
+            restarted_manager = NotificationManager(
+                sender=lambda title, message: sent.append((title, message)),
+                cooldown_seconds=60,
+                state_path=state_path,
+            )
+            restarted_manager.notify_for_sessions([session], now=now + timedelta(seconds=5))
+
+            self.assertEqual(len(sent), 1)
+
+            restarted_manager.notify_for_sessions([session], now=now + timedelta(seconds=61))
+            self.assertEqual(len(sent), 1)
+
+            restarted_manager.notify_for_sessions(
+                [make_session("s1", SessionStatus.RUNNING, now + timedelta(seconds=62))],
+                now=now + timedelta(seconds=62),
+            )
+            restarted_manager.notify_for_sessions(
+                [make_session("s1", SessionStatus.NEEDS_ACTION, now + timedelta(seconds=122))],
+                now=now + timedelta(seconds=122),
+            )
+            self.assertEqual(len(sent), 2)
+
+    def test_suppressed_needs_action_remains_suppressed_after_restart(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            sent = []
+            state_path = Path(temp_dir) / "notification-state.json"
+            now = datetime(2026, 6, 30, tzinfo=timezone.utc)
+            needs_action = make_session("s1", SessionStatus.NEEDS_ACTION, now)
+
+            disabled_manager = NotificationManager(
+                sender=lambda title, message: sent.append((title, message)),
+                enabled=False,
+                state_path=state_path,
+            )
+            disabled_manager.notify_for_sessions([needs_action], now=now)
+
+            restarted_manager = NotificationManager(
+                sender=lambda title, message: sent.append((title, message)),
+                enabled=True,
+                state_path=state_path,
+            )
+            restarted_manager.notify_for_sessions([needs_action], now=now + timedelta(seconds=5))
+            restarted_manager.notify_for_sessions(
+                [make_session("s1", SessionStatus.RUNNING, now + timedelta(seconds=6))],
+                now=now + timedelta(seconds=6),
+            )
+            restarted_manager.notify_for_sessions(
+                [make_session("s1", SessionStatus.NEEDS_ACTION, now + timedelta(seconds=7))],
+                now=now + timedelta(seconds=7),
+            )
+
+            self.assertEqual(len(sent), 1)
+
+    def test_persisted_state_does_not_store_raw_session_identity_or_content(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = Path(temp_dir) / "notification-state.json"
+            now = datetime(2026, 6, 30, tzinfo=timezone.utc)
+            session = make_session("private-project-session", SessionStatus.NEEDS_ACTION, now)
+            manager = NotificationManager(sender=lambda _title, _message: None, state_path=state_path)
+
+            manager.notify_for_sessions([session], now=now)
+
+            persisted = state_path.read_text(encoding="utf-8")
+            self.assertNotIn("private-project-session", persisted)
+            self.assertNotIn(session.title, persisted)
+            self.assertNotIn(session.summary, persisted)
+            self.assertEqual(json.loads(persisted)["version"], 1)
+            self.assertEqual(stat.S_IMODE(state_path.stat().st_mode), 0o600)
+
+    def test_persisted_state_prunes_expired_entries_and_enforces_size_limit(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = Path(temp_dir) / "notification-state.json"
+            now = datetime(2026, 6, 30, tzinfo=timezone.utc)
+
+            def state_key(label: str) -> str:
+                return hashlib.sha256(label.encode("utf-8")).hexdigest()
+
+            expired_key = state_key("expired")
+            fresh_keys = [state_key(f"fresh-{index}") for index in range(NOTIFICATION_STATE_MAX_ENTRIES + 1)]
+            entries = {
+                expired_key: {
+                    "last_status": SessionStatus.IDLE.value,
+                    "last_seen_at": (
+                        now - timedelta(seconds=NOTIFICATION_STATE_RETENTION_SECONDS + 1)
+                    ).isoformat(),
+                }
+            }
+            entries.update(
+                {
+                    key: {
+                        "last_status": SessionStatus.IDLE.value,
+                        "last_seen_at": (now - timedelta(seconds=index)).isoformat(),
+                    }
+                    for index, key in enumerate(fresh_keys)
+                }
+            )
+            state_path.write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "entries": entries,
+                        "suppressed_needs_action": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            manager = NotificationManager(sender=lambda _title, _message: None, state_path=state_path)
+
+            manager.notify_for_sessions([], now=now)
+
+            persisted_entries = json.loads(state_path.read_text(encoding="utf-8"))["entries"]
+            self.assertEqual(len(persisted_entries), NOTIFICATION_STATE_MAX_ENTRIES)
+            self.assertNotIn(expired_key, persisted_entries)
+            self.assertIn(fresh_keys[0], persisted_entries)
+            self.assertNotIn(fresh_keys[-1], persisted_entries)
+
+    def test_corrupt_persisted_state_falls_back_without_blocking_notifications(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            sent = []
+            state_path = Path(temp_dir) / "notification-state.json"
+            state_path.write_text("{broken", encoding="utf-8")
+            now = datetime(2026, 6, 30, tzinfo=timezone.utc)
+            manager = NotificationManager(
+                sender=lambda title, message: sent.append((title, message)),
+                state_path=state_path,
+            )
+
+            manager.notify_for_sessions([make_session("s1", SessionStatus.NEEDS_ACTION, now)], now=now)
+
+            self.assertEqual(len(sent), 1)
+            self.assertEqual(json.loads(state_path.read_text(encoding="utf-8"))["version"], 1)
+
+    def test_persisted_state_write_failure_does_not_block_notifications(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            sent = []
+            invalid_parent = Path(temp_dir) / "not-a-directory"
+            invalid_parent.write_text("file", encoding="utf-8")
+            now = datetime(2026, 6, 30, tzinfo=timezone.utc)
+            manager = NotificationManager(
+                sender=lambda title, message: sent.append((title, message)),
+                state_path=invalid_parent / "notification-state.json",
+            )
+
+            manager.notify_for_sessions([make_session("s1", SessionStatus.NEEDS_ACTION, now)], now=now)
+
+            self.assertEqual(len(sent), 1)
+
+    def test_does_not_notify_unchanged_needs_action_after_cooldown(self):
         sent = []
         manager = NotificationManager(sender=lambda title, message: sent.append((title, message)), cooldown_seconds=60)
         now = datetime(2026, 6, 30, tzinfo=timezone.utc)
@@ -63,6 +231,23 @@ class NotifierTests(unittest.TestCase):
 
         manager.notify_for_sessions([session], now=now)
         manager.notify_for_sessions([session], now=now + timedelta(seconds=61))
+
+        self.assertEqual(len(sent), 1)
+
+    def test_notifies_again_after_needs_action_leaves_and_reenters_after_cooldown(self):
+        sent = []
+        manager = NotificationManager(sender=lambda title, message: sent.append((title, message)), cooldown_seconds=60)
+        now = datetime(2026, 6, 30, tzinfo=timezone.utc)
+
+        manager.notify_for_sessions([make_session("s1", SessionStatus.NEEDS_ACTION, now)], now=now)
+        manager.notify_for_sessions(
+            [make_session("s1", SessionStatus.RUNNING, now + timedelta(seconds=1))],
+            now=now + timedelta(seconds=1),
+        )
+        manager.notify_for_sessions(
+            [make_session("s1", SessionStatus.NEEDS_ACTION, now + timedelta(seconds=61))],
+            now=now + timedelta(seconds=61),
+        )
 
         self.assertEqual(len(sent), 2)
 
@@ -129,6 +314,45 @@ class NotifierTests(unittest.TestCase):
         manager.notify_for_sessions([make_session("s1", SessionStatus.STUCK, datetime.now(timezone.utc))])
 
         self.assertEqual(sent, [])
+
+    def test_pid_reuse_does_not_emit_completion_for_new_process_generation(self):
+        sent = []
+        manager = NotificationManager(sender=lambda title, message: sent.append((title, message)))
+        now = datetime(2026, 7, 31, 5, 25, tzinfo=timezone.utc)
+        old_started_at = now - timedelta(days=1)
+        new_started_at = now - timedelta(hours=1)
+
+        manager.notify_for_sessions(
+            [make_process_session(SessionStatus.RUNNING, now, old_started_at)],
+            now=now,
+        )
+        manager.notify_for_sessions(
+            [make_process_session(SessionStatus.IDLE, now + timedelta(seconds=5), new_started_at)],
+            now=now + timedelta(seconds=5),
+        )
+
+        self.assertEqual(sent, [])
+
+    def test_pid_reuse_does_not_inherit_needs_action_notification_cooldown(self):
+        sent = []
+        manager = NotificationManager(
+            sender=lambda title, message: sent.append((title, message)),
+            cooldown_seconds=60,
+        )
+        now = datetime(2026, 7, 31, 5, 25, tzinfo=timezone.utc)
+        old_started_at = now - timedelta(days=1)
+        new_started_at = now - timedelta(hours=1)
+
+        manager.notify_for_sessions(
+            [make_process_session(SessionStatus.NEEDS_ACTION, now, old_started_at)],
+            now=now,
+        )
+        manager.notify_for_sessions(
+            [make_process_session(SessionStatus.NEEDS_ACTION, now + timedelta(seconds=5), new_started_at)],
+            now=now + timedelta(seconds=5),
+        )
+
+        self.assertEqual(len(sent), 2)
 
     def test_disabled_notifications_track_state_without_replaying_old_events(self):
         sent = []
@@ -220,6 +444,25 @@ def make_session(session_id: str, status: SessionStatus, updated_at: datetime) -
         status=status,
         summary="Do you want to continue?",
         updated_at=updated_at,
+    )
+
+
+def make_process_session(
+    status: SessionStatus,
+    updated_at: datetime,
+    process_started_at: datetime,
+) -> SessionUpdate:
+    return SessionUpdate(
+        session_id="process-24645",
+        title="Claude Code CLI - task",
+        tool=ToolKind.CLAUDE_CODE,
+        surface=SurfaceKind.TERMINAL,
+        status=status,
+        summary="Claude Code state",
+        updated_at=updated_at,
+        source="process",
+        process_id=24645,
+        process_started_at=process_started_at,
     )
 
 

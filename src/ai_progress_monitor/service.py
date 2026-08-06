@@ -1,15 +1,16 @@
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+import math
 from pathlib import Path
-from threading import RLock
+from threading import Event, Lock, RLock, Thread, get_ident
 import time
 from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 from .actions import ActionExecutor, is_low_risk_action
-from .models import ActionResult, SessionStatus, SessionUpdate, SurfaceKind, ToolKind
+from .models import ActionResult, SessionStatus, SessionUpdate, SurfaceKind, ToolKind, session_instance_key
 from .notifier import NotificationManager
 from .preferences import MonitorPreferences
 from .store import SessionStore
@@ -24,6 +25,9 @@ from .window_focus import (
 
 VIEWED_DESKTOP_IDLE_VISIBLE_SECONDS = 15 * 60
 NATIVE_PROJECT_WINDOW_INVENTORY_TTL_SECONDS = 8.0
+SOURCE_POLL_TIMEOUT_SECONDS = 5.0
+CONCURRENT_REFRESH_WAIT_TIMEOUT_SECONDS = 15.0
+CLOCK_ROLLBACK_TOLERANCE_SECONDS = 2.0
 FULL_PROCESS_DESKTOP_STATUS_SOURCES = frozenset(
     {
         "qoder-log",
@@ -34,6 +38,41 @@ FULL_PROCESS_DESKTOP_STATUS_SOURCES = frozenset(
 ProjectWindowMatcher = Callable[[int, str, str], Optional[Tuple[bool, Optional[str]]]]
 NativeProjectWindowRows = Tuple[Tuple[Optional[str], str], ...]
 NativeProjectWindowInventory = Dict[int, Optional[NativeProjectWindowRows]]
+
+
+class _RefreshFlight:
+    def __init__(self, generation: int):
+        self.generation = generation
+        self.owner_thread_id = get_ident()
+        self.started_at = time.monotonic()
+        self.done = Event()
+        self.sessions: Tuple[SessionUpdate, ...] = ()
+        self.error: Optional[BaseException] = None
+
+
+class _SourcePollFlight:
+    def __init__(self, source):
+        self.source = source
+        self.lock = Lock()
+        self.done = Event()
+        self.updates: Optional[List[SessionUpdate]] = None
+        self.error: Optional[BaseException] = None
+        self.timed_out = False
+        self.discard = False
+        self.timeout_logged = False
+
+    def run(self) -> None:
+        updates = None
+        error = None
+        try:
+            updates = self.source.poll()
+        except BaseException as caught:
+            error = caught
+        finally:
+            with self.lock:
+                self.updates = updates
+                self.error = error
+            self.done.set()
 
 
 class MonitorService:
@@ -51,6 +90,8 @@ class MonitorService:
         viewed_desktop_idle_visible_seconds: float = VIEWED_DESKTOP_IDLE_VISIBLE_SECONDS,
         notifications_forced_off: bool = False,
         native_window_inventory_ttl_seconds: float = NATIVE_PROJECT_WINDOW_INVENTORY_TTL_SECONDS,
+        source_poll_timeout_seconds: float = SOURCE_POLL_TIMEOUT_SECONDS,
+        concurrent_refresh_wait_timeout_seconds: float = CONCURRENT_REFRESH_WAIT_TIMEOUT_SECONDS,
     ):
         self.sources = list(sources)
         self.store = store
@@ -65,14 +106,87 @@ class MonitorService:
         self.viewed_desktop_idle_visible_seconds = viewed_desktop_idle_visible_seconds
         self._notifications_forced_off = bool(notifications_forced_off)
         self.native_window_inventory_ttl_seconds = native_window_inventory_ttl_seconds
+        self.source_poll_timeout_seconds = _positive_finite_timeout(
+            source_poll_timeout_seconds,
+            "source_poll_timeout_seconds",
+        )
+        self.concurrent_refresh_wait_timeout_seconds = _positive_finite_timeout(
+            concurrent_refresh_wait_timeout_seconds,
+            "concurrent_refresh_wait_timeout_seconds",
+        )
         self._native_project_window_inventory: Optional[NativeProjectWindowInventory] = None
         self._native_project_window_inventory_updated_at: Optional[float] = None
         self._process_empty_started_at: Optional[float] = None
+        self._refresh_flight_lock = Lock()
+        self._refresh_flight: Optional[_RefreshFlight] = None
+        self._refresh_generation = 0
+        self._last_refresh_sessions: Tuple[SessionUpdate, ...] = ()
+        self._last_refresh_sessions_generation = 0
+        self._last_refresh_payload: Tuple[dict, ...] = ()
+        self._last_refresh_payload_generation = 0
+        self._source_poll_flights_lock = Lock()
+        self._source_poll_flights: Dict[int, _SourcePollFlight] = {}
+        self._poll_generation = 0
+        self._observation_clock_lock = Lock()
+        self._last_logical_wall: Optional[datetime] = None
+        self._last_observation_monotonic: Optional[float] = None
         self._notification_lock = RLock()
+        self._preference_identity_lock = RLock()
+        self._checked_preference_instance_keys: set[str] = set()
         with self._notification_lock:
             self._sync_notifications_enabled([])
 
     def refresh(self) -> List[SessionUpdate]:
+        sessions, _used_fallback, _generation = self._refresh_with_fallback()
+        return sessions
+
+    def _refresh_with_fallback(self) -> Tuple[List[SessionUpdate], bool, int]:
+        with self._refresh_flight_lock:
+            flight = self._refresh_flight
+            if flight is None:
+                self._refresh_generation += 1
+                flight = _RefreshFlight(self._refresh_generation)
+                self._refresh_flight = flight
+                is_leader = True
+            else:
+                is_leader = False
+
+        if not is_leader:
+            if flight.owner_thread_id == get_ident():
+                raise RuntimeError("MonitorService.refresh() cannot be called recursively")
+            elapsed = max(0.0, time.monotonic() - flight.started_at)
+            remaining = max(0.0, self.concurrent_refresh_wait_timeout_seconds - elapsed)
+            if not flight.done.wait(timeout=remaining):
+                with self._refresh_flight_lock:
+                    return (
+                        list(self._last_refresh_sessions),
+                        True,
+                        self._last_refresh_sessions_generation,
+                    )
+            if flight.error is not None:
+                raise RuntimeError("Concurrent refresh failed") from flight.error
+            return list(flight.sessions), False, flight.generation
+
+        try:
+            sessions = self._refresh_once()
+        except BaseException as error:
+            with self._refresh_flight_lock:
+                flight.error = error
+                if self._refresh_flight is flight:
+                    self._refresh_flight = None
+                flight.done.set()
+            raise
+
+        with self._refresh_flight_lock:
+            flight.sessions = tuple(sessions)
+            self._last_refresh_sessions = flight.sessions
+            self._last_refresh_sessions_generation = flight.generation
+            if self._refresh_flight is flight:
+                self._refresh_flight = None
+            flight.done.set()
+        return sessions, False, flight.generation
+
+    def _refresh_once(self) -> List[SessionUpdate]:
         if not self.paused:
             poll_results = self._poll_sources()
             project_window_matcher = self._native_project_window_matcher()
@@ -122,22 +236,150 @@ class MonitorService:
             self.notifier.set_enabled(self.notifications_enabled(), sessions=sessions)
 
     def _poll_sources(self) -> List[tuple[object, Optional[List[SessionUpdate]]]]:
+        self._poll_generation += 1
+        generation = self._poll_generation
         if not self.sources:
             return []
-        with ThreadPoolExecutor(max_workers=len(self.sources)) as executor:
-            futures = [executor.submit(source.poll) for source in self.sources]
-            results: List[tuple[object, Optional[List[SessionUpdate]]]] = []
-            for source, future in zip(self.sources, futures):
-                try:
-                    updates = future.result()
-                except Exception as error:
+
+        round_flights: Dict[int, _SourcePollFlight] = {}
+        skipped_source_ids = set()
+        consumed_source_ids = set()
+        with self._source_poll_flights_lock:
+            for source in self.sources:
+                source_id = id(source)
+                existing = self._source_poll_flights.get(source_id)
+                if existing is not None and existing.source is not source:
+                    self._source_poll_flights.pop(source_id, None)
+                    existing = None
+                if existing is not None:
+                    if existing.done.is_set():
+                        if self._source_poll_flights.get(source_id) is existing:
+                            self._source_poll_flights.pop(source_id, None)
+                        existing = None
+                    else:
+                        skipped_source_ids.add(source_id)
+                        continue
+                flight = _SourcePollFlight(source)
+                self._source_poll_flights[source_id] = flight
+                round_flights[source_id] = flight
+
+        raw_results: List[tuple[object, Optional[List[SessionUpdate]]]] = []
+        started_source_ids = set()
+        try:
+            for source_id, flight in round_flights.items():
+                Thread(target=flight.run, daemon=True).start()
+                started_source_ids.add(source_id)
+
+            deadline = time.monotonic() + self.source_poll_timeout_seconds
+            for source in self.sources:
+                source_id = id(source)
+                if source_id in skipped_source_ids:
+                    raw_results.append((source, None))
+                    continue
+                flight = round_flights[source_id]
+                remaining = max(0.0, deadline - time.monotonic())
+                if not flight.done.wait(timeout=remaining):
+                    should_log = False
+                    with flight.lock:
+                        flight.timed_out = True
+                        flight.discard = True
+                        if not flight.timeout_logged:
+                            flight.timeout_logged = True
+                            should_log = True
+                    if should_log:
+                        print(
+                            f"AI Progress Monitor source timed out: {source.__class__.__name__}",
+                            flush=True,
+                        )
+                    raw_results.append((source, None))
+                    continue
+
+                with self._source_poll_flights_lock:
+                    if self._source_poll_flights.get(source_id) is flight:
+                        self._source_poll_flights.pop(source_id, None)
+                with flight.lock:
+                    updates = flight.updates
+                    error = flight.error
+                    discard = flight.discard
+                consumed_source_ids.add(source_id)
+                if discard:
+                    raw_results.append((source, None))
+                    continue
+                if error is not None:
                     print(
                         f"AI Progress Monitor source failed: {source.__class__.__name__} ({error.__class__.__name__})",
                         flush=True,
                     )
-                    updates = None
-                results.append((source, updates))
-            return results
+                    raw_results.append((source, None))
+                    continue
+                raw_results.append((source, updates))
+        finally:
+            for source_id, flight in round_flights.items():
+                if source_id in consumed_source_ids:
+                    continue
+                if source_id not in started_source_ids:
+                    with self._source_poll_flights_lock:
+                        if self._source_poll_flights.get(source_id) is flight:
+                            self._source_poll_flights.pop(source_id, None)
+                    continue
+                with flight.lock:
+                    flight.discard = True
+
+        wall_sample, monotonic_sample, clock_adjusted = self._observation_context()
+        return [
+            (
+                source,
+                None
+                if updates is None
+                else [
+                    self._stamp_observation_metadata(
+                        update,
+                        generation,
+                        monotonic_sample,
+                        clock_adjusted,
+                        wall_sample,
+                    )
+                    for update in updates
+                ],
+            )
+            for source, updates in raw_results
+        ]
+
+    def _observation_context(self) -> Tuple[datetime, float, bool]:
+        wall_sample = self.now()
+        monotonic_sample = float(self.clock())
+        with self._observation_clock_lock:
+            if self._last_logical_wall is None or self._last_observation_monotonic is None:
+                logical_wall = wall_sample
+                clock_adjusted = False
+            else:
+                elapsed = max(0.0, monotonic_sample - self._last_observation_monotonic)
+                expected_wall = self._last_logical_wall + timedelta(seconds=elapsed)
+                clock_adjusted = wall_sample < expected_wall - timedelta(
+                    seconds=CLOCK_ROLLBACK_TOLERANCE_SECONDS
+                )
+                logical_wall = max(wall_sample, expected_wall)
+            self._last_logical_wall = logical_wall
+            self._last_observation_monotonic = monotonic_sample
+        return wall_sample, monotonic_sample, clock_adjusted
+
+    @staticmethod
+    def _stamp_observation_metadata(
+        update: SessionUpdate,
+        generation: int,
+        monotonic_sample: float,
+        clock_adjusted: bool,
+        wall_sample: datetime,
+    ) -> SessionUpdate:
+        if not _is_identity_verified_claude_process_update(update):
+            return update
+        return replace(
+            update,
+            observation_sequence=generation,
+            observed_monotonic=monotonic_sample,
+            observation_clock_adjusted=clock_adjusted,
+            observation_wall_at=wall_sample,
+        )
 
     @staticmethod
     def _project_window_matcher(
@@ -289,7 +531,7 @@ class MonitorService:
             if empty_started_at is None or self.clock() - empty_started_at < self.process_empty_grace_seconds:
                 return [
                     session
-                    for session in self.store.sessions(now=self.now())
+                    for session in self._store_sessions()
                     if session.source == "process" and session.surface == SurfaceKind.DESKTOP
                 ]
             return []
@@ -308,7 +550,7 @@ class MonitorService:
         current = self.now()
         retained = [
             session
-            for session in self.store.sessions(now=current)
+            for session in self._store_sessions(now=current)
             if session.source == "chatgpt-session"
             and session.session_id not in live_ids
             and session.surface == SurfaceKind.DESKTOP
@@ -319,14 +561,14 @@ class MonitorService:
         return updates + retained
 
     def _has_source_sessions(self, source: str) -> bool:
-        return any(session.source == source for session in self.store.sessions())
+        return any(session.source == source for session in self._store_sessions())
 
     def visible_sessions(self) -> List[SessionUpdate]:
         current = self.now()
         sessions = [
             session
-            for session in self.store.sessions(now=current)
-            if not self.preferences.is_hidden(session.session_id)
+            for session in self._store_sessions(now=current)
+            if not self.preferences.is_hidden(self._session_preference_key(session))
             and not self._is_expired_viewed_desktop_idle_session(session, current)
         ]
         full_process_ids = {
@@ -379,7 +621,7 @@ class MonitorService:
         current = self.now()
         retained = [
             session
-            for session in self.store.sessions(now=current)
+            for session in self._store_sessions(now=current)
             if session.session_id not in live_ids
             and _is_full_process_desktop_session(session)
             and session.process_id in live_desktop_process_ids
@@ -428,7 +670,17 @@ class MonitorService:
         return (now - viewed_at).total_seconds() >= self.viewed_desktop_idle_visible_seconds
 
     def sessions_payload(self) -> List[dict]:
-        return [self._session_to_payload(session) for session in self.refresh()]
+        sessions, used_fallback, generation = self._refresh_with_fallback()
+        if used_fallback:
+            with self._refresh_flight_lock:
+                return list(deepcopy(self._last_refresh_payload))
+        payload = [self._session_to_payload(session) for session in sessions]
+        payload_snapshot = tuple(deepcopy(payload))
+        with self._refresh_flight_lock:
+            if generation >= self._last_refresh_payload_generation:
+                self._last_refresh_payload = payload_snapshot
+                self._last_refresh_payload_generation = generation
+        return payload
 
     def execute_action(self, session_id: str, option: str) -> ActionResult:
         session = self._find_session(session_id)
@@ -445,37 +697,50 @@ class MonitorService:
         self.paused = paused
 
     def hide_session(self, session_id: str) -> ActionResult:
-        if self._find_session(session_id) is None:
+        session = self._find_session(session_id)
+        if session is None:
             return ActionResult(False, "Session not found")
-        self.preferences.hide_session(session_id)
+        self.preferences.hide_session(self._session_preference_key(session))
         self.store.audit_action(session_id, "hide-session", "hidden")
         return ActionResult(True, "hidden")
 
     def unhide_session(self, session_id: str) -> ActionResult:
-        if not self.preferences.is_hidden(session_id):
+        session = self._find_session(session_id)
+        preference_key = self._session_preference_key(session) if session is not None else session_id
+        if not self.preferences.is_hidden(preference_key):
             return ActionResult(False, "Session is not hidden")
-        self.preferences.unhide_session(session_id)
+        self.preferences.unhide_session(preference_key)
         self.store.audit_action(session_id, "unhide-session", "visible")
         return ActionResult(True, "visible")
 
     def hidden_sessions_payload(self) -> List[dict]:
+        sessions_with_preference_keys = [
+            (session, self._session_preference_key(session))
+            for session in self._store_sessions()
+        ]
         hidden = self.preferences.hidden_sessions()
-        return [self._session_to_payload(session) for session in self.store.sessions() if session.session_id in hidden]
+        return [
+            self._session_to_payload(session)
+            for session, preference_key in sessions_with_preference_keys
+            if preference_key in hidden
+        ]
 
     def rename_session(self, session_id: str, title: str) -> ActionResult:
-        if self._find_session(session_id) is None:
+        session = self._find_session(session_id)
+        if session is None:
             return ActionResult(False, "Session not found")
         title = title.strip()
         if not title:
             return ActionResult(False, "Title is required")
-        self.preferences.rename_session(session_id, title)
+        self.preferences.rename_session(self._session_preference_key(session), title)
         self.store.audit_action(session_id, "rename-session", "renamed")
         return ActionResult(True, "renamed")
 
     def reset_session_title(self, session_id: str) -> ActionResult:
-        if self._find_session(session_id) is None:
+        session = self._find_session(session_id)
+        if session is None:
             return ActionResult(False, "Session not found")
-        self.preferences.reset_session_alias(session_id)
+        self.preferences.reset_session_alias(self._session_preference_key(session))
         self.store.audit_action(session_id, "reset-session-title", "reset")
         return ActionResult(True, "reset")
 
@@ -503,18 +768,61 @@ class MonitorService:
         return ActionResult(False, "Session not found")
 
     def _find_session(self, session_id: str) -> Optional[SessionUpdate]:
-        for session in self.store.sessions():
+        for session in self._store_sessions():
             if session.session_id == session_id:
                 return session
         return None
 
+    def _store_sessions(self, now: Optional[datetime] = None) -> List[SessionUpdate]:
+        return self.store.sessions(
+            now=now or self.now(),
+            monotonic_now=float(self.clock()),
+        )
+
     def _session_to_payload(self, session: SessionUpdate) -> dict:
         payload = session_to_dict(session)
         payload["original_title"] = session.title
-        alias = self.preferences.session_alias(session.session_id)
+        alias = self.preferences.session_alias(self._session_preference_key(session))
         if alias:
             payload["title"] = alias
         return payload
+
+    def _session_preference_key(self, session: SessionUpdate) -> str:
+        instance_key = session_instance_key(session)
+        if instance_key == session.session_id:
+            return instance_key
+        with self._preference_identity_lock:
+            if instance_key not in self._checked_preference_instance_keys:
+                migrate = getattr(self.preferences, "migrate_session_identity", None)
+                if callable(migrate):
+                    try:
+                        migrate(session.session_id, instance_key)
+                    except OSError:
+                        return session.session_id
+                self._checked_preference_instance_keys.add(instance_key)
+        return instance_key
+
+
+def _positive_finite_timeout(value, name: str) -> float:
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be a finite positive number")
+    try:
+        timeout = float(value)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"{name} must be a finite positive number") from error
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError(f"{name} must be a finite positive number")
+    return timeout
+
+
+def _is_identity_verified_claude_process_update(update: SessionUpdate) -> bool:
+    return (
+        update.tool == ToolKind.CLAUDE_CODE
+        and update.surface == SurfaceKind.TERMINAL
+        and update.source == "process"
+        and update.observed_at is not None
+        and update.status_source != "process"
+    )
 
 
 def session_to_dict(session: SessionUpdate) -> dict:

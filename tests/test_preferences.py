@@ -53,6 +53,41 @@ class MonitorPreferencesTests(unittest.TestCase):
             self.assertIsNone(reloaded.session_alias("codex-1"))
             self.assertEqual(reloaded.session_alias("claude-1"), "Checkout")
 
+    def test_migrate_session_identity_preserves_other_preferences(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "preferences.json"
+            original = {
+                "hidden_sessions": ["process-24645", "codex-1"],
+                "session_aliases": {
+                    "process-24645": "Old task",
+                    "codex-1": "PRD polish",
+                },
+                "pet_appearance": "shirt",
+                "future_preference": {"keep": True},
+            }
+            path.write_text(json.dumps(original), encoding="utf-8")
+            prefs = MonitorPreferences(path)
+
+            prefs.migrate_session_identity(
+                "process-24645",
+                "process-24645@2026-07-31T04:25:00.000000+00:00",
+            )
+
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                payload["hidden_sessions"],
+                ["codex-1", "process-24645@2026-07-31T04:25:00.000000+00:00"],
+            )
+            self.assertEqual(
+                payload["session_aliases"],
+                {
+                    "codex-1": "PRD polish",
+                    "process-24645@2026-07-31T04:25:00.000000+00:00": "Old task",
+                },
+            )
+            self.assertEqual(payload["pet_appearance"], "shirt")
+            self.assertEqual(payload["future_preference"], {"keep": True})
+
     def test_pet_asset_paths_are_read_from_preferences(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "preferences.json"
