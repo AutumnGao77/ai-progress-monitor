@@ -574,7 +574,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = parser.parse_args(argv)
 
     preferences = MonitorPreferences()
-    notifier = NotificationManager()
+    notifier = NotificationManager(state_path=preferences.path.parent / "notification-state.json")
     service = MonitorService(
         build_sources(args),
         SessionStore(),

@@ -2,6 +2,8 @@
 
 > 状态：通知偏好、发送边界、API 和“系统通知 > / 开启 / 关闭”二级菜单已完成开发、自动化、Browser、macOS Dev App 和最终发布包验收，并随 PR #5 于 2026-07-29 合并到 `main`（`770d447`）；CI 并发测试抖动随后由 PR #6 单独修复并合并（`ed468b8`）。该能力已随 [v0.3.0](https://github.com/AutumnGao77/ai-progress-monitor/releases/tag/v0.3.0) 于 2026-07-30 正式发布。
 
+> 2026-08-05 增补决策：人工回归发现持续待处理会话会按 300 秒冷却周期反复发送相同通知，且 App 重启会丢失内存通知基线。后续版本改为每次进入待处理只通知一次；持续待处理不周期提醒，离开后重新进入才视为新事件，并使用不含原始会话内容的本地状态文件延续跨重启冷却和静默基线。
+
 ## 1. 结论
 
 本次迭代为 Pet 增加“系统通知”用户开关：用户可在 macOS App 与共享 Web Pet 的右键菜单中关闭或开启原生系统通知。关闭后，状态识别、Pet 三态、角标、气泡列表和点击回到现场继续正常工作，只是不再弹出系统通知窗口，避免在状态变化频繁时持续打扰用户。
@@ -16,6 +18,7 @@
 | 影响范围 | 只影响原生系统通知，不影响 Pet 视觉状态、角标、气泡、会话识别和跳转 |
 | 实现原则 | 先加测试，再改偏好、通知管理、API、前端菜单和文档 |
 | 非目标 | 不改状态算法、不改 macOS 通知中心样式、不做通知声音/免打扰时段/按会话细分通知 |
+| 可靠性边界 | 保证状态文件正常落盘后的正常重启不补发；状态文件损坏或不可写时优先保证 Pet 可用，不承诺崩溃瞬间或异常多实例下严格 exactly-once |
 
 ## 2. 背景与问题
 
@@ -84,6 +87,10 @@
 | 保存成功 | 菜单勾选状态与实际偏好一致 |
 | 保存失败 | 回滚到已确认状态，并显示轻提示“系统通知设置保存失败” |
 | 重新开启 | 不补发关闭期间已经发生的待处理、完成或疑似卡住通知；只响应后续新变化 |
+| 进入待处理 | 每次从非待处理状态进入待处理时最多发送一次通知 |
+| 持续待处理 | 即使超过冷却时间也不重复发送；冷却只用于阻止短时间离开并重新进入造成的抖动通知 |
+| 离开后重新进入 | 离开待处理后再次进入属于新事件；同时满足冷却条件时恢复通知 |
+| App 重启 | 继承最近状态、冷却时间和静默基线，不因重启重复发送当前旧通知 |
 | 通知关闭时进入待处理 | 不弹系统通知；Pet 待处理状态、红色角标和气泡仍更新 |
 | 通知关闭时任务完成或疑似卡住 | 不弹系统通知；Pet 视觉状态仍按现有规则更新 |
 | 使用 `--no-notifications` 启动 | 二级菜单显示“✓ 关闭”；“开启”和“关闭”均置灰，不允许改写持久化偏好 |
@@ -115,6 +122,8 @@
 | `session_aliases` | 写入通知偏好时不得丢失 |
 | `pet_assets.*` | 写入通知偏好时不得丢失 |
 
+通知运行基线单独保存在 `~/.ai-progress-monitor/notification-state.json`，不写入用户偏好文件。文件只保存哈希后的会话键、状态、最近通知时间和静默集合，不保存会话标题、项目名、终端内容或摘要；采用原子写入和仅当前用户可读写权限，文件缺失、损坏或不可写时安全降级为本轮内存状态，不能阻塞 Pet 刷新。
+
 兼容规则：
 
 | 场景 | 行为 |
@@ -138,7 +147,7 @@ AI coding 约束：
 | 约束 | 要求 |
 |---|---|
 | 不要改状态判断 | 不修改 `SessionStatus`、会话来源识别和状态映射 |
-| 不要改通知文案策略 | 通知标题和消息内容沿用现有逻辑，只增加是否允许发送的开关 |
+| 通知文案保持不变 | 通知标题和消息内容沿用现有逻辑；频率按“进入待处理一次、持续待处理不重复”的增补决策执行 |
 | 不要吞掉 Pet 更新 | 关闭通知只能阻止 `sender(...)`，不能阻止 `sessions_payload()`、轮询、渲染和聚焦 |
 | 不要破坏现有外观偏好 | 新增字段必须和 `pet_appearance` 共存 |
 | 不要依赖系统设置 | 不要求用户去 macOS 系统设置里关闭通知 |
@@ -201,6 +210,7 @@ API 速记：`GET /api/preferences`、`POST /api/preferences/notifications`。
 | 右键菜单开关 | `src/ai_progress_monitor/web.py` HTML/CSS/JS 新增“系统通知 >”二级菜单、“开启 / 关闭”互斥勾选态和锁定态 | `tests/test_web_ui.py`、`tests/test_web_ui_behavior.py` |
 | 保存失败回滚 | 前端保存失败后恢复已确认通知状态并显示轻提示 | `tests/test_web_ui_behavior.py` |
 | 通知关闭不弹窗 | `NotificationManager.notify_for_sessions()` 关闭时不调用 sender，但继续记录状态并抑制旧状态补发 | `tests/test_notifier.py`、`tests/test_service.py` |
+| 待处理去重与跨重启基线 | `NotificationManager` 仅在进入待处理时发送，并将哈希状态原子写入独立文件 | `tests/test_notifier.py`、`tests/test_web_launch.py` |
 | 命令行参数兼容 | `--no-notifications` 继续可用，且不破坏偏好读取 | `tests/test_web_launch.py` |
 | 发布验收 | 发布清单增加通知开关验收项 | `docs/release-checklist.md`、`tests/test_docs_prd_alignment.py` |
 
@@ -213,7 +223,7 @@ API 速记：`GET /api/preferences`、`POST /api/preferences/notifications`。
 | 1 | `tests/test_preferences.py` | 先补通知偏好默认值、读写、非法值、保留已有字段的测试 | 测试先失败，失败原因指向缺少通知偏好能力 |
 | 2 | `src/ai_progress_monitor/preferences.py` | 增加 `notifications_enabled()`、`set_notifications_enabled()` 和布尔校验 | 偏好测试通过 |
 | 3 | `tests/test_notifier.py` | 补关闭后不发送 needs_action、completed、stuck 通知的测试 | 测试覆盖三类现有通知 |
-| 4 | `src/ai_progress_monitor/notifier.py` | 保持 `enabled` 作为唯一发送闸门 | 关闭时不调用 `sender` |
+| 4 | `src/ai_progress_monitor/notifier.py` | 保持 `enabled` 作为发送闸门，并记录待处理进入边沿与跨重启哈希基线 | 关闭时不调用 `sender`；持续待处理不重复通知；重启不补发当前旧状态 |
 | 5 | `tests/test_service.py` | 补服务刷新时会按偏好同步通知开关的测试 | 菜单修改后无需重启即可生效 |
 | 6 | `src/ai_progress_monitor/service.py` | 提供读取和更新通知偏好的服务方法，并同步 `notifier.enabled` | API 保存后本轮运行立即生效 |
 | 7 | `tests/test_web_launch.py` | 补 `GET /api/preferences` 返回通知字段、`POST /api/preferences/notifications` 成功和失败测试 | API 契约固定 |
@@ -228,6 +238,8 @@ API 速记：`GET /api/preferences`、`POST /api/preferences/notifications`。
 | `MonitorPreferences.notifications_enabled()` | 返回布尔值；缺失、非法类型、JSON 损坏时返回 `True` |
 | `MonitorPreferences.set_notifications_enabled(enabled)` | 只接受布尔值；写入时保留所有未知字段和已有偏好 |
 | `NotificationManager.enabled` | 所有原生通知发送前必须检查；为 `False` 时不能调用 `sender` |
+| `NotificationManager` 待处理边沿 | 首次观察或从其他状态进入待处理时可通知一次；持续待处理不重复；离开后重新进入仍受冷却保护 |
+| `notification-state.json` | 仅保存哈希会话键和通知状态；原子写入、权限 `600`、损坏或写入失败不能阻塞通知和监控 |
 | `MonitorService` | 保存通知偏好后立即同步当前 `NotificationManager.enabled` |
 | `GET /api/preferences` | 返回 `pet_appearance`、实际 `notifications_enabled` 和 `notifications_locked` |
 | `POST /api/preferences/notifications` | 请求体只接受 `{"enabled": true/false}` |
@@ -268,6 +280,9 @@ API 速记：`GET /api/preferences`、`POST /api/preferences/notifications`。
 | 保存失败 | 菜单状态回滚，并出现“系统通知设置保存失败” |
 | 命令行兼容 | `--no-notifications` 仍能关闭本次运行通知，二级菜单显示“✓ 关闭”，两个选项均置灰 |
 | 历史状态 | 重新开启后不补发关闭期间的旧通知；新状态变化恢复提醒 |
+| 持续待处理 | 首次进入只出现一条通知；保持待处理超过 5 分钟仍不得重复 |
+| 跨重启去重 | 当前待处理状态不变时重启 App，不新增相同通知；开关状态仍保持 |
+| 新待处理事件 | 会话离开待处理后重新进入，且冷却已满足时，发送一条新通知 |
 
 ## 13. 测试用例清单
 
@@ -279,6 +294,12 @@ API 速记：`GET /api/preferences`、`POST /api/preferences/notifications`。
 | `tests/test_preferences.py` | `test_set_notifications_enabled_preserves_existing_preferences` | 不丢失外观、隐藏会话、别名和自定义资源 |
 | `tests/test_preferences.py` | `test_set_notifications_enabled_does_not_rewrite_effectively_unchanged_value` | 当前实际状态相同时返回成功且不重复写盘 |
 | `tests/test_notifier.py` | `test_disabled_notifications_track_state_without_replaying_old_events` | 关闭后不发三类通知，重新开启不补发旧状态 |
+| `tests/test_notifier.py` | `test_does_not_notify_unchanged_needs_action_after_cooldown` | 持续待处理超过冷却时间仍不重复通知 |
+| `tests/test_notifier.py` | `test_notifies_again_after_needs_action_leaves_and_reenters_after_cooldown` | 离开后重新进入且冷却满足时恢复通知 |
+| `tests/test_notifier.py` | `test_persisted_state_prevents_duplicate_needs_action_after_restart` | 跨重启延续冷却和最近状态，不重复发送当前待处理通知 |
+| `tests/test_notifier.py` | `test_persisted_state_does_not_store_raw_session_identity_or_content` | 状态文件不包含会话 ID、标题或摘要 |
+| `tests/test_notifier.py` | `test_persisted_state_prunes_expired_entries_and_enforces_size_limit` | 移除超过 7 天的状态并将总量限制为 512 条；状态文件权限保持 `600` |
+| `tests/test_web_launch.py` | `test_main_persists_notification_state_next_to_preferences` | 正式启动入口接入独立通知状态文件 |
 | `tests/test_service.py` | `test_notification_preference_controls_notifier_immediately` | API 保存后无需重启 |
 | `tests/test_web_launch.py` | `test_preferences_api_reads_and_updates_system_notifications` | GET/POST 返回实际状态和锁定态 |
 | `tests/test_web_launch.py` | `test_preferences_api_rejects_invalid_system_notification_value` | 非布尔值、额外字段和非对象 JSON 均返回 400 |
@@ -301,9 +322,10 @@ python3 scripts/validate_release.py
 |---|---|
 | 默认启动 App | 右键菜单显示“系统通知 >”；展开后默认显示“✓ 开启”，样式与“外观”选中项一致 |
 | 构造待处理会话 | macOS 通知中心出现一次待处理通知 |
+| 保持待处理超过 5 分钟 | 不出现第二条相同通知 |
 | 关闭通知后再构造待处理 | 不出现系统通知，Pet 仍显示待处理 |
 | 重新开启通知 | 不补发当前旧状态；后续新待处理恢复系统通知 |
-| 重启 App | 菜单开关保持上次选择 |
+| 保持待处理并重启 App | 菜单开关保持上次选择，不新增相同旧通知 |
 | 启动时带 `--no-notifications` | 本次运行不弹通知；展开“系统通知 >”后显示“✓ 关闭”，两个选项均置灰 |
 
 ## 15. AI Coding 验收提示词

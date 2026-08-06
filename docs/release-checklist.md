@@ -58,7 +58,7 @@ python3 scripts/validate_release.py
 | 终端桥接 | `python3 scripts/monitor_command.py --help` | 正常显示参数 |
 | 一键启动 | `python3 dist/ai-progress-monitor.pyz --help` | 参数包含 `--open` |
 | 命令行通知关闭 | `python3 dist/ai-progress-monitor.pyz --help` | 参数包含 `--no-notifications` |
-| Pet 系统通知开关 | `PYTHONPATH=src python3 -m unittest tests.test_preferences tests.test_notifier tests.test_service tests.test_web_launch tests.test_web_ui tests.test_web_ui_behavior` | “系统通知 >”展开“开启 / 关闭”，当前项互斥勾选；默认开启、持久化、同值不重复写入、即时生效、失败回滚、快速连点、旧通知不补发和命令行锁定态均通过 |
+| Pet 系统通知开关 | `PYTHONPATH=src python3 -m unittest tests.test_preferences tests.test_notifier tests.test_service tests.test_web_launch tests.test_web_ui tests.test_web_ui_behavior` | “系统通知 >”展开“开启 / 关闭”，当前项互斥勾选；默认开启、持久化、同值不重复写入、即时生效、失败回滚、快速连点、旧通知不补发、持续待处理不周期重复、跨重启去重和命令行锁定态均通过 |
 | 会话清理 | `python3 dist/ai-progress-monitor.pyz --help` | 参数包含 `--cleanup-after-seconds` |
 | 响应目录 | `python3 dist/ai-progress-monitor.pyz --help` | 参数包含 `--response-dir` |
 | 环境诊断 | `python3 scripts/doctor.py` | 输出 Python、平台、目录、通知、窗口适配检查 |
@@ -75,7 +75,7 @@ python3 scripts/validate_release.py
 | macOS 用户入口 | 解压 macOS arm64 ZIP 后双击唯一的 `AI Progress Monitor.app`；原生 Pet 小窗置顶；关闭只隐藏；菜单栏头像图标可恢复/退出；无需在两个 App 之间选择 |
 | Windows 轻量预览入口 | 解压 portable ZIP 后双击 `scripts\start_floating_monitor.bat`；小窗置顶；关闭只隐藏；托盘可恢复/退出；作为预览路径记录，稳定交付需单独验收 |
 | API 令牌 | 页面能读取启动令牌并请求会话 API |
-| 系统通知 | 右键 Pet → 系统通知，展开“开启 / 关闭”；默认显示“✓ 开启”；关闭后显示“✓ 关闭”，不弹窗但 Pet 状态继续更新；重新开启不补发旧状态，新状态恢复提醒 |
+| 系统通知 | 右键 Pet → 系统通知，展开“开启 / 关闭”；默认显示“✓ 开启”；关闭后显示“✓ 关闭”，不弹窗但 Pet 状态继续更新；重新开启不补发旧状态；每次进入待处理只提醒一次，持续待处理超过 5 分钟不重复，保持待处理重启也不补发，离开后重新进入且冷却满足时恢复提醒 |
 | 需要处理状态 | 页面右下角宠物显示“待处理” |
 | 三态换图 | 空闲、进行中、待处理分别显示对应 Pet 图片；右上角数字角标仍显示总气泡数 |
 | 外观子菜单 | 右键 Pet → 外观，展开“背带裤树懒 / 衬衫树懒”；当前项显示对勾；切换衬衫树懒后三态共用衬衫图，切回背带裤树懒后三态恢复 |
@@ -107,3 +107,4 @@ python3 scripts/validate_release.py
 | 当前发布包 | macOS 13+ Apple Silicon 用户包只含一个正式 App、README 和 LICENSE；portable 包承载 Python 3.9+ Web Companion、CLI 集成、诊断和 Windows 轻量预览脚本 |
 | 诊断工具 | `scripts/doctor.py` 可用于定位权限、目录和平台适配问题 |
 | Pet 偏好配置 | `~/.ai-progress-monitor/preferences.json` 支持 `pet_appearance`、布尔值 `notifications_enabled` 和 `pet_assets.*` 本地路径；通知值缺失或非法时默认开启，资源无效时回退内置资源 |
+| 通知运行基线 | `~/.ai-progress-monitor/notification-state.json` 只包含哈希会话键、状态和通知时间，权限为 `600`；不得出现原始会话 ID、标题、项目名或摘要；损坏和写入失败安全降级 |
