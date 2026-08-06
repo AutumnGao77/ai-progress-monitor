@@ -1,17 +1,28 @@
 from __future__ import annotations
 
 import json
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import RLock
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional
 
 from .models import SessionStatus, SessionUpdate, SurfaceKind, ToolKind
 
 
 CLAUDE_TERMINAL_STATE_CLOCK_SKEW_SECONDS = 2.0
 CLAUDE_VERIFIED_RUNNING_CONFIRMATION_WINDOW_SECONDS = 10.0
+
+
+@dataclass(frozen=True)
+class _PendingVerifiedRunning:
+    existing_status: SessionStatus
+    existing_updated_at: datetime
+    candidate_updated_at: datetime
+    observed_at: Optional[datetime]
+    observation_sequence: Optional[int]
+    observed_monotonic: Optional[float]
+    count: int
 
 
 class SessionStore:
@@ -24,10 +35,9 @@ class SessionStore:
         self._viewed_wall_time_by_session: Dict[str, datetime] = {}
         self._verified_observed_at_by_session: Dict[str, datetime] = {}
         self._verified_running_observed_at_by_session: Dict[str, datetime] = {}
-        self._pending_verified_running_by_session: Dict[
-            str,
-            Tuple[SessionStatus, datetime, datetime, datetime, int],
-        ] = {}
+        self._verified_observation_sequence_by_session: Dict[str, int] = {}
+        self._verified_running_monotonic_by_session: Dict[str, float] = {}
+        self._pending_verified_running_by_session: Dict[str, _PendingVerifiedRunning] = {}
 
     def apply_updates(self, updates: Iterable[SessionUpdate]) -> None:
         updates = list(updates)
@@ -42,16 +52,44 @@ class SessionStore:
                 existing = None
             incoming_verified_observed_at = _verified_observed_at(update)
             incoming_verified_running_observed_at = _verified_running_observed_at(update)
+            incoming_verified_sequence = _verified_observation_sequence(update)
+            incoming_verified_running_monotonic = _verified_running_monotonic(update)
             verified_high_water = self._verified_observed_at_by_session.get(update.session_id)
-            if _has_older_verified_observation(verified_high_water, incoming_verified_observed_at):
+            verified_sequence_high_water = self._verified_observation_sequence_by_session.get(
+                update.session_id
+            )
+            if (
+                incoming_verified_sequence is not None
+                and verified_sequence_high_water is not None
+                and incoming_verified_sequence <= verified_sequence_high_water
+            ):
                 continue
-            allow_out_of_order_terminal = _is_recent_verified_claude_terminal_transition(existing, update)
+            sequence_is_newer = (
+                incoming_verified_sequence is not None
+                and verified_sequence_high_water is not None
+                and incoming_verified_sequence > verified_sequence_high_water
+            )
+            if (
+                not sequence_is_newer
+                and _has_older_verified_observation(verified_high_water, incoming_verified_observed_at)
+            ):
+                continue
+            allow_out_of_order_terminal = _is_recent_verified_claude_terminal_transition(
+                existing,
+                update,
+                sequence_is_newer=sequence_is_newer,
+            ) or _is_clock_adjusted_verified_claude_terminal_transition(
+                existing,
+                update,
+                sequence_is_newer=sequence_is_newer,
+            )
             allow_recent_initial_idle = _is_recent_initial_idle_over_process_fallback(existing, update)
             verified_over_degraded = _is_verified_claude_state_over_degraded_state(existing, update)
             allow_verified_running_restart = self._allow_verified_running_restart(
                 existing,
                 update,
                 verified_high_water,
+                verified_sequence_high_water,
             )
             verified_running_requires_confirmation = (
                 _is_verified_claude_running_over_terminal_state(existing, update)
@@ -73,7 +111,7 @@ class SessionStore:
                 allow_running_to_terminal=allow_running_to_terminal,
                 verified_observed_at=verified_high_water,
             )
-            if (
+            should_apply = (
                 existing is None
                 or (
                     update.updated_at >= existing.updated_at
@@ -83,7 +121,16 @@ class SessionStore:
                 or allow_recent_initial_idle
                 or verified_over_degraded
                 or allow_verified_running_restart
-            ):
+            )
+            if should_apply:
+                if (
+                    existing is not None
+                    and existing.status == SessionStatus.RUNNING
+                    and update.status != SessionStatus.RUNNING
+                    and _is_claude_terminal_semantic_state(update)
+                ):
+                    self._viewed_at_by_session.pop(update.session_id, None)
+                    self._viewed_wall_time_by_session.pop(update.session_id, None)
                 if (
                     existing is not None
                     and existing.status != SessionStatus.RUNNING
@@ -99,11 +146,16 @@ class SessionStore:
                     and update.status != SessionStatus.RUNNING
                 ):
                     self._verified_running_observed_at_by_session.pop(update.session_id, None)
+                    self._verified_running_monotonic_by_session.pop(update.session_id, None)
             if incoming_verified_observed_at is not None:
                 self._verified_observed_at_by_session[update.session_id] = max(
                     incoming_verified_observed_at,
                     verified_high_water or incoming_verified_observed_at,
                 )
+            if incoming_verified_sequence is not None:
+                self._verified_observation_sequence_by_session[
+                    update.session_id
+                ] = incoming_verified_sequence
             if incoming_verified_running_observed_at is not None:
                 current_running_observed_at = self._verified_running_observed_at_by_session.get(
                     update.session_id
@@ -112,18 +164,80 @@ class SessionStore:
                     incoming_verified_running_observed_at,
                     current_running_observed_at or incoming_verified_running_observed_at,
                 )
+            if incoming_verified_running_monotonic is not None:
+                current_running_monotonic = self._verified_running_monotonic_by_session.get(
+                    update.session_id
+                )
+                if incoming_verified_sequence is not None or current_running_monotonic is None:
+                    self._verified_running_monotonic_by_session[
+                        update.session_id
+                    ] = incoming_verified_running_monotonic
+                else:
+                    self._verified_running_monotonic_by_session[update.session_id] = max(
+                        incoming_verified_running_monotonic,
+                        current_running_monotonic,
+                    )
 
     def _allow_verified_running_restart(
         self,
         existing: Optional[SessionUpdate],
         update: SessionUpdate,
         verified_high_water: Optional[datetime],
+        verified_sequence_high_water: Optional[int],
     ) -> bool:
         session_id = update.session_id
         if not _is_verified_claude_running_over_terminal_state(existing, update):
             self._pending_verified_running_by_session.pop(session_id, None)
             return False
+        if existing is not None and update.updated_at > existing.updated_at:
+            self._pending_verified_running_by_session.pop(session_id, None)
+            return False
         incoming_observed_at = update.observed_at
+        incoming_sequence = update.observation_sequence
+        incoming_monotonic = update.observed_monotonic
+        if incoming_sequence is not None and verified_sequence_high_water is not None:
+            if incoming_sequence <= verified_sequence_high_water or incoming_monotonic is None:
+                return False
+            pending = self._pending_verified_running_by_session.get(session_id)
+            slow_confirmation_window_seconds = max(
+                CLAUDE_VERIFIED_RUNNING_CONFIRMATION_WINDOW_SECONDS,
+                float(self.stuck_after_seconds),
+            )
+            monotonic_gap_seconds = (
+                incoming_monotonic - pending.observed_monotonic
+                if pending is not None and pending.observed_monotonic is not None
+                else None
+            )
+            matches_pending = (
+                pending is not None
+                and pending.existing_status == existing.status
+                and pending.existing_updated_at == existing.updated_at
+                and update.updated_at >= pending.candidate_updated_at
+                and pending.observation_sequence is not None
+                and incoming_sequence == pending.observation_sequence + 1
+                and monotonic_gap_seconds is not None
+                and 0 < monotonic_gap_seconds <= slow_confirmation_window_seconds
+            )
+            fast_confirmation = (
+                matches_pending
+                and monotonic_gap_seconds <= CLAUDE_VERIFIED_RUNNING_CONFIRMATION_WINDOW_SECONDS
+            )
+            slow_confirmation = matches_pending and pending.count >= 2
+            if fast_confirmation or slow_confirmation:
+                self._pending_verified_running_by_session.pop(session_id, None)
+                return True
+            consecutive_observations = pending.count + 1 if matches_pending else 1
+            self._pending_verified_running_by_session[session_id] = _PendingVerifiedRunning(
+                existing_status=existing.status,
+                existing_updated_at=existing.updated_at,
+                candidate_updated_at=update.updated_at,
+                observed_at=incoming_observed_at,
+                observation_sequence=incoming_sequence,
+                observed_monotonic=incoming_monotonic,
+                count=consecutive_observations,
+            )
+            return False
+
         observation_floor = verified_high_water or existing.observed_at
         if (
             incoming_observed_at is None
@@ -132,8 +246,8 @@ class SessionStore:
             return False
         pending = self._pending_verified_running_by_session.get(session_id)
         observation_gap_seconds = (
-            (incoming_observed_at - pending[3]).total_seconds()
-            if pending is not None
+            (incoming_observed_at - pending.observed_at).total_seconds()
+            if pending is not None and pending.observed_at is not None
             else None
         )
         slow_confirmation_window_seconds = max(
@@ -142,9 +256,9 @@ class SessionStore:
         )
         matches_pending = (
             pending is not None
-            and pending[0] == existing.status
-            and pending[1] == existing.updated_at
-            and update.updated_at >= pending[2]
+            and pending.existing_status == existing.status
+            and pending.existing_updated_at == existing.updated_at
+            and update.updated_at >= pending.candidate_updated_at
             and observation_gap_seconds is not None
             and observation_gap_seconds > 0
         )
@@ -155,22 +269,24 @@ class SessionStore:
         slow_confirmation = (
             matches_pending
             and observation_gap_seconds <= slow_confirmation_window_seconds
-            and pending[4] >= 2
+            and pending.count >= 2
         )
         if fast_confirmation or slow_confirmation:
             self._pending_verified_running_by_session.pop(session_id, None)
             return True
         consecutive_observations = (
-            pending[4] + 1
+            pending.count + 1
             if matches_pending and observation_gap_seconds <= slow_confirmation_window_seconds
             else 1
         )
-        self._pending_verified_running_by_session[session_id] = (
-            existing.status,
-            existing.updated_at,
-            update.updated_at,
-            incoming_observed_at,
-            consecutive_observations,
+        self._pending_verified_running_by_session[session_id] = _PendingVerifiedRunning(
+            existing_status=existing.status,
+            existing_updated_at=existing.updated_at,
+            candidate_updated_at=update.updated_at,
+            observed_at=incoming_observed_at,
+            observation_sequence=None,
+            observed_monotonic=None,
+            count=consecutive_observations,
         )
         return False
 
@@ -189,12 +305,25 @@ class SessionStore:
         self._viewed_wall_time_by_session.pop(session_id, None)
         self._verified_observed_at_by_session.pop(session_id, None)
         self._verified_running_observed_at_by_session.pop(session_id, None)
+        self._verified_observation_sequence_by_session.pop(session_id, None)
+        self._verified_running_monotonic_by_session.pop(session_id, None)
         self._pending_verified_running_by_session.pop(session_id, None)
 
-    def sessions(self, now: Optional[datetime] = None) -> List[SessionUpdate]:
+    def sessions(
+        self,
+        now: Optional[datetime] = None,
+        monotonic_now: Optional[float] = None,
+    ) -> List[SessionUpdate]:
         current = now or datetime.now(timezone.utc)
         with self._lock:
-            marked = [self._mark_stuck(self._mark_viewed(session), current) for session in self._sessions.values()]
+            marked = [
+                self._mark_stuck(
+                    self._mark_viewed(session),
+                    current,
+                    monotonic_now=monotonic_now,
+                )
+                for session in self._sessions.values()
+            ]
             return sorted(marked, key=_session_sort_key)
 
     def mark_session_viewed(self, session_id: str, viewed_at: Optional[datetime] = None) -> bool:
@@ -224,9 +353,25 @@ class SessionStore:
                 handle.write(json.dumps(payload, ensure_ascii=True) + "\n")
             return path
 
-    def _mark_stuck(self, session: SessionUpdate, now: datetime) -> SessionUpdate:
+    def _mark_stuck(
+        self,
+        session: SessionUpdate,
+        now: datetime,
+        monotonic_now: Optional[float] = None,
+    ) -> SessionUpdate:
         if session.status != SessionStatus.RUNNING:
             return session
+        running_monotonic = self._verified_running_monotonic_by_session.get(
+            session.session_id
+        )
+        if (
+            _is_verified_claude_terminal_running(session)
+            and monotonic_now is not None
+            and running_monotonic is not None
+        ):
+            if monotonic_now - running_monotonic < self.stuck_after_seconds:
+                return session
+            return replace(session, status=SessionStatus.STUCK, summary="No progress detected recently")
         progress_at = (
             self._verified_running_observed_at_by_session.get(session.session_id)
             or session.observed_at
@@ -422,6 +567,18 @@ def _verified_running_observed_at(session: SessionUpdate) -> Optional[datetime]:
     return session.observed_at
 
 
+def _verified_observation_sequence(session: SessionUpdate) -> Optional[int]:
+    if not _is_identity_verified_claude_terminal_state(session):
+        return None
+    return session.observation_sequence
+
+
+def _verified_running_monotonic(session: SessionUpdate) -> Optional[float]:
+    if not _is_verified_claude_terminal_running(session):
+        return None
+    return session.observed_monotonic
+
+
 def _has_older_verified_observation(
     high_water: Optional[datetime],
     incoming: Optional[datetime],
@@ -466,6 +623,7 @@ def _is_verified_claude_running_over_terminal_state(
 def _is_recent_verified_claude_terminal_transition(
     existing: Optional[SessionUpdate],
     update: SessionUpdate,
+    sequence_is_newer: bool = False,
 ) -> bool:
     if not _is_verified_claude_terminal_running(existing):
         return False
@@ -473,10 +631,28 @@ def _is_recent_verified_claude_terminal_transition(
         return False
     if not _is_identity_verified_claude_terminal_state(update):
         return False
-    if existing.observed_at is not None and update.observed_at < existing.observed_at:
+    if (
+        not sequence_is_newer
+        and existing.observed_at is not None
+        and update.observed_at < existing.observed_at
+    ):
         return False
     skew_seconds = (existing.updated_at - update.updated_at).total_seconds()
     return 0 < skew_seconds <= CLAUDE_TERMINAL_STATE_CLOCK_SKEW_SECONDS
+
+
+def _is_clock_adjusted_verified_claude_terminal_transition(
+    existing: Optional[SessionUpdate],
+    update: SessionUpdate,
+    sequence_is_newer: bool,
+) -> bool:
+    return (
+        sequence_is_newer
+        and update.observation_clock_adjusted
+        and _is_verified_claude_terminal_running(existing)
+        and _is_claude_terminal_explicit_non_running(update)
+        and _is_identity_verified_claude_terminal_state(update)
+    )
 
 
 def _is_recent_initial_idle_over_process_fallback(

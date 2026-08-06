@@ -65,6 +65,10 @@ class SessionUpdate:
     generated_conversation_path: bool = False
     observed_at: Optional[datetime] = None
     process_started_at: Optional[datetime] = None
+    observation_sequence: Optional[int] = None
+    observed_monotonic: Optional[float] = None
+    observation_clock_adjusted: bool = False
+    observation_wall_at: Optional[datetime] = None
 
     @staticmethod
     def now() -> datetime:

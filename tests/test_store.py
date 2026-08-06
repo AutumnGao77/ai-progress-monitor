@@ -650,6 +650,407 @@ class SessionStoreTests(unittest.TestCase):
                 self.assertEqual(after_recovery.status, semantic_status)
                 self.assertEqual(after_recovery.status_source, status_source)
 
+    def test_verified_prompt_with_one_or_two_second_clock_rollback_still_needs_action(self):
+        running_at = datetime(2026, 8, 4, 8, 0, tzinfo=timezone.utc)
+        observed_at = running_at + timedelta(minutes=1)
+
+        for rollback_seconds in (1, 2):
+            with self.subTest(rollback_seconds=rollback_seconds):
+                store = SessionStore(stuck_after_seconds=60)
+                running = SessionUpdate(
+                    "process-24645",
+                    "Claude Code CLI - clock-test",
+                    ToolKind.CLAUDE_CODE,
+                    SurfaceKind.TERMINAL,
+                    SessionStatus.RUNNING,
+                    "running",
+                    running_at,
+                    source="process",
+                    process_id=24645,
+                    status_source="claude-session-verified",
+                    observed_at=observed_at,
+                    observation_sequence=1,
+                    observed_monotonic=100.0,
+                    observation_clock_adjusted=False,
+                    observation_wall_at=observed_at,
+                )
+                prompt = replace(
+                    running,
+                    status=SessionStatus.IDLE,
+                    summary="prompt",
+                    updated_at=running_at - timedelta(seconds=rollback_seconds),
+                    status_source="claude-session-prompt",
+                    observed_at=observed_at - timedelta(seconds=rollback_seconds),
+                    observation_sequence=2,
+                    observed_monotonic=101.0,
+                    observation_wall_at=observed_at - timedelta(seconds=rollback_seconds),
+                )
+
+                store.apply_updates([running])
+                store.apply_updates([prompt])
+
+                session = store.sessions(
+                    now=observed_at,
+                    monotonic_now=101.0,
+                )[0]
+                self.assertEqual(session.status, SessionStatus.NEEDS_ACTION)
+                self.assertTrue(session.view_ack_required)
+
+    def test_verified_prompt_with_large_clock_rollback_uses_new_observation_sequence(self):
+        store = SessionStore(stuck_after_seconds=60)
+        running_at = datetime(2026, 8, 4, 8, 0, tzinfo=timezone.utc)
+        observed_at = running_at + timedelta(minutes=1)
+        running = SessionUpdate(
+            "process-24645",
+            "Claude Code CLI - clock-test",
+            ToolKind.CLAUDE_CODE,
+            SurfaceKind.TERMINAL,
+            SessionStatus.RUNNING,
+            "running",
+            running_at,
+            source="process",
+            process_id=24645,
+            status_source="claude-session-verified",
+            observed_at=observed_at,
+            observation_sequence=1,
+            observed_monotonic=100.0,
+            observation_clock_adjusted=False,
+            observation_wall_at=observed_at,
+        )
+        rolled_back_wall = observed_at - timedelta(hours=1)
+        prompt = replace(
+            running,
+            status=SessionStatus.IDLE,
+            summary="prompt after rollback",
+            updated_at=running_at - timedelta(hours=1),
+            status_source="claude-session-prompt",
+            observed_at=rolled_back_wall,
+            observation_sequence=2,
+            observed_monotonic=101.0,
+            observation_clock_adjusted=True,
+            observation_wall_at=rolled_back_wall,
+        )
+
+        store.apply_updates([running])
+        store.apply_updates([prompt])
+
+        session = store.sessions(now=rolled_back_wall, monotonic_now=101.0)[0]
+        self.assertEqual(session.status, SessionStatus.NEEDS_ACTION)
+        self.assertTrue(session.view_ack_required)
+
+    def test_viewed_running_does_not_acknowledge_new_prompt_after_clock_rollback(self):
+        store = SessionStore(stuck_after_seconds=60)
+        running_at = datetime(2026, 8, 4, 8, 0, tzinfo=timezone.utc)
+        observed_at = running_at + timedelta(minutes=1)
+        running = SessionUpdate(
+            "process-24645",
+            "Claude Code CLI - clock-test",
+            ToolKind.CLAUDE_CODE,
+            SurfaceKind.TERMINAL,
+            SessionStatus.RUNNING,
+            "running",
+            running_at,
+            source="process",
+            process_id=24645,
+            status_source="claude-session-verified",
+            observed_at=observed_at,
+            observation_sequence=1,
+            observed_monotonic=100.0,
+            observation_clock_adjusted=False,
+            observation_wall_at=observed_at,
+        )
+        rolled_back_wall = observed_at - timedelta(hours=1)
+        prompt = replace(
+            running,
+            status=SessionStatus.IDLE,
+            summary="prompt after rollback",
+            updated_at=running_at - timedelta(hours=1),
+            status_source="claude-session-prompt",
+            observed_at=rolled_back_wall,
+            observation_sequence=2,
+            observed_monotonic=101.0,
+            observation_clock_adjusted=True,
+            observation_wall_at=rolled_back_wall,
+        )
+
+        store.apply_updates([running])
+        self.assertTrue(store.mark_session_viewed("process-24645", viewed_at=observed_at))
+        store.apply_updates([prompt])
+
+        session = store.sessions(now=rolled_back_wall, monotonic_now=101.0)[0]
+        self.assertEqual(session.status, SessionStatus.NEEDS_ACTION)
+        self.assertTrue(session.view_ack_required)
+
+    def test_older_observation_sequence_cannot_apply_late_prompt(self):
+        store = SessionStore(stuck_after_seconds=60)
+        running_at = datetime(2026, 8, 4, 8, 0, tzinfo=timezone.utc)
+        observed_at = running_at + timedelta(minutes=1)
+        running = SessionUpdate(
+            "process-24645",
+            "Claude Code CLI - clock-test",
+            ToolKind.CLAUDE_CODE,
+            SurfaceKind.TERMINAL,
+            SessionStatus.RUNNING,
+            "current running",
+            running_at,
+            source="process",
+            process_id=24645,
+            status_source="claude-session-verified",
+            observed_at=observed_at,
+            observation_sequence=2,
+            observed_monotonic=102.0,
+            observation_clock_adjusted=True,
+            observation_wall_at=observed_at - timedelta(hours=1),
+        )
+        late_prompt = replace(
+            running,
+            status=SessionStatus.IDLE,
+            summary="late prompt",
+            updated_at=running_at - timedelta(hours=1),
+            status_source="claude-session-prompt",
+            observed_at=observed_at - timedelta(hours=1),
+            observation_sequence=1,
+            observed_monotonic=101.0,
+        )
+
+        store.apply_updates([running])
+        store.apply_updates([late_prompt])
+
+        session = store.sessions(now=observed_at, monotonic_now=102.0)[0]
+        self.assertEqual(session.status, SessionStatus.RUNNING)
+        self.assertEqual(session.summary, "current running")
+
+    def test_verified_running_stuck_age_uses_monotonic_observation_across_wall_rollback(self):
+        store = SessionStore(stuck_after_seconds=60)
+        running_at = datetime(2026, 8, 4, 8, 0, tzinfo=timezone.utc)
+        observed_at = running_at + timedelta(minutes=1)
+        running = SessionUpdate(
+            "process-24645",
+            "Claude Code CLI - clock-test",
+            ToolKind.CLAUDE_CODE,
+            SurfaceKind.TERMINAL,
+            SessionStatus.RUNNING,
+            "running",
+            running_at,
+            source="process",
+            process_id=24645,
+            status_source="claude-session-verified",
+            observed_at=observed_at,
+            observation_sequence=1,
+            observed_monotonic=100.0,
+            observation_clock_adjusted=False,
+            observation_wall_at=observed_at,
+        )
+        rolled_back_wall = observed_at - timedelta(hours=1)
+        recovered = replace(
+            running,
+            updated_at=running_at - timedelta(hours=1),
+            observed_at=rolled_back_wall,
+            observation_sequence=2,
+            observed_monotonic=161.0,
+            observation_clock_adjusted=True,
+            observation_wall_at=rolled_back_wall,
+        )
+
+        store.apply_updates([running])
+        before_timeout = store.sessions(now=rolled_back_wall, monotonic_now=159.0)[0]
+        after_timeout = store.sessions(now=rolled_back_wall, monotonic_now=160.0)[0]
+        store.apply_updates([recovered])
+        after_recovery = store.sessions(now=rolled_back_wall, monotonic_now=161.0)[0]
+
+        self.assertEqual(before_timeout.status, SessionStatus.RUNNING)
+        self.assertEqual(after_timeout.status, SessionStatus.STUCK)
+        self.assertEqual(after_recovery.status, SessionStatus.RUNNING)
+
+    def test_running_restart_sequence_replay_and_gap_do_not_confirm_candidate(self):
+        store = SessionStore(stuck_after_seconds=60)
+        terminal_at = datetime(2026, 8, 4, 8, 0, tzinfo=timezone.utc)
+        terminal = SessionUpdate(
+            "process-24645",
+            "Claude Code CLI - sequence-test",
+            ToolKind.CLAUDE_CODE,
+            SurfaceKind.TERMINAL,
+            SessionStatus.NEEDS_ACTION,
+            "terminal",
+            terminal_at,
+            source="process",
+            process_id=24645,
+            view_ack_required=True,
+            status_source="claude-session",
+            observed_at=terminal_at,
+            observation_sequence=10,
+            observed_monotonic=100.0,
+            observation_clock_adjusted=True,
+            observation_wall_at=terminal_at,
+        )
+        running = replace(
+            terminal,
+            status=SessionStatus.RUNNING,
+            summary="running candidate",
+            updated_at=terminal_at - timedelta(hours=1),
+            view_ack_required=False,
+            status_source="claude-session-verified",
+            observed_at=terminal_at - timedelta(hours=1),
+            observation_sequence=11,
+            observed_monotonic=101.0,
+        )
+
+        store.apply_updates([terminal])
+        store.apply_updates([running])
+        after_first = store.sessions(now=terminal_at, monotonic_now=101.0)[0]
+        store.apply_updates([replace(running, observed_monotonic=102.0)])
+        after_replay = store.sessions(now=terminal_at, monotonic_now=102.0)[0]
+        store.apply_updates(
+            [replace(running, observation_sequence=13, observed_monotonic=103.0)]
+        )
+        after_gap = store.sessions(now=terminal_at, monotonic_now=103.0)[0]
+        store.apply_updates(
+            [replace(running, observation_sequence=14, observed_monotonic=104.0)]
+        )
+        after_consecutive = store.sessions(now=terminal_at, monotonic_now=104.0)[0]
+
+        self.assertEqual(after_first.status, SessionStatus.NEEDS_ACTION)
+        self.assertEqual(after_replay.status, SessionStatus.NEEDS_ACTION)
+        self.assertEqual(after_gap.status, SessionStatus.NEEDS_ACTION)
+        self.assertEqual(after_consecutive.status, SessionStatus.RUNNING)
+
+    def test_running_restart_with_slow_consecutive_sequences_requires_three_observations(self):
+        store = SessionStore(stuck_after_seconds=60)
+        terminal_at = datetime(2026, 8, 4, 8, 0, tzinfo=timezone.utc)
+        terminal = SessionUpdate(
+            "process-24645",
+            "Claude Code CLI - slow-sequence-test",
+            ToolKind.CLAUDE_CODE,
+            SurfaceKind.TERMINAL,
+            SessionStatus.NEEDS_ACTION,
+            "terminal",
+            terminal_at,
+            source="process",
+            process_id=24645,
+            view_ack_required=True,
+            status_source="claude-session",
+            observed_at=terminal_at,
+            observation_sequence=10,
+            observed_monotonic=100.0,
+            observation_clock_adjusted=True,
+            observation_wall_at=terminal_at,
+        )
+        running = replace(
+            terminal,
+            status=SessionStatus.RUNNING,
+            summary="slow running candidate",
+            updated_at=terminal_at - timedelta(hours=1),
+            view_ack_required=False,
+            status_source="claude-session-verified",
+            observed_at=terminal_at - timedelta(hours=1),
+            observation_sequence=11,
+            observed_monotonic=111.0,
+        )
+
+        store.apply_updates([terminal])
+        store.apply_updates([running])
+        after_first = store.sessions(now=terminal_at, monotonic_now=111.0)[0]
+        store.apply_updates(
+            [replace(running, observation_sequence=12, observed_monotonic=122.0)]
+        )
+        after_second = store.sessions(now=terminal_at, monotonic_now=122.0)[0]
+        store.apply_updates(
+            [replace(running, observation_sequence=13, observed_monotonic=133.0)]
+        )
+        after_third = store.sessions(now=terminal_at, monotonic_now=133.0)[0]
+
+        self.assertEqual(after_first.status, SessionStatus.NEEDS_ACTION)
+        self.assertEqual(after_second.status, SessionStatus.NEEDS_ACTION)
+        self.assertEqual(after_third.status, SessionStatus.RUNNING)
+
+    def test_process_generation_change_clears_observation_sequence_and_monotonic_high_water(self):
+        store = SessionStore(stuck_after_seconds=60)
+        observed_at = datetime(2026, 8, 4, 8, 0, tzinfo=timezone.utc)
+        old_started_at = observed_at - timedelta(hours=1)
+        new_started_at = observed_at + timedelta(hours=1)
+        old = SessionUpdate(
+            "process-24645",
+            "Claude Code CLI - pid-reuse-test",
+            ToolKind.CLAUDE_CODE,
+            SurfaceKind.TERMINAL,
+            SessionStatus.RUNNING,
+            "old process",
+            observed_at,
+            source="process",
+            process_id=24645,
+            status_source="claude-session-verified",
+            observed_at=observed_at,
+            process_started_at=old_started_at,
+            observation_sequence=100,
+            observed_monotonic=1000.0,
+            observation_clock_adjusted=False,
+            observation_wall_at=observed_at,
+        )
+        replacement = replace(
+            old,
+            summary="new process",
+            updated_at=observed_at - timedelta(hours=2),
+            observed_at=observed_at - timedelta(hours=2),
+            process_started_at=new_started_at,
+            observation_sequence=1,
+            observed_monotonic=1.0,
+            observation_clock_adjusted=True,
+            observation_wall_at=observed_at - timedelta(hours=2),
+        )
+
+        store.apply_updates([old])
+        store.apply_updates([replacement])
+
+        session = store.sessions(
+            now=observed_at - timedelta(hours=2),
+            monotonic_now=1.0,
+        )[0]
+        self.assertEqual(session.summary, "new process")
+        self.assertEqual(session.process_started_at, new_started_at)
+        self.assertEqual(store._verified_observation_sequence_by_session["process-24645"], 1)
+        self.assertEqual(store._verified_running_monotonic_by_session["process-24645"], 1.0)
+
+    def test_newer_running_timestamp_is_accepted_without_sequence_confirmation(self):
+        store = SessionStore(stuck_after_seconds=60)
+        terminal_at = datetime(2026, 8, 4, 8, 0, tzinfo=timezone.utc)
+        terminal = SessionUpdate(
+            "process-24645",
+            "Claude Code CLI - sequence-test",
+            ToolKind.CLAUDE_CODE,
+            SurfaceKind.TERMINAL,
+            SessionStatus.NEEDS_ACTION,
+            "terminal",
+            terminal_at,
+            source="process",
+            process_id=24645,
+            view_ack_required=True,
+            status_source="claude-session",
+            observed_at=terminal_at,
+            observation_sequence=1,
+            observed_monotonic=100.0,
+            observation_clock_adjusted=False,
+            observation_wall_at=terminal_at,
+        )
+        running = replace(
+            terminal,
+            status=SessionStatus.RUNNING,
+            summary="new task",
+            updated_at=terminal_at + timedelta(seconds=1),
+            view_ack_required=False,
+            status_source="claude-session-verified",
+            observed_at=terminal_at + timedelta(seconds=1),
+            observation_sequence=2,
+            observed_monotonic=101.0,
+            observation_wall_at=terminal_at + timedelta(seconds=1),
+        )
+
+        store.apply_updates([terminal])
+        store.apply_updates([running])
+
+        session = store.sessions(now=terminal_at + timedelta(seconds=1), monotonic_now=101.0)[0]
+        self.assertEqual(session.status, SessionStatus.RUNNING)
+        self.assertEqual(session.summary, "new task")
+
     def test_verified_terminal_state_yields_to_verified_new_running_task_with_clock_skew(self):
         terminal_at = datetime(2026, 7, 2, 9, 0, tzinfo=timezone.utc)
         terminal_observed_at = terminal_at + timedelta(minutes=2)
