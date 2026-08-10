@@ -5,6 +5,7 @@ import json
 import os
 import platform
 import subprocess
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import RLock
@@ -28,12 +29,16 @@ class NotificationManager:
         cooldown_seconds: int = 300,
         enabled: bool = True,
         state_path: Optional[Path] = None,
+        clock: Optional[Callable[[], float]] = None,
     ):
         self.sender = sender or send_native_notification
         self.cooldown_seconds = cooldown_seconds
         self.enabled = enabled
         self.state_path = Path(state_path) if state_path is not None else None
+        self.clock = clock or time.monotonic
+        self._started_monotonic = float(self.clock())
         self._last_sent: Dict[str, datetime] = {}
+        self._last_sent_monotonic: Dict[str, float] = {}
         self._last_status: Dict[str, SessionStatus] = {}
         self._last_seen: Dict[str, datetime] = {}
         self._suppressed_needs_action: Set[str] = set()
@@ -53,10 +58,12 @@ class NotificationManager:
         with self._state_lock:
             sessions = list(sessions)
             current = now or datetime.now(timezone.utc)
+            current_monotonic = float(self.clock())
             if not self.enabled:
                 self._record_suppressed_state(sessions, current)
                 self._persist_state()
                 return
+            current_state_keys = {_notification_state_key(session) for session in sessions}
             current_needs_action_keys = {
                 _notification_state_key(session)
                 for session in sessions
@@ -70,17 +77,25 @@ class NotificationManager:
                     continue
                 if self._last_status.get(state_key) == SessionStatus.NEEDS_ACTION:
                     continue
-                if state_key in self._suppressed_needs_action or not self._can_send(state_key, current):
+                if state_key in self._suppressed_needs_action or not self._can_send(
+                    state_key,
+                    current,
+                    current_monotonic,
+                ):
                     continue
                 needs_action.append(session)
             if len(needs_action) == 1:
                 session = needs_action[0]
                 self.sender("AI Monitor: 需要处理", f"{session.title}: {session.summary}")
-                self._last_sent[_notification_state_key(session)] = current
+                state_key = _notification_state_key(session)
+                self._last_sent[state_key] = current
+                self._last_sent_monotonic[state_key] = current_monotonic
             elif len(needs_action) > 1:
                 self.sender("AI Monitor: 需要处理", f"{len(needs_action)} 个会话需要处理")
                 for session in needs_action:
-                    self._last_sent[_notification_state_key(session)] = current
+                    state_key = _notification_state_key(session)
+                    self._last_sent[state_key] = current
+                    self._last_sent_monotonic[state_key] = current_monotonic
             for session in sessions:
                 state_key = _notification_state_key(session)
                 previous = self._last_status.get(state_key)
@@ -90,26 +105,34 @@ class NotificationManager:
                     self.sender("AI Monitor: 疑似卡住", f"{session.title}: {session.summary}")
                 self._last_status[state_key] = session.status
             self._record_seen_sessions(sessions, current)
-            self._prune_state(current)
+            self._prune_state(current, protected_keys=current_state_keys)
             self._persist_state()
 
     def _record_suppressed_state(self, sessions: Iterable[SessionUpdate], current: datetime) -> None:
         sessions = list(sessions)
         suppressed = set()
+        current_state_keys = set()
         for session in sessions:
             state_key = _notification_state_key(session)
+            current_state_keys.add(state_key)
             self._last_status[state_key] = session.status
             if session.status == SessionStatus.NEEDS_ACTION:
                 suppressed.add(state_key)
         self._suppressed_needs_action = suppressed
         self._record_seen_sessions(sessions, current)
-        self._prune_state(current)
+        self._prune_state(current, protected_keys=current_state_keys)
 
-    def _can_send(self, instance_key: str, now: datetime) -> bool:
+    def _can_send(self, instance_key: str, now: datetime, monotonic_now: float) -> bool:
+        last_sent_monotonic = self._last_sent_monotonic.get(instance_key)
+        if last_sent_monotonic is not None:
+            return monotonic_now - last_sent_monotonic >= self.cooldown_seconds
         last_sent = self._last_sent.get(instance_key)
         if last_sent is None:
             return True
-        return (now - last_sent).total_seconds() >= self.cooldown_seconds
+        elapsed_seconds = (now - last_sent).total_seconds()
+        if elapsed_seconds >= 0:
+            return elapsed_seconds >= self.cooldown_seconds
+        return monotonic_now - self._started_monotonic >= self.cooldown_seconds
 
     def _record_seen_sessions(self, sessions: Iterable[SessionUpdate], current: datetime) -> None:
         for session in sessions:
@@ -122,23 +145,29 @@ class NotificationManager:
             ):
                 self._last_seen[state_key] = current
 
-    def _prune_state(self, current: datetime) -> None:
+    def _prune_state(self, current: datetime, protected_keys: Optional[Set[str]] = None) -> None:
+        protected = set(protected_keys or ())
         stale_keys = {
             state_key
             for state_key, last_seen in self._last_seen.items()
-            if current >= last_seen
+            if state_key not in protected
+            and current >= last_seen
             and (current - last_seen).total_seconds() > NOTIFICATION_STATE_RETENTION_SECONDS
         }
         remaining_keys = set(self._last_seen) - stale_keys
-        if len(remaining_keys) > NOTIFICATION_STATE_MAX_ENTRIES:
-            newest_keys = sorted(
-                remaining_keys,
-                key=lambda state_key: self._last_seen[state_key],
+        protected_remaining = remaining_keys & protected
+        unprotected_remaining = remaining_keys - protected_remaining
+        unprotected_limit = max(0, NOTIFICATION_STATE_MAX_ENTRIES - len(protected_remaining))
+        if len(unprotected_remaining) > unprotected_limit:
+            newest_unprotected = sorted(
+                unprotected_remaining,
+                key=lambda state_key: (self._last_seen[state_key], state_key),
                 reverse=True,
-            )[:NOTIFICATION_STATE_MAX_ENTRIES]
-            stale_keys.update(remaining_keys - set(newest_keys))
+            )[:unprotected_limit]
+            stale_keys.update(unprotected_remaining - set(newest_unprotected))
         for state_key in stale_keys:
             self._last_sent.pop(state_key, None)
+            self._last_sent_monotonic.pop(state_key, None)
             self._last_status.pop(state_key, None)
             self._last_seen.pop(state_key, None)
             self._suppressed_needs_action.discard(state_key)

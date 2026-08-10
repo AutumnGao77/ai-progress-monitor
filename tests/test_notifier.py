@@ -192,6 +192,33 @@ class NotifierTests(unittest.TestCase):
             self.assertIn(fresh_keys[0], persisted_entries)
             self.assertNotIn(fresh_keys[-1], persisted_entries)
 
+    def test_active_sessions_are_not_pruned_or_renotified_above_history_limit(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            sent = []
+            state_path = Path(temp_dir) / "notification-state.json"
+            now = datetime(2026, 6, 30, tzinfo=timezone.utc)
+            sessions = [
+                make_session(f"active-{index}", SessionStatus.NEEDS_ACTION, now)
+                for index in range(NOTIFICATION_STATE_MAX_ENTRIES + 1)
+            ]
+            manager = NotificationManager(
+                sender=lambda title, message: sent.append((title, message)),
+                state_path=state_path,
+            )
+
+            manager.notify_for_sessions(sessions, now=now)
+            manager.notify_for_sessions(sessions, now=now + timedelta(seconds=1))
+
+            persisted_entries = json.loads(state_path.read_text(encoding="utf-8"))["entries"]
+            restarted_manager = NotificationManager(
+                sender=lambda title, message: sent.append((title, message)),
+                state_path=state_path,
+            )
+            restarted_manager.notify_for_sessions(sessions, now=now + timedelta(seconds=2))
+
+            self.assertEqual(len(sent), 1)
+            self.assertEqual(len(persisted_entries), len(sessions))
+
     def test_corrupt_persisted_state_falls_back_without_blocking_notifications(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             sent = []
@@ -236,20 +263,88 @@ class NotifierTests(unittest.TestCase):
 
     def test_notifies_again_after_needs_action_leaves_and_reenters_after_cooldown(self):
         sent = []
-        manager = NotificationManager(sender=lambda title, message: sent.append((title, message)), cooldown_seconds=60)
+        clock = FakeMonotonicClock()
+        manager = NotificationManager(
+            sender=lambda title, message: sent.append((title, message)),
+            cooldown_seconds=60,
+            clock=clock.now,
+        )
         now = datetime(2026, 6, 30, tzinfo=timezone.utc)
 
         manager.notify_for_sessions([make_session("s1", SessionStatus.NEEDS_ACTION, now)], now=now)
+        clock.advance(1)
         manager.notify_for_sessions(
             [make_session("s1", SessionStatus.RUNNING, now + timedelta(seconds=1))],
             now=now + timedelta(seconds=1),
         )
+        clock.advance(60)
         manager.notify_for_sessions(
             [make_session("s1", SessionStatus.NEEDS_ACTION, now + timedelta(seconds=61))],
             now=now + timedelta(seconds=61),
         )
 
         self.assertEqual(len(sent), 2)
+
+    def test_wall_clock_rollback_uses_monotonic_cooldown_for_new_needs_action_edge(self):
+        sent = []
+        clock = FakeMonotonicClock()
+        manager = NotificationManager(
+            sender=lambda title, message: sent.append((title, message)),
+            cooldown_seconds=60,
+            clock=clock.now,
+        )
+        now = datetime(2026, 6, 30, 12, 0, tzinfo=timezone.utc)
+
+        manager.notify_for_sessions([make_session("s1", SessionStatus.NEEDS_ACTION, now)], now=now)
+        clock.advance(1)
+        manager.notify_for_sessions(
+            [make_session("s1", SessionStatus.RUNNING, now - timedelta(hours=1))],
+            now=now - timedelta(hours=1),
+        )
+        clock.advance(60)
+        manager.notify_for_sessions(
+            [make_session("s1", SessionStatus.NEEDS_ACTION, now - timedelta(minutes=59))],
+            now=now - timedelta(minutes=59),
+        )
+
+        self.assertEqual(len(sent), 2)
+
+    def test_persisted_future_timestamp_is_bounded_by_one_restart_cooldown(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            sent = []
+            state_path = Path(temp_dir) / "notification-state.json"
+            initial_clock = FakeMonotonicClock()
+            now = datetime(2026, 6, 30, 12, 0, tzinfo=timezone.utc)
+            manager = NotificationManager(
+                sender=lambda title, message: sent.append((title, message)),
+                cooldown_seconds=60,
+                state_path=state_path,
+                clock=initial_clock.now,
+            )
+            manager.notify_for_sessions(
+                [make_session("s1", SessionStatus.NEEDS_ACTION, now)],
+                now=now,
+            )
+            manager.notify_for_sessions(
+                [make_session("s1", SessionStatus.RUNNING, now + timedelta(seconds=1))],
+                now=now + timedelta(seconds=1),
+            )
+
+            restarted_clock = FakeMonotonicClock()
+            restarted_manager = NotificationManager(
+                sender=lambda title, message: sent.append((title, message)),
+                cooldown_seconds=60,
+                state_path=state_path,
+                clock=restarted_clock.now,
+            )
+            restarted_clock.advance(61)
+            rolled_back_now = now - timedelta(hours=1)
+            restarted_manager.notify_for_sessions(
+                [make_session("s1", SessionStatus.NEEDS_ACTION, rolled_back_now)],
+                now=rolled_back_now,
+            )
+
+            self.assertEqual(len(sent), 2)
 
     def test_coalesces_multiple_needs_action_sessions_into_one_notification(self):
         sent = []
@@ -445,6 +540,17 @@ def make_session(session_id: str, status: SessionStatus, updated_at: datetime) -
         summary="Do you want to continue?",
         updated_at=updated_at,
     )
+
+
+class FakeMonotonicClock:
+    def __init__(self):
+        self.value = 0.0
+
+    def now(self) -> float:
+        return self.value
+
+    def advance(self, seconds: float) -> None:
+        self.value += seconds
 
 
 def make_process_session(

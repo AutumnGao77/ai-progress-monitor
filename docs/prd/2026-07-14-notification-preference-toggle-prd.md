@@ -4,7 +4,7 @@
 
 > 2026-08-05 增补决策：人工回归发现持续待处理会话会按 300 秒冷却周期反复发送相同通知，且 App 重启会丢失内存通知基线。后续版本改为每次进入待处理只通知一次；持续待处理不周期提醒，离开后重新进入才视为新事件，并使用不含原始会话内容的本地状态文件延续跨重启冷却和静默基线。
 
-> 2026-08-06 验收状态：上述增补已在 `v0.3.1` 本地候选中完成源码自动化、精确提交双包构建、独立解包校验和 macOS 候选 App 人工验收。通知关闭、重新开启、正常重启、后续新通知、Zed / Visual Studio Code 状态链路和精准跳转均通过；该候选尚未推送、创建 PR、打 Tag 或发布，当前公开稳定版仍为 `v0.3.0`。
+> 2026-08-10 Draft 状态：上述增补已在 `v0.3.1` 本地候选中完成源码自动化、精确提交双包构建、独立解包校验和 macOS 候选 App 人工验收。修复分支已推送并创建 Draft PR #9，尚未合并、打 Tag 或发布，当前公开稳定版仍为 `v0.3.0`。PR 差异审查发现的活跃会话裁剪和墙钟回拨边界已继续修复；原候选包仍只对应原精确提交，合并或发布前必须从最终提交重新构建和验收。
 
 ## 1. 结论
 
@@ -124,7 +124,9 @@
 | `session_aliases` | 写入通知偏好时不得丢失 |
 | `pet_assets.*` | 写入通知偏好时不得丢失 |
 
-通知运行基线单独保存在 `~/.ai-progress-monitor/notification-state.json`，不写入用户偏好文件。文件只保存哈希后的会话键、状态、最近通知时间和静默集合，不保存会话标题、项目名、终端内容或摘要；采用原子写入和仅当前用户可读写权限，文件缺失、损坏或不可写时安全降级为本轮内存状态，不能阻塞 Pet 刷新。
+通知运行基线单独保存在 `~/.ai-progress-monitor/notification-state.json`，不写入用户偏好文件。文件只保存哈希后的会话键、状态、最近通知时间和静默集合，不保存会话标题、项目名、终端内容或摘要；采用原子写入和仅当前用户可读写权限，文件缺失、损坏或不可写时安全降级为本轮内存状态，不能阻塞 Pet 刷新。超过 7 天的非活跃基线会清理，历史/非活跃条目总量限制为 512 条；当前仍在线的会话必须优先保留，即使活跃会话数超过该上限也不得删除其去重基线。
+
+通知冷却在同一 App 进程内使用单调时钟，避免系统时间回拨或前跳造成长期漏通知或过早通知。重启后如果持久化的最近通知时间晚于当前墙钟，对新事件的抑制最多持续一个冷却周期，不得等待墙钟追平未来时间点。
 
 兼容规则：
 
@@ -285,6 +287,8 @@ API 速记：`GET /api/preferences`、`POST /api/preferences/notifications`。
 | 持续待处理 | 首次进入只出现一条通知；保持待处理超过 5 分钟仍不得重复 |
 | 跨重启去重 | 当前待处理状态不变时重启 App，不新增相同通知；开关状态仍保持 |
 | 新待处理事件 | 会话离开待处理后重新进入，且冷却已满足时，发送一条新通知 |
+| 活跃会话超过容量 | 超过 512 个当前会话持续待处理时，后续轮询不得因历史裁剪再次通知 |
+| 系统时间回拨 | 同一进程内以单调时间判断冷却；重启后的未来时间戳最多抑制一个冷却周期 |
 
 ## 13. 测试用例清单
 
@@ -300,7 +304,10 @@ API 速记：`GET /api/preferences`、`POST /api/preferences/notifications`。
 | `tests/test_notifier.py` | `test_notifies_again_after_needs_action_leaves_and_reenters_after_cooldown` | 离开后重新进入且冷却满足时恢复通知 |
 | `tests/test_notifier.py` | `test_persisted_state_prevents_duplicate_needs_action_after_restart` | 跨重启延续冷却和最近状态，不重复发送当前待处理通知 |
 | `tests/test_notifier.py` | `test_persisted_state_does_not_store_raw_session_identity_or_content` | 状态文件不包含会话 ID、标题或摘要 |
-| `tests/test_notifier.py` | `test_persisted_state_prunes_expired_entries_and_enforces_size_limit` | 移除超过 7 天的状态并将总量限制为 512 条；状态文件权限保持 `600` |
+| `tests/test_notifier.py` | `test_persisted_state_prunes_expired_entries_and_enforces_size_limit` | 移除超过 7 天的状态，无活跃会话时将历史总量限制为 512 条；状态文件权限保持 `600` |
+| `tests/test_notifier.py` | `test_active_sessions_are_not_pruned_or_renotified_above_history_limit` | 活跃会话数超过历史上限时仍保留全部去重基线，状态不变的第二轮不重复通知 |
+| `tests/test_notifier.py` | `test_wall_clock_rollback_uses_monotonic_cooldown_for_new_needs_action_edge` | 进程内墙钟回拨不会吞掉已满足单调冷却的新待处理事件 |
+| `tests/test_notifier.py` | `test_persisted_future_timestamp_is_bounded_by_one_restart_cooldown` | 重启后加载未来时间戳时，最多再抑制一个冷却周期 |
 | `tests/test_web_launch.py` | `test_main_persists_notification_state_next_to_preferences` | 正式启动入口接入独立通知状态文件 |
 | `tests/test_service.py` | `test_notification_preference_controls_notifier_immediately` | API 保存后无需重启 |
 | `tests/test_web_launch.py` | `test_preferences_api_reads_and_updates_system_notifications` | GET/POST 返回实际状态和锁定态 |
