@@ -12,13 +12,15 @@
 
 | 项目 | 内容 |
 |---|---|
-| 当前稳定版 | [v0.3.0](https://github.com/AutumnGao77/ai-progress-monitor/releases/tag/v0.3.0)，发布于 2026-07-30 |
-| macOS 用户包 | [下载 macOS 13+ Apple Silicon 版本](https://github.com/AutumnGao77/ai-progress-monitor/releases/download/v0.3.0/AI-Progress-Monitor-v0.3.0-macOS-arm64.zip)；需要 Python 3.9+ |
-| 新手使用说明 | [查看 v0.3.0 macOS 使用说明](docs/ai-progress-monitor-v0.3.0-user-guide.md)；包含下载、首次打开、系统通知开关、常用操作和使用限制 |
-| 便携/集成包 | [下载 portable 版本](https://github.com/AutumnGao77/ai-progress-monitor/releases/download/v0.3.0/ai-progress-monitor-v0.3.0-portable.zip)；用于 Web/CLI 集成、诊断和 Windows 轻量预览 |
-| 发布验收 | v0.3.0 自动化、双包构建、macOS 候选与 GitHub 回下载验收均已通过；证据见 `docs/qa/2026-07-30-v0.3.0-release-packaging-validation.md` |
+| 当前稳定版 | [v0.2.1](https://github.com/AutumnGao77/ai-progress-monitor/releases/tag/v0.2.1)，发布并由用户验收于 2026-07-20 |
+| macOS 用户包 | [下载 macOS 13+ Apple Silicon 版本](https://github.com/AutumnGao77/ai-progress-monitor/releases/download/v0.2.1/AI-Progress-Monitor-v0.2.1-macOS-arm64.zip)；需要 Python 3.9+ |
+| 新手使用说明 | [查看 v0.2.1 macOS 使用说明](docs/ai-progress-monitor-v0.2.1-user-guide.md) |
+| 便携/集成包 | [下载 portable 版本](https://github.com/AutumnGao77/ai-progress-monitor/releases/download/v0.2.1/ai-progress-monitor-v0.2.1-portable.zip)；用于 Web/CLI 集成、诊断和 Windows 轻量预览 |
+| v0.3.0 撤回候选 | GitHub Release 当前为 Draft；该候选在最终验收中确认存在运行时阻断缺陷，旧附件仅保留为历史证据，不得发布或作为用户下载包。修复后的 v0.3.1 仍待准备；详见 `docs/qa/2026-07-30-v0.3.0-release-packaging-validation.md` |
 
 ## 当前能力
+
+> 以下能力描述当前 `main` 的开发能力。公开稳定包 v0.2.1 的用户可见范围以其 Release 与 v0.2.1 使用说明为准；v0.3.0 候选已经撤回，v0.3.1 替代版本仍在准备中。
 
 | 能力 | 状态 |
 |---|---|
@@ -366,9 +368,15 @@ Header: x-monitor-token: <启动时生成的令牌>
 第一阶段可直接以源码方式运行，也可以构建无第三方依赖的发布包：
 
 ```bash
-python3 scripts/build_release.py
+python3 scripts/build_release.py --source-commit "$(git rev-parse HEAD)"
 python3 dist/ai-progress-monitor.pyz --demo --no-windows
 python3 scripts/e2e_smoke.py --artifact dist/ai-progress-monitor.pyz
+```
+
+构建命令只接受仓库根目录、干净工作区当前 `HEAD` 的完整 40 位提交哈希；版本号也必须与 `pyproject.toml` 一致。脚本会从该 Git 提交导出仅含已跟踪文件的隔离快照，在快照内完成校验和打包，二次校验原仓库后才替换 `dist/`。正式 Tag 后的最终附件还必须增加 `--require-tag`，确认 annotated `v<版本>` Tag 精确指向同一提交：
+
+```bash
+python3 scripts/build_release.py --source-commit "$(git rev-parse HEAD)" --require-tag
 ```
 
 构建后会生成：
@@ -379,7 +387,7 @@ python3 scripts/e2e_smoke.py --artifact dist/ai-progress-monitor.pyz
 | `dist/AI-Progress-Monitor-v<版本>-macOS-arm64.zip` | 面向普通 macOS 用户；只包含一个 `AI Progress Monitor.app`、`README.txt` 和 `LICENSE`；支持 macOS 13+ Apple Silicon |
 | `dist/ai-progress-monitor-v<版本>-portable.zip` | 面向 CLI 集成、诊断和 Windows 预览；包含 `.pyz`、`scripts/`、`native/windows/`、`README.txt` 和 `LICENSE`，不包含 macOS App |
 
-公开发布到 GitHub 时，应同时上传上述两个平台范围明确的 ZIP，不提交到源码仓库。已发布的版本 tag 应保持不可变；如果发布后只修 CI、文档或测试边界，保留原 tag 不动，后续用户可见变更再发布新的补丁版本。当前 macOS App 需要 Python 3.9+，采用本地 ad-hoc 签名，未做 Apple notarization。
+公开发布到 GitHub 时，应同时上传上述两个平台范围明确的 ZIP，不提交到源码仓库。已发布的版本 tag 应保持不可变；如果发布后只修 CI、文档或测试边界，保留原 tag 不动，后续用户可见变更再发布新的补丁版本。`v0.3.0` tag 已被使用且候选已撤回，任何后续修复都必须使用新的补丁版本，不能从 tag 之后的源码重新生成同名 v0.3.0 附件。当前 macOS App 需要 Python 3.9+，采用本地 ad-hoc 签名，未做 Apple notarization。
 
 如果用户反馈“打不开、没有提醒、无法回到窗口”，优先让用户运行：
 

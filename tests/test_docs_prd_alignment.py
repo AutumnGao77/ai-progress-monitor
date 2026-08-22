@@ -262,6 +262,44 @@ class DocsPrdAlignmentTests(unittest.TestCase):
         self.assertIn("Do not disable Gatekeeper globally", current_docs)
         self.assertNotIn("dist/ai-progress-monitor-release.zip", current_docs)
 
+    def test_current_release_docs_mark_v030_withdrawn_and_v021_stable(self):
+        agents = (ROOT / "AGENTS.md").read_text()
+        readme = (ROOT / "README.md").read_text()
+        readme_en = (ROOT / "README.en.md").read_text()
+        checklist = (ROOT / "docs" / "release-checklist.md").read_text()
+        notification_prd = (
+            ROOT / "docs" / "prd" / "2026-07-14-notification-preference-toggle-prd.md"
+        ).read_text()
+        release_qa = (
+            ROOT / "docs" / "qa" / "2026-07-30-v0.3.0-release-packaging-validation.md"
+        ).read_text()
+        promo = (ROOT / "docs" / "promo" / "index.html").read_text()
+
+        self.assertIn("current public release baseline is `v0.2.1`", agents)
+        self.assertIn("| 当前稳定版 | [v0.2.1]", readme)
+        self.assertIn("| Stable release | [v0.2.1]", readme_en)
+        self.assertIn("## v0.3.0 撤回候选状态", checklist)
+        self.assertIn("当前公开稳定版仍为 v0.2.1", notification_prd)
+        self.assertIn("产品判定 v0.3.0 候选撤回", release_qa)
+        self.assertIn("下载稳定版 v0.2.1", promo)
+        self.assertNotIn("## v0.3.0 发布结果", checklist)
+        self.assertNotIn("releases/tag/v0.3.0\">下载", promo)
+        self.assertNotIn("右键可切换外观、关闭系统通知", promo)
+        self.assertIn("右键可切换外观、隐藏 Pet 或退出程序", promo)
+
+    def test_active_release_docs_require_exact_source_commit_and_final_tag(self):
+        paths = [
+            ROOT / "AGENTS.md",
+            ROOT / "README.md",
+            ROOT / "README.en.md",
+            ROOT / "docs" / "release-checklist.md",
+        ]
+
+        for path in paths:
+            text = path.read_text()
+            self.assertIn("--source-commit", text, path)
+            self.assertIn("--require-tag", text, path)
+
     def test_release_docs_define_sensitive_company_scan_and_immutable_tags(self):
         combined = "\n".join(
             [
