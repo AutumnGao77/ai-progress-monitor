@@ -574,7 +574,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = parser.parse_args(argv)
 
     preferences = MonitorPreferences()
-    notifier = NotificationManager()
+    notifier = NotificationManager(state_path=preferences.path.parent / "notification-state.json")
     service = MonitorService(
         build_sources(args),
         SessionStore(),
@@ -755,6 +755,8 @@ let dragOffsetY = 0;
 let lastDragScreenX = 0;
 let lastDragScreenY = 0;
 let loadTimer = null;
+let loadInFlight = false;
+let loadQueued = false;
 const POLL_INTERVAL_MS = 3000;
 const PET_POSITION_KEY = "monitor.pet.position";
 
@@ -792,6 +794,13 @@ if (notificationsEnabledMenuItem) notificationsEnabledMenuItem.onclick = event =
 if (notificationsDisabledMenuItem) notificationsDisabledMenuItem.onclick = event => handleNotificationsMenuClick(event, false);
 
 async function load() {
+  window.clearTimeout(loadTimer);
+  loadTimer = null;
+  if (loadInFlight) {
+    loadQueued = true;
+    return;
+  }
+  loadInFlight = true;
   try {
     const data = await fetch(`/api/sessions?token=${encodeURIComponent(window.MONITOR_TOKEN)}`).then(r => r.json());
     render(data.sessions || []);
@@ -799,8 +808,13 @@ async function load() {
     render([]);
     showStatusNote("连接中断，正在重试");
   } finally {
-    window.clearTimeout(loadTimer);
-    loadTimer = setTimeout(load, POLL_INTERVAL_MS);
+    loadInFlight = false;
+    if (loadQueued) {
+      loadQueued = false;
+      load();
+    } else {
+      loadTimer = setTimeout(load, POLL_INTERVAL_MS);
+    }
   }
 }
 

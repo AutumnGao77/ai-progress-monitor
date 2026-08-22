@@ -20,6 +20,7 @@ from ai_progress_monitor.sources import (
     _classify_window_rows,
     _is_generated_conversation_path,
     _macos_window_command,
+    _parse_claude_process_start,
     _posix_process_command,
     _run_command,
 )
@@ -127,7 +128,8 @@ class SourceTests(unittest.TestCase):
 
         self.assertEqual(command[:2], ["sh", "-c"])
         self.assertNotIn("etimes=", command[-1])
-        self.assertIn("ps -axo pid=,ppid=,pgid=,stat=,%cpu=,comm=,args=", command[-1])
+        self.assertIn("TZ=UTC LC_ALL=C ps -axo pid=,ppid=,pgid=,stat=,%cpu=,lstart=,comm=,args=", command[-1])
+        self.assertIn("process_started_at=%s %s %s %s %s", command[-1])
         self.assertIn("Qoder.app/Contents/Resources/app/resources/bin", command[-1])
         self.assertIn("continue", command[-1])
 
@@ -563,6 +565,712 @@ class SourceTests(unittest.TestCase):
             self.assertEqual(len(updates), 1)
             self.assertEqual(updates[0].status, SessionStatus.IDLE)
             self.assertEqual(updates[0].status_source, "process")
+
+    def test_unverified_claude_busy_preserves_updated_at_freshness_compatibility(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            current = datetime(2026, 7, 31, 5, 25, tzinfo=timezone.utc)
+            activity_updated_at = current - timedelta(seconds=5)
+            Path(temp_dir, "27876.json").write_text(
+                json.dumps(
+                    {
+                        "pid": 27876,
+                        "cwd": "/Users/Gao/Documents/projects/long-task",
+                        "status": "busy",
+                        "updatedAt": int(activity_updated_at.timestamp() * 1000),
+                        "statusUpdatedAt": int((current - timedelta(minutes=2)).timestamp() * 1000),
+                    }
+                )
+            )
+            rows = [
+                "process_id=27876\tprocess_name=claude\tcommand=claude\t"
+                "cwd=/Users/Gao/Documents/projects/long-task\tcpu_percent=0.0\t"
+                "stat=S+\tactive_child_count=0"
+            ]
+
+            updates = list(
+                _classify_process_rows(
+                    rows,
+                    claude_sessions_dir=Path(temp_dir),
+                    now=current,
+                )
+            )
+
+            self.assertEqual(updates[0].status, SessionStatus.RUNNING)
+            self.assertEqual(updates[0].status_source, "claude-session")
+            self.assertEqual(updates[0].updated_at, activity_updated_at)
+
+    def test_stale_claude_busy_with_matching_process_identity_stays_running_when_quiet(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            current = datetime(2026, 7, 31, 5, 25, tzinfo=timezone.utc)
+            process_started_at = datetime(2026, 7, 24, 8, 56, 12, tzinfo=timezone.utc)
+            status_updated_at = current - timedelta(minutes=2)
+            Path(temp_dir, "24645.json").write_text(
+                json.dumps(
+                    {
+                        "pid": 24645,
+                        "cwd": "/Users/Gao/Documents/projects/long-task",
+                        "status": "busy",
+                        "procStart": process_started_at.strftime("%a %b %d %H:%M:%S %Y"),
+                        "updatedAt": int((current - timedelta(minutes=5)).timestamp() * 1000),
+                        "statusUpdatedAt": int(status_updated_at.timestamp() * 1000),
+                    }
+                )
+            )
+            rows = [
+                "process_id=24645\tprocess_name=claude\tcommand=claude\tcwd=\t"
+                "cpu_percent=0.0\tstat=S+\t"
+                "process_started_at=Fri Jul 24 08:56:12 2026\tactive_child_count=0"
+            ]
+
+            updates = list(
+                _classify_process_rows(
+                    rows,
+                    claude_sessions_dir=Path(temp_dir),
+                    now=current,
+                )
+            )
+
+            self.assertEqual(len(updates), 1)
+            self.assertEqual(updates[0].status, SessionStatus.RUNNING)
+            self.assertEqual(updates[0].status_source, "claude-session-verified")
+            self.assertEqual(updates[0].updated_at, status_updated_at)
+            self.assertEqual(updates[0].observed_at, current)
+            self.assertEqual(updates[0].cwd, "/Users/Gao/Documents/projects/long-task")
+
+    def test_verified_claude_terminal_without_timestamps_uses_observation_time(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            started_at = datetime(2026, 7, 24, 8, 56, 12, tzinfo=timezone.utc)
+            running_poll = datetime(2026, 7, 31, 5, 25, tzinfo=timezone.utc)
+            terminal_poll = running_poll + timedelta(seconds=4)
+            session_path = Path(temp_dir, "24645.json")
+            payload = {
+                "pid": 24645,
+                "cwd": "/Users/Gao/Documents/projects/long-task",
+                "status": "busy",
+                "procStart": started_at.strftime("%a %b %d %H:%M:%S %Y"),
+                "statusUpdatedAt": int((running_poll - timedelta(minutes=2)).timestamp() * 1000),
+                "updatedAt": int((running_poll - timedelta(seconds=5)).timestamp() * 1000),
+            }
+            row = (
+                "process_id=24645\tprocess_name=claude\tcommand=claude\tcwd=\t"
+                "cpu_percent=0.0\tstat=S+\t"
+                "process_started_at=Fri Jul 24 08:56:12 2026\tactive_child_count=0"
+            )
+            store = SessionStore(stuck_after_seconds=300)
+
+            session_path.write_text(json.dumps(payload))
+            store.replace_source_updates(
+                "process",
+                _classify_process_rows(
+                    [row],
+                    claude_sessions_dir=Path(temp_dir),
+                    now=running_poll,
+                ),
+            )
+            payload["status"] = "prompt"
+            payload.pop("statusUpdatedAt")
+            payload.pop("updatedAt")
+            session_path.write_text(json.dumps(payload))
+            terminal_updates = list(
+                _classify_process_rows(
+                    [row],
+                    claude_sessions_dir=Path(temp_dir),
+                    now=terminal_poll,
+                )
+            )
+            store.replace_source_updates("process", terminal_updates)
+            terminal = store.sessions(now=terminal_poll)[0]
+
+            self.assertEqual(terminal_updates[0].updated_at, terminal_poll)
+            self.assertEqual(terminal_updates[0].observed_at, terminal_poll)
+            self.assertEqual(terminal.status, SessionStatus.NEEDS_ACTION)
+            self.assertTrue(terminal.view_ack_required)
+
+    def test_verified_long_running_claude_does_not_flap_with_process_cpu(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            started_at = datetime(2026, 7, 24, 8, 56, 12, tzinfo=timezone.utc)
+            first_poll = datetime(2026, 7, 31, 5, 25, tzinfo=timezone.utc)
+            Path(temp_dir, "24645.json").write_text(
+                json.dumps(
+                    {
+                        "pid": 24645,
+                        "cwd": "/Users/Gao/Documents/projects/long-task",
+                        "status": "busy",
+                        "procStart": started_at.strftime("%a %b %d %H:%M:%S %Y"),
+                        "updatedAt": int((first_poll - timedelta(minutes=2)).timestamp() * 1000),
+                    }
+                )
+            )
+            store = SessionStore(stuck_after_seconds=60)
+            samples = (
+                (first_poll, "0.0", "S+"),
+                (first_poll + timedelta(seconds=4), "16.0", "R+"),
+                (first_poll + timedelta(seconds=8), "0.0", "S+"),
+            )
+
+            observed = []
+            for current, cpu, stat in samples:
+                rows = [
+                    "process_id=24645\tprocess_name=claude\tcommand=claude\tcwd=\t"
+                    f"cpu_percent={cpu}\tstat={stat}\t"
+                    "process_started_at=Fri Jul 24 08:56:12 2026\tactive_child_count=0"
+                ]
+                store.replace_source_updates(
+                    "process",
+                    _classify_process_rows(
+                        rows,
+                        claude_sessions_dir=Path(temp_dir),
+                        now=current,
+                    ),
+                )
+                observed.append(store.sessions(now=current)[0].status)
+
+            self.assertEqual(
+                observed,
+                [SessionStatus.RUNNING, SessionStatus.RUNNING, SessionStatus.RUNNING],
+            )
+            self.assertEqual(store.sessions(now=first_poll + timedelta(hours=1))[0].status, SessionStatus.STUCK)
+
+    def test_verified_claude_running_survives_one_invalid_state_file_poll(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            started_at = datetime(2026, 7, 24, 8, 56, 12, tzinfo=timezone.utc)
+            first_poll = datetime(2026, 7, 31, 5, 25, tzinfo=timezone.utc)
+            session_path = Path(temp_dir, "24645.json")
+            payload = {
+                "pid": 24645,
+                "cwd": "/Users/Gao/Documents/projects/long-task",
+                "status": "busy",
+                "procStart": started_at.strftime("%a %b %d %H:%M:%S %Y"),
+                "statusUpdatedAt": int((first_poll - timedelta(minutes=2)).timestamp() * 1000),
+                "updatedAt": int((first_poll - timedelta(seconds=5)).timestamp() * 1000),
+            }
+            row = (
+                "process_id=24645\tprocess_name=claude\tcommand=claude\tcwd=\t"
+                "cpu_percent=0.0\tstat=S+\t"
+                "process_started_at=Fri Jul 24 08:56:12 2026\tactive_child_count=0"
+            )
+            store = SessionStore(stuck_after_seconds=60)
+
+            session_path.write_text(json.dumps(payload))
+            store.replace_source_updates(
+                "process",
+                _classify_process_rows(
+                    [row],
+                    claude_sessions_dir=Path(temp_dir),
+                    now=first_poll,
+                ),
+            )
+            session_path.write_text("{bad json")
+            store.replace_source_updates(
+                "process",
+                _classify_process_rows(
+                    [row],
+                    claude_sessions_dir=Path(temp_dir),
+                    now=first_poll + timedelta(seconds=4),
+                ),
+            )
+            after_invalid_poll = store.sessions(now=first_poll + timedelta(seconds=4))[0]
+            session_path.write_text(json.dumps(payload))
+            store.replace_source_updates(
+                "process",
+                _classify_process_rows(
+                    [row],
+                    claude_sessions_dir=Path(temp_dir),
+                    now=first_poll + timedelta(seconds=8),
+                ),
+            )
+            after_recovery = store.sessions(now=first_poll + timedelta(seconds=8))[0]
+
+            self.assertEqual(after_invalid_poll.status, SessionStatus.RUNNING)
+            self.assertEqual(after_invalid_poll.status_source, "claude-session-verified")
+            self.assertEqual(after_recovery.status, SessionStatus.RUNNING)
+            self.assertEqual(after_recovery.observed_at, first_poll + timedelta(seconds=8))
+
+    def test_verified_claude_running_survives_one_unverifiable_process_start_poll(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            started_at = datetime(2026, 7, 24, 8, 56, 12, tzinfo=timezone.utc)
+            first_poll = datetime(2026, 7, 31, 5, 25, tzinfo=timezone.utc)
+            session_path = Path(temp_dir, "24645.json")
+            payload = {
+                "pid": 24645,
+                "cwd": "/Users/Gao/Documents/projects/long-task",
+                "status": "busy",
+                "procStart": started_at.strftime("%a %b %d %H:%M:%S %Y"),
+                "statusUpdatedAt": int((first_poll - timedelta(minutes=2)).timestamp() * 1000),
+                "updatedAt": int((first_poll - timedelta(seconds=5)).timestamp() * 1000),
+            }
+            row = (
+                "process_id=24645\tprocess_name=claude\tcommand=claude\tcwd=\t"
+                "cpu_percent=0.0\tstat=S+\t"
+                "process_started_at=Fri Jul 24 08:56:12 2026\tactive_child_count=0"
+            )
+            store = SessionStore(stuck_after_seconds=60)
+
+            session_path.write_text(json.dumps(payload))
+            store.replace_source_updates(
+                "process",
+                _classify_process_rows(
+                    [row],
+                    claude_sessions_dir=Path(temp_dir),
+                    now=first_poll,
+                ),
+            )
+            payload["procStart"] = "temporarily unavailable"
+            payload["updatedAt"] = int((first_poll + timedelta(seconds=3)).timestamp() * 1000)
+            session_path.write_text(json.dumps(payload))
+            store.replace_source_updates(
+                "process",
+                _classify_process_rows(
+                    [row],
+                    claude_sessions_dir=Path(temp_dir),
+                    now=first_poll + timedelta(seconds=4),
+                ),
+            )
+            after_unverified_poll = store.sessions(now=first_poll + timedelta(seconds=4))[0]
+            payload["procStart"] = started_at.strftime("%a %b %d %H:%M:%S %Y")
+            session_path.write_text(json.dumps(payload))
+            store.replace_source_updates(
+                "process",
+                _classify_process_rows(
+                    [row],
+                    claude_sessions_dir=Path(temp_dir),
+                    now=first_poll + timedelta(seconds=8),
+                ),
+            )
+            after_recovery = store.sessions(now=first_poll + timedelta(seconds=8))[0]
+
+            self.assertEqual(after_unverified_poll.status, SessionStatus.RUNNING)
+            self.assertEqual(after_unverified_poll.status_source, "claude-session-verified")
+            self.assertEqual(after_unverified_poll.observed_at, first_poll)
+            self.assertEqual(after_recovery.status, SessionStatus.RUNNING)
+            self.assertEqual(after_recovery.status_source, "claude-session-verified")
+            self.assertEqual(after_recovery.observed_at, first_poll + timedelta(seconds=8))
+
+    def test_store_resets_claude_state_when_pid_is_reused_by_a_new_process(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            old_started_at = datetime(2026, 7, 24, 8, 56, 12, tzinfo=timezone.utc)
+            new_started_at = old_started_at + timedelta(hours=1)
+            first_poll = datetime(2026, 7, 31, 5, 25, tzinfo=timezone.utc)
+            session_path = Path(temp_dir, "24645.json")
+            session_path.write_text(
+                json.dumps(
+                    {
+                        "pid": 24645,
+                        "cwd": "/Users/Gao/Documents/projects/old-task",
+                        "status": "busy",
+                        "procStart": old_started_at.strftime("%a %b %d %H:%M:%S %Y"),
+                        "statusUpdatedAt": int((first_poll - timedelta(minutes=2)).timestamp() * 1000),
+                        "updatedAt": int((first_poll - timedelta(seconds=5)).timestamp() * 1000),
+                    }
+                )
+            )
+            old_row = (
+                "process_id=24645\tprocess_name=claude\tcommand=claude\tcwd=\t"
+                "cpu_percent=0.0\tstat=S+\t"
+                "process_started_at=Fri Jul 24 08:56:12 2026\tactive_child_count=0"
+            )
+            new_row = (
+                "process_id=24645\tprocess_name=claude\tcommand=claude\t"
+                "cwd=/Users/Gao/Documents/projects/new-task\tcpu_percent=0.0\tstat=S+\t"
+                "process_started_at=Fri Jul 24 09:56:12 2026\tactive_child_count=0"
+            )
+            store = SessionStore(stuck_after_seconds=300)
+
+            store.replace_source_updates(
+                "process",
+                _classify_process_rows(
+                    [old_row],
+                    claude_sessions_dir=Path(temp_dir),
+                    now=first_poll,
+                ),
+            )
+            before_reuse = store.sessions(now=first_poll)[0]
+            store.replace_source_updates(
+                "process",
+                _classify_process_rows(
+                    [new_row],
+                    claude_sessions_dir=Path(temp_dir),
+                    now=first_poll + timedelta(seconds=4),
+                ),
+            )
+            after_reuse = store.sessions(now=first_poll + timedelta(seconds=4))[0]
+
+            self.assertEqual(before_reuse.status, SessionStatus.RUNNING)
+            self.assertEqual(before_reuse.status_source, "claude-session-verified")
+            self.assertEqual(before_reuse.process_started_at, old_started_at)
+            self.assertEqual(after_reuse.status, SessionStatus.IDLE)
+            self.assertEqual(after_reuse.status_source, "process")
+            self.assertEqual(after_reuse.cwd, "/Users/Gao/Documents/projects/new-task")
+            self.assertEqual(after_reuse.process_started_at, new_started_at)
+
+    def test_verified_long_running_claude_explicit_prompt_becomes_needs_action(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            started_at = datetime(2026, 7, 24, 8, 56, 12, tzinfo=timezone.utc)
+            running_at = datetime(2026, 7, 31, 5, 25, tzinfo=timezone.utc)
+            running_state_at = running_at - timedelta(minutes=2)
+            session_path = Path(temp_dir, "24645.json")
+            session_payload = {
+                "pid": 24645,
+                "cwd": "/Users/Gao/Documents/projects/long-task",
+                "status": "busy",
+                "procStart": started_at.strftime("%a %b %d %H:%M:%S %Y"),
+                "updatedAt": int((running_at - timedelta(minutes=5)).timestamp() * 1000),
+                "statusUpdatedAt": int(running_state_at.timestamp() * 1000),
+            }
+            session_path.write_text(json.dumps(session_payload))
+            store = SessionStore(stuck_after_seconds=60)
+            running_rows = [
+                "process_id=24645\tprocess_name=claude\tcommand=claude\tcwd=\t"
+                "cpu_percent=0.0\tstat=S+\t"
+                "process_started_at=Fri Jul 24 08:56:12 2026\tactive_child_count=0"
+            ]
+            store.replace_source_updates(
+                "process",
+                _classify_process_rows(
+                    running_rows,
+                    claude_sessions_dir=Path(temp_dir),
+                    now=running_at,
+                ),
+            )
+
+            completed_at = running_at + timedelta(seconds=5)
+            session_payload.update(
+                {
+                    "status": "prompt",
+                    "statusUpdatedAt": int((running_state_at - timedelta(seconds=1)).timestamp() * 1000),
+                }
+            )
+            session_path.write_text(json.dumps(session_payload))
+            completed_rows = [
+                "process_id=24645\tprocess_name=claude\tcommand=claude\tcwd=\t"
+                "cpu_percent=0.0\tstat=S+\t"
+                "process_started_at=Fri Jul 24 08:56:12 2026\tactive_child_count=0"
+            ]
+            store.replace_source_updates(
+                "process",
+                _classify_process_rows(
+                    completed_rows,
+                    claude_sessions_dir=Path(temp_dir),
+                    now=completed_at,
+                ),
+            )
+
+            session = store.sessions(now=completed_at)[0]
+            self.assertEqual(session.status, SessionStatus.NEEDS_ACTION)
+            self.assertTrue(session.view_ack_required)
+            self.assertEqual(session.status_source, "claude-session-prompt")
+            self.assertEqual(session.updated_at, running_state_at - timedelta(seconds=1))
+
+            store.mark_session_viewed("process-24645", viewed_at=completed_at)
+            store.replace_source_updates(
+                "process",
+                _classify_process_rows(
+                    completed_rows,
+                    claude_sessions_dir=Path(temp_dir),
+                    now=completed_at + timedelta(seconds=4),
+                ),
+            )
+            self.assertEqual(store.sessions(now=completed_at + timedelta(seconds=4))[0].status, SessionStatus.IDLE)
+
+    def test_claude_session_with_reused_pid_and_different_process_start_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            current = datetime(2026, 7, 31, 5, 25, tzinfo=timezone.utc)
+            Path(temp_dir, "24645.json").write_text(
+                json.dumps(
+                    {
+                        "pid": 24645,
+                        "cwd": "/Users/Gao/Documents/projects/stale-project",
+                        "status": "busy",
+                        "procStart": "Fri Jul 24 08:54:12 2026",
+                        "updatedAt": int((current - timedelta(minutes=2)).timestamp() * 1000),
+                    }
+                )
+            )
+            rows = [
+                "process_id=24645\tprocess_name=claude\tcommand=claude\tcwd=\t"
+                "cpu_percent=0.0\tstat=S+\t"
+                "process_started_at=Fri Jul 24 08:56:12 2026\tactive_child_count=0"
+            ]
+
+            updates = list(
+                _classify_process_rows(
+                    rows,
+                    claude_sessions_dir=Path(temp_dir),
+                    now=current,
+                )
+            )
+
+            self.assertEqual(len(updates), 1)
+            self.assertEqual(updates[0].status, SessionStatus.IDLE)
+            self.assertEqual(updates[0].status_source, "process")
+            self.assertEqual(updates[0].title, "Claude Code CLI")
+            self.assertIsNone(updates[0].cwd)
+
+    def test_reused_pid_rejects_stale_idle_before_process_activity_fallback(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            current = datetime(2026, 7, 31, 5, 25, tzinfo=timezone.utc)
+            Path(temp_dir, "24645.json").write_text(
+                json.dumps(
+                    {
+                        "pid": 24645,
+                        "cwd": "/Users/Gao/Documents/projects/stale-project",
+                        "status": "idle",
+                        "procStart": "Fri Jul 24 08:54:12 2026",
+                        "updatedAt": int((current - timedelta(minutes=2)).timestamp() * 1000),
+                    }
+                )
+            )
+            rows = [
+                "process_id=24645\tprocess_name=claude\tcommand=claude\tcwd=\t"
+                "cpu_percent=8.0\tstat=R+\t"
+                "process_started_at=Fri Jul 24 08:56:12 2026\tactive_child_count=0"
+            ]
+
+            updates = list(
+                _classify_process_rows(
+                    rows,
+                    claude_sessions_dir=Path(temp_dir),
+                    now=current,
+                )
+            )
+
+            self.assertEqual(updates[0].status, SessionStatus.RUNNING)
+            self.assertEqual(updates[0].status_source, "process")
+            self.assertEqual(updates[0].title, "Claude Code CLI")
+            self.assertIsNone(updates[0].cwd)
+
+    def test_claude_process_start_match_allows_subsecond_precision_difference(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            current = datetime(2026, 7, 31, 5, 25, tzinfo=timezone.utc)
+            Path(temp_dir, "24645.json").write_text(
+                json.dumps(
+                    {
+                        "pid": 24645,
+                        "cwd": "/Users/Gao/Documents/projects/long-task",
+                        "status": "busy",
+                        "procStart": "2026-07-24T08:56:12.750Z",
+                        "updatedAt": int((current - timedelta(minutes=2)).timestamp() * 1000),
+                    }
+                )
+            )
+            rows = [
+                "process_id=24645\tprocess_name=claude\tcommand=claude\tcwd=\t"
+                "cpu_percent=0.0\tstat=S+\t"
+                "process_started_at=Fri Jul 24 08:56:12 2026\tactive_child_count=0"
+            ]
+
+            updates = list(
+                _classify_process_rows(
+                    rows,
+                    claude_sessions_dir=Path(temp_dir),
+                    now=current,
+                )
+            )
+
+            self.assertEqual(updates[0].status, SessionStatus.RUNNING)
+            self.assertEqual(updates[0].status_source, "claude-session-verified")
+
+    def test_claude_process_start_match_rejects_difference_outside_tolerance(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            current = datetime(2026, 7, 31, 5, 25, tzinfo=timezone.utc)
+            Path(temp_dir, "24645.json").write_text(
+                json.dumps(
+                    {
+                        "pid": 24645,
+                        "cwd": "/Users/Gao/Documents/projects/stale-project",
+                        "status": "busy",
+                        "procStart": "2026-07-24T08:56:14Z",
+                        "updatedAt": int((current - timedelta(minutes=2)).timestamp() * 1000),
+                    }
+                )
+            )
+            rows = [
+                "process_id=24645\tprocess_name=claude\tcommand=claude\tcwd=\t"
+                "cpu_percent=0.0\tstat=S+\t"
+                "process_started_at=Fri Jul 24 08:56:12 2026\tactive_child_count=0"
+            ]
+
+            updates = list(
+                _classify_process_rows(
+                    rows,
+                    claude_sessions_dir=Path(temp_dir),
+                    now=current,
+                )
+            )
+
+            self.assertEqual(updates[0].status, SessionStatus.IDLE)
+            self.assertEqual(updates[0].status_source, "process")
+            self.assertIsNone(updates[0].cwd)
+
+    def test_claude_process_start_parser_accepts_supported_formats(self):
+        expected = datetime(2026, 7, 24, 8, 56, 12, tzinfo=timezone.utc)
+        cases = (
+            "Fri Jul 24 08:56:12 2026",
+            "2026-07-24T08:56:12Z",
+            "2026-07-24T16:56:12+08:00",
+            "2026-07-24T08:56:12",
+        )
+        for value in cases:
+            with self.subTest(value=value):
+                self.assertEqual(_parse_claude_process_start(value), expected)
+
+    def test_invalid_observed_process_start_does_not_trust_stale_busy(self):
+        current = datetime(2026, 7, 31, 5, 25, tzinfo=timezone.utc)
+        invalid_values = ("", "garbage", "Jul 24 08:56:12 2026", "2026-13-24T08:56:12Z")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            rows = []
+            for index, observed_start in enumerate(invalid_values, start=1):
+                process_id = 25000 + index
+                Path(temp_dir, f"{process_id}.json").write_text(
+                    json.dumps(
+                        {
+                            "pid": process_id,
+                            "cwd": f"/Users/Gao/Documents/projects/project-{index}",
+                            "status": "busy",
+                            "procStart": "Fri Jul 24 08:56:12 2026",
+                            "updatedAt": int((current - timedelta(minutes=2)).timestamp() * 1000),
+                        }
+                    )
+                )
+                rows.append(
+                    f"process_id={process_id}\tprocess_name=claude\tcommand=claude\tcwd=\t"
+                    f"cpu_percent=0.0\tstat=S+\tprocess_started_at={observed_start}\tactive_child_count=0"
+                )
+
+            updates = list(
+                _classify_process_rows(
+                    rows,
+                    claude_sessions_dir=Path(temp_dir),
+                    now=current,
+                )
+            )
+
+            self.assertEqual(
+                [update.status for update in updates],
+                [SessionStatus.IDLE] * len(invalid_values),
+            )
+            self.assertTrue(all(update.status_source == "process" for update in updates))
+
+    def test_multiple_claude_processes_do_not_share_process_identity_fields(self):
+        current = datetime(2026, 7, 31, 5, 25, tzinfo=timezone.utc)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            Path(temp_dir, "24645.json").write_text(
+                json.dumps(
+                    {
+                        "pid": 24645,
+                        "cwd": "/Users/Gao/Documents/projects/long-task",
+                        "status": "busy",
+                        "procStart": "Fri Jul 24 08:56:12 2026",
+                        "updatedAt": int((current - timedelta(minutes=2)).timestamp() * 1000),
+                    }
+                )
+            )
+            Path(temp_dir, "24646.json").write_text(
+                json.dumps(
+                    {
+                        "pid": 24646,
+                        "cwd": "/Users/Gao/Documents/projects/legacy-task",
+                        "status": "busy",
+                        "updatedAt": int((current - timedelta(minutes=2)).timestamp() * 1000),
+                    }
+                )
+            )
+            rows = [
+                "process_id=24645\tprocess_name=claude\tcommand=claude\tcwd=\t"
+                "cpu_percent=0.0\tstat=S+\t"
+                "process_started_at=Fri Jul 24 08:56:12 2026\tactive_child_count=0",
+                "process_id=24646\tprocess_name=claude\tcommand=claude\tcwd=\t"
+                "cpu_percent=0.0\tstat=S+\tprocess_started_at=\tactive_child_count=0",
+            ]
+
+            updates = list(
+                _classify_process_rows(
+                    rows,
+                    claude_sessions_dir=Path(temp_dir),
+                    now=current,
+                )
+            )
+
+            self.assertEqual(
+                [(update.process_id, update.status, update.status_source) for update in updates],
+                [
+                    (24645, SessionStatus.RUNNING, "claude-session-verified"),
+                    (24646, SessionStatus.IDLE, "process"),
+                ],
+            )
+
+    def test_verified_observation_does_not_leak_to_following_process_rows(self):
+        current = datetime(2026, 7, 31, 5, 25, tzinfo=timezone.utc)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            Path(temp_dir, "24645.json").write_text(
+                json.dumps(
+                    {
+                        "pid": 24645,
+                        "cwd": "/Users/Gao/Documents/projects/long-task",
+                        "status": "busy",
+                        "procStart": "Fri Jul 24 08:56:12 2026",
+                        "updatedAt": int((current - timedelta(minutes=2)).timestamp() * 1000),
+                    }
+                )
+            )
+            rows = [
+                "process_id=24645\tprocess_name=claude\tcommand=claude\tcwd=\t"
+                "cpu_percent=0.0\tstat=S+\t"
+                "process_started_at=Fri Jul 24 08:56:12 2026\tactive_child_count=0",
+                "process_id=24646\tprocess_name=codex\tcommand=codex\tcwd=/Users/Gao/Documents/codex\t"
+                "cpu_percent=0.0\tstat=S+\t"
+                "process_started_at=Fri Jul 24 09:00:00 2026\tactive_child_count=0",
+                "process_id=24647\tprocess_name=Qoder\t"
+                "command=/Applications/Qoder.app/Contents/MacOS/Qoder\tcwd=\t"
+                "cpu_percent=0.0\tstat=S\t"
+                "process_started_at=Fri Jul 24 09:01:00 2026\tactive_child_count=0",
+            ]
+
+            updates = list(
+                _classify_process_rows(
+                    rows,
+                    claude_sessions_dir=Path(temp_dir),
+                    now=current,
+                )
+            )
+
+            self.assertEqual([update.process_id for update in updates], [24645, 24646, 24647])
+            self.assertEqual(
+                [update.observed_at for update in updates],
+                [current, None, None],
+            )
+
+    def test_matching_process_start_does_not_override_scanned_cwd_mismatch(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            current = datetime(2026, 7, 31, 5, 25, tzinfo=timezone.utc)
+            Path(temp_dir, "24645.json").write_text(
+                json.dumps(
+                    {
+                        "pid": 24645,
+                        "cwd": "/Users/Gao/Documents/projects/stale-project",
+                        "status": "busy",
+                        "procStart": "Fri Jul 24 08:56:12 2026",
+                        "updatedAt": int((current - timedelta(minutes=2)).timestamp() * 1000),
+                    }
+                )
+            )
+            rows = [
+                "process_id=24645\tprocess_name=claude\tcommand=claude\t"
+                "cwd=/Users/Gao/Documents/projects/current-project\tcpu_percent=0.0\tstat=S+\t"
+                "process_started_at=Fri Jul 24 08:56:12 2026\tactive_child_count=0"
+            ]
+
+            updates = list(
+                _classify_process_rows(
+                    rows,
+                    claude_sessions_dir=Path(temp_dir),
+                    now=current,
+                )
+            )
+
+            self.assertEqual(updates[0].status, SessionStatus.IDLE)
+            self.assertEqual(updates[0].status_source, "process")
+            self.assertEqual(updates[0].cwd, "/Users/Gao/Documents/projects/current-project")
 
     def test_stale_claude_session_file_fallback_uses_current_poll_time(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -3827,10 +4535,10 @@ class SourceTests(unittest.TestCase):
             fake_ps.write_text(
                 "#!/bin/sh\n"
                 "printf '%s\\n' "
-                "'100 200 100 S+ 0.0 /tmp/codex /tmp/codex 300' "
-                "'200 300 100 S+ 0.0 /bin/zsh /bin/zsh -il' "
-                "'300 400 100 S 0.0 /Applications/Vi /Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper.app/Contents/MacOS/Code Helper --type=utility' "
-                "'400 1 400 S 0.0 /Applications/Vi /Applications/Visual Studio Code.app/Contents/MacOS/Code'\n",
+                "'100 200 100 S+ 0.0 Fri Jul 24 08:56:12 2026 /tmp/codex /tmp/codex 300' "
+                "'200 300 100 S+ 0.0 Fri Jul 24 08:55:12 2026 /bin/zsh /bin/zsh -il' "
+                "'300 400 100 S 0.0 Fri Jul 24 08:54:12 2026 /Applications/Vi /Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper.app/Contents/MacOS/Code Helper --type=utility' "
+                "'400 1 400 S 0.0 Fri Jul 24 08:53:12 2026 /Applications/Vi /Applications/Visual Studio Code.app/Contents/MacOS/Code'\n",
                 encoding="utf-8",
             )
             fake_ps.chmod(0o755)
@@ -3847,9 +4555,38 @@ class SourceTests(unittest.TestCase):
 
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertIn("process_id=100", completed.stdout)
+        self.assertIn("process_started_at=Fri Jul 24 08:56:12 2026", completed.stdout)
         self.assertIn("focus_process_id=400", completed.stdout)
         self.assertIn("focus_app_name=Visual Studio Code", completed.stdout)
         self.assertNotIn("focus_process_id=300", completed.stdout)
+
+    def test_posix_process_command_keeps_child_activity_and_mcp_filter_with_start_columns(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fake_ps = Path(temp_dir) / "ps"
+            fake_ps.write_text(
+                "#!/bin/sh\n"
+                "printf '%s\\n' "
+                "'100 200 100 S+ 0.0 Fri Jul 24 08:56:12 2026 /tmp/codex /tmp/codex' "
+                "'101 100 100 R+ 2.0 Fri Jul 24 08:57:12 2026 /bin/node /bin/node worker.js' "
+                "'102 100 100 R+ 3.0 Fri Jul 24 08:57:13 2026 /bin/node node /tmp/mcp-server.js' "
+                "'200 1 100 S+ 0.0 Fri Jul 24 08:55:12 2026 /bin/zsh /bin/zsh -il'\n",
+                encoding="utf-8",
+            )
+            fake_ps.chmod(0o755)
+            environment = dict(os.environ)
+            environment["PATH"] = f"{temp_dir}:{environment['PATH']}"
+
+            completed = subprocess.run(
+                _posix_process_command(),
+                capture_output=True,
+                text=True,
+                env=environment,
+                check=False,
+            )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("process_id=100", completed.stdout)
+        self.assertIn("active_child_count=1", completed.stdout)
 
     def test_posix_process_command_includes_configured_ai_tools(self):
         script = _posix_process_command()[-1]
@@ -3910,8 +4647,15 @@ class SourceTests(unittest.TestCase):
     def test_posix_process_command_samples_process_table_once_for_child_activity(self):
         script = _posix_process_command()[-1]
 
-        self.assertIn("all_process_rows=$(ps -axo pid=,ppid=,pgid=,stat=,%cpu=,comm=,args=", script)
-        self.assertIn('printf \'%s\\n\' "$all_process_rows" | while read -r pid ppid pgid stat cpu comm args', script)
+        self.assertIn(
+            "all_process_rows=$(TZ=UTC LC_ALL=C ps -axo pid=,ppid=,pgid=,stat=,%cpu=,lstart=,comm=,args=",
+            script,
+        )
+        self.assertIn(
+            'printf \'%s\\n\' "$all_process_rows" | while read -r '
+            "pid ppid pgid stat cpu start_weekday start_month start_day start_time start_year comm args",
+            script,
+        )
         self.assertIn('printf \'%s\\n\' "$all_process_rows" | awk', script)
 
     def test_posix_process_command_uses_cached_rows_for_focus_ancestor_lookup(self):

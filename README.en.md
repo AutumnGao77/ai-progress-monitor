@@ -12,12 +12,14 @@ The current stable delivery focus is the local Web Companion plus the validated 
 
 | Item | Details |
 |---|---|
-| Stable release | [v0.3.0](https://github.com/AutumnGao77/ai-progress-monitor/releases/tag/v0.3.0), published on 2026-07-30 |
-| macOS package | [Download for macOS 13+ on Apple silicon](https://github.com/AutumnGao77/ai-progress-monitor/releases/download/v0.3.0/AI-Progress-Monitor-v0.3.0-macOS-arm64.zip); Python 3.9+ required |
-| Portable package | [Download the portable package](https://github.com/AutumnGao77/ai-progress-monitor/releases/download/v0.3.0/ai-progress-monitor-v0.3.0-portable.zip) for Web/CLI integrations, diagnostics, and the Windows preview |
-| Release acceptance | Automated validation, package checks, macOS candidate acceptance, GitHub re-download hashes, and downloaded-App launch acceptance passed; evidence is recorded in `docs/qa/2026-07-30-v0.3.0-release-packaging-validation.md` |
+| Stable release | [v0.2.1](https://github.com/AutumnGao77/ai-progress-monitor/releases/tag/v0.2.1), published and accepted by the user on 2026-07-20 |
+| macOS package | [Download for macOS 13+ on Apple silicon](https://github.com/AutumnGao77/ai-progress-monitor/releases/download/v0.2.1/AI-Progress-Monitor-v0.2.1-macOS-arm64.zip); Python 3.9+ required |
+| Portable package | [Download the portable package](https://github.com/AutumnGao77/ai-progress-monitor/releases/download/v0.2.1/ai-progress-monitor-v0.2.1-portable.zip) for Web/CLI integrations, diagnostics, and the Windows preview |
+| Withdrawn v0.3.0 candidate | The GitHub Release is currently a draft. Final acceptance confirmed release-blocking runtime defects, so the retained attachments are historical evidence only and must not be published or presented as supported downloads. The v0.3.1 replacement remains pending; see `docs/qa/2026-07-30-v0.3.0-release-packaging-validation.md` |
 
 ## Features
+
+> The capabilities below describe the current `main` development line. For the public v0.2.1 package, use its Release and versioned guide as the authoritative user-visible scope. The v0.3.0 candidate is withdrawn, and its v0.3.1 replacement is still being prepared.
 
 | Feature | Status |
 |---|---|
@@ -134,7 +136,7 @@ To override the built-in visual assets without changing code, create `~/.ai-prog
 
 Right-click the Pet, open Appearance, and choose either the default overall sloth or the shirt sloth. The current choice is checked in the submenu. The default theme uses the three state images; the shirt theme currently uses `/assets/pet/shirt.png` for idle, running, and needs-action states. The selected theme is stored as `pet_appearance`; missing or invalid values fall back to the default theme.
 
-The right-click `System Notifications` submenu contains mutually exclusive `Enable / Disable` choices and checks the active choice. Disabling notifications does not disable Pet states, badges, bubbles, or click-to-focus. The boolean preference is stored as `notifications_enabled` and survives restarts. When launched with `--no-notifications`, the submenu shows `Disable` as checked and disables both choices for that process without changing the saved preference.
+The right-click `System Notifications` submenu contains mutually exclusive `Enable / Disable` choices and checks the active choice. Disabling notifications does not disable Pet states, badges, bubbles, or click-to-focus. The boolean preference is stored as `notifications_enabled` and survives restarts. A session notifies at most once each time it enters needs-action; an unchanged needs-action state is not reminded periodically, while a later leave-and-reenter transition remains cooldown-protected. A privacy-safe hashed notification baseline survives App restarts so the current state is not replayed. When launched with `--no-notifications`, the submenu shows `Disable` as checked and disables both choices for that process without changing the saved preference.
 
 The Pet appearance theme-switching PRD is `docs/prd/2026-07-11-pet-appearance-theme-switching-prd.md`.
 The system-notification toggle PRD is `docs/prd/2026-07-14-notification-preference-toggle-prd.md`.
@@ -240,7 +242,13 @@ python3 scripts/doctor.py
 Build the local release artifacts:
 
 ```bash
-python3 scripts/build_release.py
+python3 scripts/build_release.py --source-commit "$(git rev-parse HEAD)"
+```
+
+The command only accepts the full 40-character commit for the repository root's clean current `HEAD`, and the project version must match. The builder exports only tracked files from that Git commit into an isolated snapshot, validates and packages there, then revalidates the repository before replacing `dist/`. For the final build after tagging, also require an annotated `v<version>` tag that resolves to that exact commit:
+
+```bash
+python3 scripts/build_release.py --source-commit "$(git rev-parse HEAD)" --require-tag
 ```
 
 Generated artifacts:
@@ -251,7 +259,7 @@ Generated artifacts:
 | `dist/AI-Progress-Monitor-v<version>-macOS-arm64.zip` | macOS 13+ Apple silicon user package containing one `AI Progress Monitor.app`, `README.txt`, and `LICENSE` |
 | `dist/ai-progress-monitor-v<version>-portable.zip` | CLI integration, diagnostics, and Windows preview package containing `.pyz`, `scripts/`, `native/windows/`, `README.txt`, and `LICENSE`; no macOS App |
 
-For public GitHub releases, upload both platform-scoped ZIPs instead of committing them to the source repository. Published version tags should remain immutable: keep an already published tag in place, and use a new patch version for later user-visible changes.
+For public GitHub releases, upload both platform-scoped ZIPs instead of committing them to the source repository. Published version tags should remain immutable: keep an already published tag in place, and use a new patch version for later user-visible changes. The `v0.3.0` tag is already used and its candidate has been withdrawn, so no post-tag source may generate replacement artifacts under the v0.3.0 name; subsequent fixes must use v0.3.1 or a later patch version.
 
 The current macOS App requires Python 3.9+, is locally built and ad-hoc signed, and is not Apple-notarized yet.
 

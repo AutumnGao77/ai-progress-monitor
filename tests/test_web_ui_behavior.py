@@ -126,6 +126,83 @@ class WebUiBehaviorTests(unittest.TestCase):
         self.assertFalse(payload["contextMenuOpenAfterAppearance"])
         self.assertEqual(payload["appearancePreferenceBodies"], [{"theme": "shirt"}])
 
+    def test_session_load_coalesces_reentrant_requests_and_leaves_one_timer(self):
+        load_source = _load_function_source()
+        harness = textwrap.dedent(
+            """
+            const vm = require("node:vm");
+            const assert = require("node:assert/strict");
+            const loadSource = __LOAD_SOURCE__;
+            const fetchResolvers = [];
+            const renders = [];
+            const timers = [];
+            let fetchCount = 0;
+            const scheduleTimer = (callback, delay) => {
+              timers.push({callback, delay});
+              return timers.length;
+            };
+            const context = {
+              encodeURIComponent,
+              setTimeout: scheduleTimer,
+              fetch: () => {
+                fetchCount += 1;
+                return new Promise(resolve => fetchResolvers.push(resolve));
+              },
+              render: sessions => renders.push(sessions),
+              showStatusNote: () => {},
+              window: {
+                MONITOR_TOKEN: "test-token",
+                clearTimeout: () => {},
+                setTimeout: scheduleTimer,
+              },
+            };
+            vm.createContext(context);
+            vm.runInContext(`
+              let loadTimer = null;
+              let loadInFlight = false;
+              let loadQueued = false;
+              const POLL_INTERVAL_MS = 3000;
+              ${loadSource}
+              globalThis.runLoad = load;
+            `, context);
+
+            (async () => {
+              const first = context.runLoad();
+              context.runLoad();
+              context.runLoad();
+              assert.equal(fetchCount, 1);
+
+              fetchResolvers.shift()({json: async () => ({sessions: [{session_id: "first"}]})});
+              await first;
+              assert.equal(fetchCount, 2);
+              assert.equal(timers.length, 0);
+
+              fetchResolvers.shift()({json: async () => ({sessions: [{session_id: "second"}]})});
+              await new Promise(resolve => setImmediate(resolve));
+              assert.equal(fetchCount, 2);
+              assert.equal(renders.length, 2);
+              assert.equal(timers.length, 1);
+              assert.equal(timers[0].delay, 3000);
+              process.stdout.write(JSON.stringify({fetchCount, renderCount: renders.length, timerCount: timers.length}));
+            })().catch(error => {
+              console.error(error);
+              process.exitCode = 1;
+            });
+            """
+        ).replace("__LOAD_SOURCE__", json.dumps(load_source))
+        result = subprocess.run(
+            ["node", "-e", harness],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertEqual(
+            json.loads(result.stdout),
+            {"fetchCount": 2, "renderCount": 2, "timerCount": 1},
+        )
+
     def test_pet_appearance_save_queue_keeps_latest_choice(self):
         script = _main_script().replace("\nload();\n", "\n")
         result = subprocess.run(
@@ -208,6 +285,13 @@ class WebUiBehaviorTests(unittest.TestCase):
 def _main_script() -> str:
     scripts = re.findall(r"<script>(.*?)</script>", HTML, re.S)
     return scripts[-1]
+
+
+def _load_function_source() -> str:
+    script = _main_script()
+    start = script.index("async function load()")
+    end = script.index("\n\nfunction render(", start)
+    return script[start:end]
 
 
 def _node_harness(script: str) -> str:

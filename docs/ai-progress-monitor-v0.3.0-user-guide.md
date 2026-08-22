@@ -1,14 +1,17 @@
 # AI Progress Monitor v0.3.0 使用说明
 
+> 当前状态：v0.3.0 候选已经撤回，GitHub Release 当前保持 Draft。最终验收确认旧附件存在运行时阻断缺陷，因此不得下载使用或重新发布；本说明仅保留历史功能说明。修复后的 v0.3.1 仍在准备中，公开用户请使用已发布并验收的 [v0.2.1](https://github.com/AutumnGao77/ai-progress-monitor/releases/tag/v0.2.1)。
+
 AI Progress Monitor 是一个桌面小助手：把正在使用的 AI 工具状态收在桌面角落。它不会替你回答问题；当 AI 正在工作、需要你查看或暂时空闲时，树懒 Pet 会用角标和气泡告诉你，点一下就能回到对应窗口继续处理。
 
 ## 先选对下载包
 
 | 你的情况 | 下载内容 | 下载链接 | 打开后有什么 |
 |---|---|---|---|
-| 使用 Apple 芯片 Mac（M1 / M2 / M3 / M4），只想直接使用 | macOS 用户包 | [下载 macOS 版](https://github.com/AutumnGao77/ai-progress-monitor/releases/download/v0.3.0/AI-Progress-Monitor-v0.3.0-macOS-arm64.zip) | `AI Progress Monitor.app`、`README.txt`、`LICENSE` |
+| 普通用户使用 Apple 芯片 Mac（M1 / M2 / M3 / M4） | macOS 稳定版 v0.2.1 | [下载 v0.2.1](https://github.com/AutumnGao77/ai-progress-monitor/releases/tag/v0.2.1) | `AI Progress Monitor.app`、`README.txt`、`LICENSE` |
+| 维护者查阅 v0.3.0 历史证据 | 已撤回候选 | 只查看 `docs/qa/2026-07-30-v0.3.0-release-packaging-validation.md`，不下载或发布 Draft 附件 | 历史结构、哈希和撤回原因 |
 
-当前正式版仅支持 macOS。请下载 macOS 用户包；portable 包面向 Web/CLI 集成、诊断和 Windows 轻量预览，不是普通 Mac 用户的首选。
+当前公开稳定版是 v0.2.1，稳定交付平台为 macOS；v0.3.0 不会重新发布，替代补丁 v0.3.1 尚未完成最终候选包门禁。portable 包面向 Web/CLI 集成、诊断和 Windows 轻量预览，不是普通 Mac 用户的首选。
 
 ## 使用前请确认
 
@@ -85,8 +88,8 @@ Pet 平时安静待在桌面角落，不会弹出一个占满屏幕的控制面�
 | 状态不是每个工具都同样精确 | ChatGPT 桌面端和 Claude Code 可识别更多会话信号；Codex、Qoder、WorkBuddy 等 CLI 有时只能根据进程活动做保守判断 |
 | 窗口跳转可能受系统权限影响 | 有辅助功能权限时定位更准确；没有权限时会尽量激活对应 App。若失败，手动切回原窗口即可 |
 | 已查看的桌面对话不会永久保留 | 转为空闲后会保留约 15 分钟，随后从列表移出；对应桌面 App 仍开着时，会留下一个空闲入口 |
-| 当前不支持 Intel Mac | macOS 用户包只面向 Apple Silicon；Intel Mac 不在 v0.3.0 的已验收范围内 |
+| 当前不支持 Intel Mac | macOS 用户包只面向 Apple Silicon；Intel Mac 不在 v0.3.0 的候选验证范围内 |
 
 ## 获取最新版与反馈
 
-本说明对应 [v0.3.0 Release](https://github.com/AutumnGao77/ai-progress-monitor/releases/tag/v0.3.0)。下载、启动或窗口跳转遇到问题时，可在该项目的 GitHub Issues 中反馈，并附上你的系统版本、使用的 AI 工具和复现步骤；请不要提交对话正文、密钥或其他敏感内容。
+本说明对应已经撤回的 v0.3.0 历史候选，不代表可用或受支持的公开版本。公开最新版请查看 [v0.2.1 Release](https://github.com/AutumnGao77/ai-progress-monitor/releases/tag/v0.2.1)；v0.3.1 发布前不得使用旧 Draft 附件替代。下载、启动或窗口跳转遇到问题时，可在该项目的 GitHub Issues 中反馈，并附上你的系统版本、使用的 AI 工具和复现步骤；请不要提交对话正文、密钥或其他敏感内容。

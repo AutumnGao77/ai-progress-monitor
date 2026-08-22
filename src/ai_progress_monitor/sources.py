@@ -32,6 +32,7 @@ DEFAULT_QODER_LOGS_DIRS: Tuple[Path, ...] = (
 DEFAULT_WORKBUDDY_DB_PATHS: Tuple[Path, ...] = (Path.home() / ".workbuddy" / "workbuddy.db",)
 CLAUDE_SESSION_STATUS_FRESH_SECONDS = 30.0
 CLAUDE_INITIAL_IDLE_GRACE_SECONDS = 2.0
+CLAUDE_PROCESS_START_MATCH_TOLERANCE_SECONDS = 1.0
 CODEX_SESSION_RUNNING_STALE_SECONDS = 10 * 60.0
 CODEX_SESSION_COMPLETED_VISIBLE_SECONDS = 120.0
 CODEX_SESSION_TAIL_BYTES = 256 * 1024
@@ -348,6 +349,7 @@ class _ClaudeSessionState:
     cwd: Optional[str]
     updated_at: Optional[datetime]
     status_source: str = "claude-session"
+    identity_verified: bool = False
 
 
 @dataclass(frozen=True)
@@ -515,9 +517,11 @@ def _classify_process_rows(
         stat = metadata.get("stat") or ""
         if _is_terminating_process(stat):
             continue
+        process_started_at = _parse_claude_process_start(metadata.get("process_started_at"))
         active_child_count = _optional_int(metadata.get("active_child_count"))
         focus_process_id = _optional_int(metadata.get("focus_process_id"))
         focus_app_name = _optional_str(metadata.get("focus_app_name"))
+        observed_at = None
         desktop_app = _detect_desktop_app(process_name, command)
         if desktop_app is not None:
             tool_definition = desktop_app
@@ -612,7 +616,13 @@ def _classify_process_rows(
             tool = tool_definition.tool if tool_definition is not None else None
             surface = SurfaceKind.TERMINAL
             claude_state = (
-                _read_claude_session_state(process_id, claude_sessions_dir, cwd)
+                _read_claude_session_state(
+                    process_id,
+                    claude_sessions_dir,
+                    cwd,
+                    process_started_at=process_started_at,
+                    now=current,
+                )
                 if tool_definition is not None and tool_definition.tool == ToolKind.CLAUDE_CODE and process_id is not None
                 else None
             )
@@ -627,6 +637,13 @@ def _classify_process_rows(
                 claude_state.updated_at
                 if claude_state is not None and claude_state.status is not None and claude_state.updated_at is not None
                 else current
+            )
+            observed_at = (
+                current
+                if claude_state is not None
+                and claude_state.status is not None
+                and claude_state.identity_verified
+                else None
             )
             title = _process_title(tool_definition, cwd, tool_display_name) if tool_definition is not None else ""
             summary = f"只能确认 CLI 会话进程存在（{tool_display_name if tool_display_name else 'AI'}），无法读取终端内容、具体进度、待确认状态或 Yes/No 按钮。"
@@ -648,6 +665,8 @@ def _classify_process_rows(
             cwd=_optional_str(cwd),
             status_source=status_source,
             tool_display_name=tool_display_name,
+            observed_at=observed_at,
+            process_started_at=process_started_at,
         )
 
 
@@ -2675,6 +2694,8 @@ def _read_claude_session_state(
     process_id: int,
     claude_sessions_dir: Optional[Path],
     cwd: str,
+    process_started_at: Optional[datetime] = None,
+    now: Optional[datetime] = None,
 ) -> Optional[_ClaudeSessionState]:
     if claude_sessions_dir is None:
         return None
@@ -2689,21 +2710,44 @@ def _read_claude_session_state(
     recorded_cwd = _optional_str(payload.get("cwd"))
     if recorded_cwd and cwd and Path(recorded_cwd) != Path(cwd):
         return None
+    process_identity_matches = _claude_process_start_matches(
+        payload.get("procStart"),
+        process_started_at,
+    )
+    if process_identity_matches is False:
+        return None
     raw_status = _normalize_status_token(payload.get("status"))
     status = _claude_session_status(payload.get("status"))
-    if status not in {SessionStatus.IDLE, SessionStatus.NEEDS_ACTION} and not _claude_session_status_is_fresh(payload.get("updatedAt")):
+    current = now or datetime.now(timezone.utc)
+    status_updated_at = _claude_session_status_updated_at(payload)
+    activity_updated_at = _parse_millis_datetime(payload.get("updatedAt"))
+    if (
+        status not in {SessionStatus.IDLE, SessionStatus.NEEDS_ACTION}
+        and process_identity_matches is not True
+        and not _claude_session_status_is_fresh(activity_updated_at, current)
+    ):
         status = None
+    updated_at = (
+        activity_updated_at
+        if status == SessionStatus.RUNNING and process_identity_matches is not True
+        else status_updated_at
+    )
+    if updated_at is None and process_identity_matches is True:
+        updated_at = current
     if raw_status == "prompt":
         status_source = "claude-session-prompt"
     elif _claude_session_is_initial_idle(payload, raw_status, status):
         status_source = "claude-session-initial-idle"
+    elif status == SessionStatus.RUNNING and process_identity_matches is True:
+        status_source = "claude-session-verified"
     else:
         status_source = "claude-session"
     return _ClaudeSessionState(
         status=status,
         cwd=recorded_cwd,
-        updated_at=_parse_millis_datetime(payload.get("updatedAt")),
+        updated_at=updated_at,
         status_source=status_source,
+        identity_verified=process_identity_matches is True,
     )
 
 
@@ -2722,9 +2766,7 @@ def _claude_session_is_initial_idle(payload: dict, raw_status: str, status: Opti
     if status != SessionStatus.IDLE or raw_status not in {"idle", "ready"}:
         return False
     started_at = _parse_millis_datetime(payload.get("startedAt"))
-    idle_at = _parse_millis_datetime(payload.get("statusUpdatedAt"))
-    if idle_at is None:
-        idle_at = _parse_millis_datetime(payload.get("updatedAt"))
+    idle_at = _claude_session_status_updated_at(payload)
     if started_at is None or idle_at is None:
         return False
     age_seconds = (idle_at - started_at).total_seconds()
@@ -2735,13 +2777,69 @@ def _normalize_status_token(value) -> str:
     return re.sub(r"[\s_-]+", "", str(value or "").strip()).lower()
 
 
-def _claude_session_status_is_fresh(updated_at) -> bool:
-    try:
-        updated_at_seconds = float(updated_at) / 1000.0
-    except (TypeError, ValueError):
+def _claude_session_status_updated_at(payload: dict) -> Optional[datetime]:
+    return _parse_millis_datetime(payload.get("statusUpdatedAt")) or _parse_millis_datetime(payload.get("updatedAt"))
+
+
+def _claude_session_status_is_fresh(updated_at: Optional[datetime], now: Optional[datetime] = None) -> bool:
+    if updated_at is None:
         return False
-    age_seconds = datetime.now(timezone.utc).timestamp() - updated_at_seconds
+    current = now or datetime.now(timezone.utc)
+    age_seconds = (current - updated_at).total_seconds()
     return 0 <= age_seconds <= CLAUDE_SESSION_STATUS_FRESH_SECONDS
+
+
+def _claude_process_start_matches(
+    recorded_process_start,
+    observed_process_start: Optional[datetime],
+) -> Optional[bool]:
+    recorded = _parse_claude_process_start(recorded_process_start)
+    if recorded is None or observed_process_start is None:
+        return None
+    difference = abs((recorded - observed_process_start).total_seconds())
+    return difference <= CLAUDE_PROCESS_START_MATCH_TOLERANCE_SECONDS
+
+
+def _parse_claude_process_start(value) -> Optional[datetime]:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    parts = text.split()
+    months = {
+        "Jan": 1,
+        "Feb": 2,
+        "Mar": 3,
+        "Apr": 4,
+        "May": 5,
+        "Jun": 6,
+        "Jul": 7,
+        "Aug": 8,
+        "Sep": 9,
+        "Oct": 10,
+        "Nov": 11,
+        "Dec": 12,
+    }
+    if len(parts) == 5 and parts[1] in months:
+        try:
+            hour, minute, second = (int(part) for part in parts[3].split(":"))
+            return datetime(
+                int(parts[4]),
+                months[parts[1]],
+                int(parts[2]),
+                hour,
+                minute,
+                second,
+                tzinfo=timezone.utc,
+            )
+        except (TypeError, ValueError):
+            pass
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def _parse_millis_datetime(value) -> Optional[datetime]:
@@ -2915,8 +3013,8 @@ def _posix_process_command() -> List[str]:
         "*/Codex.app/*) printf 'Codex' ;; "
         "*) return 1 ;; "
         "esac; }; "
-        "all_process_rows=$(ps -axo pid=,ppid=,pgid=,stat=,%cpu=,comm=,args= 2>/dev/null); "
-        "printf '%s\\n' \"$all_process_rows\" | while read -r pid ppid pgid stat cpu comm args; do "
+        "all_process_rows=$(TZ=UTC LC_ALL=C ps -axo pid=,ppid=,pgid=,stat=,%cpu=,lstart=,comm=,args= 2>/dev/null); "
+        "printf '%s\\n' \"$all_process_rows\" | while read -r pid ppid pgid stat cpu start_weekday start_month start_day start_time start_year comm args; do "
         "case \"$stat\" in Z*|?*E*) continue ;; esac; "
         "exe_raw=${comm##*/}; "
         "case \"$exe_raw\" in sh|bash|zsh|fish) shell_process=1 ;; *) shell_process=0 ;; esac; "
@@ -2932,7 +3030,7 @@ def _posix_process_command() -> List[str]:
         "fi; "
         ";; esac; "
         "if [ \"$desktop_process\" = \"1\" ]; then "
-        "printf 'process_id=%s\\tprocess_name=%s\\tcommand=%s\\tcwd=\\tcpu_percent=%s\\tstat=%s\\tactive_child_count=0\\tfocus_process_id=%s\\tfocus_app_name=\\n' \"$pid\" \"$comm\" \"$args\" \"$cpu\" \"$stat\" \"$pid\"; "
+        "printf 'process_id=%s\\tprocess_name=%s\\tcommand=%s\\tcwd=\\tcpu_percent=%s\\tstat=%s\\tprocess_started_at=%s %s %s %s %s\\tactive_child_count=0\\tfocus_process_id=%s\\tfocus_app_name=\\n' \"$pid\" \"$comm\" \"$args\" \"$cpu\" \"$stat\" \"$start_weekday\" \"$start_month\" \"$start_day\" \"$start_time\" \"$start_year\" \"$pid\"; "
         "continue; "
         "fi; "
         "case \"$args\" in "
@@ -2949,14 +3047,14 @@ def _posix_process_command() -> List[str]:
         "return text ~ /(mcp|tavily|searxng)/ && text ~ /(npm|npx|node|\\.bin)/ "
         "} "
         "$3 == pgid && $1 != pid && $4 !~ /^Z/ && ($4 ~ /^R/ || $5 >= 1.0) { "
-        "text=\"\"; for (i=6; i<=NF; i++) text=text \" \" $i; "
+        "text=\"\"; for (i=11; i<=NF; i++) text=text \" \" $i; "
         "if (background_ai_helper(text)) next; "
         "count++ "
         "} "
         "END {print count + 0}') ;; esac; "
         "focus_pid=; focus_app=; ancestor=\"$ppid\"; hops=0; "
         "while [ -n \"$ancestor\" ] && [ \"$ancestor\" != \"1\" ] && [ \"$hops\" -lt 8 ]; do "
-        "ancestor_row=$(printf '%s\\n' \"$all_process_rows\" | awk -v target=\"$ancestor\" '$1 == target {text=\"\"; for (i=7; i<=NF; i++) text=text \" \" $i; print $2 \"|\" text; exit}'); "
+        "ancestor_row=$(printf '%s\\n' \"$all_process_rows\" | awk -v target=\"$ancestor\" '$1 == target {text=\"\"; for (i=12; i<=NF; i++) text=text \" \" $i; print $2 \"|\" text; exit}'); "
         "[ -n \"$ancestor_row\" ] || break; "
         "ancestor_args=${ancestor_row#*|}; "
         "app=$(focus_app_name \"$ancestor_args\" || true); "
@@ -2964,7 +3062,7 @@ def _posix_process_command() -> List[str]:
         "ancestor=${ancestor_row%%|*}; "
         "hops=$((hops + 1)); "
         "done; "
-        "printf 'process_id=%s\\tprocess_name=%s\\tcommand=%s\\tcwd=%s\\tcpu_percent=%s\\tstat=%s\\tactive_child_count=%s\\tfocus_process_id=%s\\tfocus_app_name=%s\\n' \"$pid\" \"$comm\" \"$args\" \"$cwd\" \"$cpu\" \"$stat\" \"$active_children\" \"$focus_pid\" \"$focus_app\"; "
+        "printf 'process_id=%s\\tprocess_name=%s\\tcommand=%s\\tcwd=%s\\tcpu_percent=%s\\tstat=%s\\tprocess_started_at=%s %s %s %s %s\\tactive_child_count=%s\\tfocus_process_id=%s\\tfocus_app_name=%s\\n' \"$pid\" \"$comm\" \"$args\" \"$cwd\" \"$cpu\" \"$stat\" \"$start_weekday\" \"$start_month\" \"$start_day\" \"$start_time\" \"$start_year\" \"$active_children\" \"$focus_pid\" \"$focus_app\"; "
         "done"
     )
     return ["sh", "-c", script]

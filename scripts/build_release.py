@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import argparse
 import os
 import re
 import shutil
 import struct
 import subprocess
 import sys
+import tarfile
+import tempfile
 import zipapp
 import zipfile
 from pathlib import Path
+from typing import Optional
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -17,7 +21,13 @@ DIST = ROOT / "dist"
 ARTIFACT = DIST / "ai-progress-monitor.pyz"
 APP_AVATAR = ROOT / "src" / "ai_progress_monitor" / "assets" / "app-avatar.png"
 VERSION_FILE = ROOT / "src" / "ai_progress_monitor" / "__init__.py"
+PROJECT_FILE = ROOT / "pyproject.toml"
 LICENSE_FILE = ROOT / "LICENSE"
+PYZ_FILE_SUFFIXES = {".png", ".py"}
+PYZ_DIRECTORIES = {
+    ("ai_progress_monitor",),
+    ("ai_progress_monitor", "assets"),
+}
 PORTABLE_FILES = (
     "scripts/emit_event.py",
     "scripts/e2e_smoke.py",
@@ -51,6 +61,29 @@ def load_release_version(version_file: Path = VERSION_FILE) -> str:
     return match.group(1)
 
 
+def load_project_version(project_file: Path = PROJECT_FILE) -> str:
+    in_project_section = False
+    versions = []
+    for line in project_file.read_text(encoding="utf-8").splitlines():
+        section = re.fullmatch(r"\s*\[([^]]+)]\s*(?:#.*)?", line)
+        if section is not None:
+            in_project_section = section.group(1).strip() == "project"
+            continue
+        if not in_project_section:
+            continue
+        match = re.fullmatch(
+            r'\s*version\s*=\s*["\']([^"\']+)["\']\s*(?:#.*)?',
+            line,
+        )
+        if match is not None:
+            versions.append(match.group(1))
+    if len(versions) != 1:
+        raise RuntimeError(
+            f"exactly one [project].version is required in {project_file}"
+        )
+    return versions[0]
+
+
 RELEASE_VERSION = load_release_version()
 MACOS_MINIMUM_VERSION = "13.0"
 MACOS_RELEASE_DIR = DIST / f"AI Progress Monitor v{RELEASE_VERSION} macOS arm64"
@@ -59,19 +92,128 @@ PORTABLE_RELEASE_DIR = DIST / f"ai-progress-monitor-v{RELEASE_VERSION}-portable"
 PORTABLE_RELEASE_ZIP = DIST / f"ai-progress-monitor-v{RELEASE_VERSION}-portable.zip"
 
 
+def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Build validated release artifacts")
+    parser.add_argument(
+        "--source-commit",
+        required=True,
+        help="Exact 40-character Git commit SHA represented by the build",
+    )
+    parser.add_argument(
+        "--require-tag",
+        action="store_true",
+        help="Require annotated v<version> tag to point to the source commit",
+    )
+    return parser.parse_args(argv)
+
+
+def _git(root: Path, *args: str) -> subprocess.CompletedProcess:
+    env = os.environ.copy()
+    for key in tuple(env):
+        if key.startswith("GIT_"):
+            env.pop(key)
+    return subprocess.run(
+        ["git", *args],
+        cwd=root,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _required_git_output(root: Path, *args: str) -> str:
+    completed = _git(root, *args)
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout.strip() or "unknown git error"
+        raise SystemExit(f"release source validation failed: {detail}")
+    return completed.stdout.strip()
+
+
+def validate_release_source(
+    source_commit: str,
+    *,
+    require_tag: bool = False,
+    root: Path = ROOT,
+    release_version: str = RELEASE_VERSION,
+    project_file: Path = PROJECT_FILE,
+) -> str:
+    if not re.fullmatch(r"[0-9a-f]{40}", source_commit):
+        raise SystemExit("--source-commit must be a full lowercase 40-character Git SHA")
+
+    repository_root = Path(
+        _required_git_output(root, "rev-parse", "--show-toplevel")
+    ).resolve()
+    if repository_root != root.resolve():
+        raise SystemExit("release build must run from the repository root")
+
+    resolved_commit = _required_git_output(
+        root,
+        "rev-parse",
+        "--verify",
+        f"{source_commit}^{{commit}}",
+    )
+    head_commit = _required_git_output(root, "rev-parse", "HEAD")
+    if resolved_commit != source_commit or head_commit != source_commit:
+        raise SystemExit("--source-commit must resolve to the current HEAD")
+
+    worktree_status = _required_git_output(
+        root,
+        "status",
+        "--porcelain=v1",
+        "--untracked-files=all",
+    )
+    if worktree_status:
+        raise SystemExit("release build requires a clean Git worktree")
+
+    project_version = load_project_version(project_file)
+    if project_version != release_version:
+        raise SystemExit(
+            f"release version mismatch: package={release_version} project={project_version}"
+        )
+
+    tag_name = f"v{release_version}"
+    tag_lookup = _git(
+        root,
+        "for-each-ref",
+        "--format=%(objectname)",
+        f"refs/tags/{tag_name}",
+    )
+    if tag_lookup.returncode != 0:
+        detail = tag_lookup.stderr.strip() or tag_lookup.stdout.strip() or "unknown git error"
+        raise SystemExit(f"release tag lookup failed: {detail}")
+    if not tag_lookup.stdout.strip():
+        if require_tag:
+            raise SystemExit(f"required annotated tag is missing: {tag_name}")
+        return source_commit
+
+    tag_type = _required_git_output(root, "cat-file", "-t", f"refs/tags/{tag_name}")
+    if tag_type != "tag":
+        raise SystemExit(f"release tag must be annotated: {tag_name}")
+    tagged_commit = _required_git_output(
+        root,
+        "rev-parse",
+        f"refs/tags/{tag_name}^{{commit}}",
+    )
+    if tagged_commit != source_commit:
+        raise SystemExit(f"release tag {tag_name} points to a different source commit")
+    return source_commit
+
+
 def include_pyz_path(path: Path) -> bool:
-    if path.name == ".DS_Store" or "__pycache__" in path.parts:
-        return False
-    if "sloth-candidates" in path.parts:
-        return False
     try:
         relative = path.relative_to(ROOT / "src")
     except ValueError:
-        return True
+        relative = path
     parts = relative.parts
-    if len(parts) >= 3 and parts[:3] == ("ai_progress_monitor", "assets", "sloth-candidates"):
+    if not parts or parts[0] != "ai_progress_monitor":
         return False
-    return True
+    if relative.parts in PYZ_DIRECTORIES:
+        return True
+    if path.name == ".DS_Store" or "__pycache__" in parts:
+        return False
+    if "sloth-candidates" in parts:
+        return False
+    return path.suffix.lower() in PYZ_FILE_SUFFIXES
 
 
 def write_png_icns(source_png: Path, target_icns: Path) -> None:
@@ -89,7 +231,110 @@ def copy_app_icon_resources(resources: Path) -> None:
     write_png_icns(APP_AVATAR, resources / "AppIcon.icns")
 
 
-def main() -> int:
+def export_release_source(
+    source_commit: str,
+    destination: Path,
+    *,
+    root: Path = ROOT,
+) -> None:
+    archive_path = destination.parent / f"{destination.name}.tar"
+    completed = _git(
+        root,
+        "archive",
+        "--format=tar",
+        f"--output={archive_path}",
+        source_commit,
+    )
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout.strip() or "unknown git error"
+        raise SystemExit(f"release source export failed: {detail}")
+    destination.mkdir(parents=True)
+    try:
+        destination_root = destination.resolve()
+        with tarfile.open(archive_path) as archive:
+            for member in archive.getmembers():
+                target = (destination / member.name).resolve()
+                if target != destination_root and destination_root not in target.parents:
+                    raise SystemExit("release source archive contains an unsafe path")
+                if member.issym() or member.islnk() or member.isdev():
+                    raise SystemExit("release source archive contains an unsupported link or device")
+            archive.extractall(destination)
+    finally:
+        archive_path.unlink(missing_ok=True)
+    if not (destination / "scripts" / "build_release.py").is_file():
+        raise SystemExit("release source export is missing scripts/build_release.py")
+
+
+def run_isolated_source_build(
+    source_root: Path,
+    source_commit: str,
+) -> None:
+    runner = (
+        "import runpy, sys; "
+        "module = runpy.run_path(sys.argv[1], run_name='release_snapshot'); "
+        "raise SystemExit(module['build_release_artifacts'](sys.argv[2]))"
+    )
+    command = [
+        sys.executable,
+        "-c",
+        runner,
+        str(source_root / "scripts" / "build_release.py"),
+        source_commit,
+    ]
+    env = os.environ.copy()
+    for key in tuple(env):
+        if key.startswith("GIT_") or key in {"PYTHONHOME", "PYTHONPATH"}:
+            env.pop(key)
+    completed = subprocess.run(
+        command,
+        cwd=source_root,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0:
+        print(completed.stdout, file=sys.stderr)
+        print(completed.stderr, file=sys.stderr)
+        raise SystemExit(completed.returncode)
+
+
+def replace_release_dist(source_dist: Path, target_dist: Path = DIST) -> None:
+    if not source_dist.is_dir():
+        raise SystemExit("isolated release build did not produce a dist directory")
+    staging_parent = target_dist.parent / "build"
+    staging_parent.mkdir(parents=True, exist_ok=True)
+    temp_root = Path(
+        tempfile.mkdtemp(
+            prefix="release-output-",
+            dir=staging_parent,
+        )
+    )
+    preserve_backup = False
+    try:
+        staged_dist = temp_root / "dist"
+        previous_dist = temp_root / "previous-dist"
+        shutil.copytree(source_dist, staged_dist)
+        had_previous_dist = target_dist.exists()
+        if had_previous_dist:
+            target_dist.rename(previous_dist)
+        try:
+            staged_dist.rename(target_dist)
+        except BaseException:
+            if had_previous_dist and previous_dist.exists() and not target_dist.exists():
+                try:
+                    previous_dist.rename(target_dist)
+                except BaseException as restore_error:
+                    preserve_backup = True
+                    raise RuntimeError(
+                        f"release dist swap and restore failed; previous output preserved at {previous_dist}"
+                    ) from restore_error
+            raise
+    finally:
+        if not preserve_backup:
+            shutil.rmtree(temp_root, ignore_errors=True)
+
+
+def build_release_artifacts(source_commit: str) -> int:
     run([sys.executable, "scripts/validate_release.py"])
     if DIST.exists():
         shutil.rmtree(DIST)
@@ -107,6 +352,33 @@ def main() -> int:
     build_release_bundles()
     verify_portable_runtime_entries()
     verify_release_bundles()
+    print(f"release-source-commit-ok {source_commit}")
+    print(f"release-artifact-ok {ARTIFACT}")
+    print(f"macos-release-ok {MACOS_RELEASE_ZIP}")
+    print(f"portable-release-ok {PORTABLE_RELEASE_ZIP}")
+    return 0
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    args = parse_args(argv)
+    source_commit = validate_release_source(
+        args.source_commit,
+        require_tag=args.require_tag,
+    )
+    with tempfile.TemporaryDirectory(prefix="ai-progress-release-source-") as temp_dir:
+        source_root = Path(temp_dir) / "source"
+        export_release_source(source_commit, source_root)
+        run_isolated_source_build(
+            source_root,
+            source_commit,
+        )
+        validate_release_source(
+            source_commit,
+            require_tag=args.require_tag,
+        )
+        replace_release_dist(source_root / "dist")
+
+    print(f"release-source-commit-ok {source_commit}")
     print(f"release-artifact-ok {ARTIFACT}")
     print(f"macos-release-ok {MACOS_RELEASE_ZIP}")
     print(f"portable-release-ok {PORTABLE_RELEASE_ZIP}")

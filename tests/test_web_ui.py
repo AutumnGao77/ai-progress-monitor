@@ -180,6 +180,13 @@ class WebUiTests(unittest.TestCase):
         self.assertIn("连接中断", HTML)
         self.assertIn("setTimeout(load, POLL_INTERVAL_MS)", HTML)
 
+    def test_load_coalesces_overlapping_session_requests(self):
+        self.assertIn("let loadInFlight = false;", HTML)
+        self.assertIn("let loadQueued = false;", HTML)
+        self.assertIn("if (loadInFlight)", HTML)
+        self.assertIn("loadQueued = true;", HTML)
+        self.assertIn("if (loadQueued)", HTML)
+
     def test_web_poll_interval_supports_five_second_needs_action_visibility(self):
         match = re.search(r"const POLL_INTERVAL_MS = (\d+);", HTML)
 

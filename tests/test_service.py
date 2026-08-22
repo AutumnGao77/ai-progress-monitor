@@ -1,5 +1,6 @@
 import tempfile
 import threading
+import time
 import unittest
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -52,6 +53,12 @@ class MonitorServiceTests(unittest.TestCase):
 
         self.assertEqual(payload[0]["status_source"], "qoder-log")
         self.assertEqual(payload[0]["tool_display_name"], "Qoder")
+        self.assertNotIn("observed_at", payload[0])
+        self.assertNotIn("process_started_at", payload[0])
+        self.assertNotIn("observation_sequence", payload[0])
+        self.assertNotIn("observed_monotonic", payload[0])
+        self.assertNotIn("observation_clock_adjusted", payload[0])
+        self.assertNotIn("observation_wall_at", payload[0])
 
     def test_qoder_log_desktop_session_payload_is_full_and_view_acknowledged_after_focus(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -203,6 +210,103 @@ class MonitorServiceTests(unittest.TestCase):
             self.assertEqual(before["status"], "needs_action")
             self.assertTrue(result.ok)
             self.assertEqual(after["status"], "idle")
+
+    def test_verified_claude_running_to_reply_and_view_is_stable_across_refresh(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            running_at = datetime(2026, 7, 31, 5, 23, tzinfo=timezone.utc)
+            clock = FakeDateTimeClock(datetime(2026, 7, 31, 5, 25, tzinfo=timezone.utc))
+            running = SessionUpdate(
+                session_id="process-24645",
+                title="Claude Code CLI - long-task",
+                tool=ToolKind.CLAUDE_CODE,
+                surface=SurfaceKind.TERMINAL,
+                status=SessionStatus.RUNNING,
+                summary="Claude Code is running.",
+                updated_at=running_at,
+                source="process",
+                process_id=24645,
+                focus_process_id=75407,
+                focus_app_name="Zed",
+                cwd="/Users/Gao/Documents/projects/long-task",
+                status_source="claude-session-verified",
+                observed_at=clock.now(),
+            )
+            reply = replace(
+                running,
+                status=SessionStatus.IDLE,
+                summary="Claude Code reply is ready.",
+                updated_at=running_at - timedelta(seconds=1),
+                status_source="claude-session-prompt",
+            )
+            source = VolatileProcessSource([[running], [reply], [reply]])
+            sent = []
+            notifier = NotificationManager(
+                sender=lambda title, message: sent.append((title, message)),
+                cooldown_seconds=60,
+            )
+            service = MonitorService(
+                [source],
+                SessionStore(stuck_after_seconds=60, audit_dir=Path(temp_dir) / "audit"),
+                ActionExecutor(),
+                notifier=notifier,
+                focus_manager=WindowFocusManager(sender=lambda target: FocusResult(True, "focused-claude")),
+                preferences=MonitorPreferences(Path(temp_dir) / "preferences.json"),
+                now=clock.now,
+            )
+
+            first = service.sessions_payload()[0]
+            second = service.sessions_payload()[0]
+            focus_result = service.focus_session("process-24645")
+            after_focus = service.visible_sessions()[0]
+            after_repeated_reply = service.sessions_payload()[0]
+
+            self.assertEqual(first["status"], "running")
+            self.assertEqual(second["status"], "needs_action")
+            self.assertTrue(second["view_ack_required"])
+            self.assertTrue(focus_result.ok)
+            self.assertEqual(after_focus.status, SessionStatus.IDLE)
+            self.assertEqual(after_repeated_reply["status"], "idle")
+            self.assertEqual(len(sent), 1)
+            self.assertIn("需要处理", sent[0][0])
+
+    def test_verified_claude_running_becomes_stuck_during_source_failure_and_recovers(self):
+        observed_at = datetime(2026, 7, 31, 5, 25, tzinfo=timezone.utc)
+        clock = FakeDateTimeClock(observed_at)
+        monotonic_clock = FakeClock()
+        running = SessionUpdate(
+            session_id="process-24645",
+            title="Claude Code CLI - long-task",
+            tool=ToolKind.CLAUDE_CODE,
+            surface=SurfaceKind.TERMINAL,
+            status=SessionStatus.RUNNING,
+            summary="Claude Code is running.",
+            updated_at=observed_at - timedelta(minutes=2),
+            source="process",
+            process_id=24645,
+            cwd="/Users/Gao/Documents/projects/long-task",
+            status_source="claude-session-verified",
+            observed_at=observed_at,
+        )
+        recovered = replace(running, observed_at=observed_at + timedelta(seconds=62))
+        service = MonitorService(
+            [VolatileProcessSource([[running], None, [recovered]])],
+            SessionStore(stuck_after_seconds=60),
+            ActionExecutor(),
+            clock=monotonic_clock.now,
+            now=clock.now,
+        )
+
+        first = service.sessions_payload()[0]
+        clock.advance(61)
+        monotonic_clock.advance(61)
+        during_failure = service.sessions_payload()[0]
+        clock.advance(1)
+        monotonic_clock.advance(1)
+        after_recovery = service.sessions_payload()[0]
+
+        self.assertEqual(first["status"], "running")
+        self.assertEqual(during_failure["status"], "stuck")
+        self.assertEqual(after_recovery["status"], "running")
 
     def test_workbuddy_db_desktop_session_payload_is_full_and_view_acknowledged_after_focus(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -904,6 +1008,1001 @@ class MonitorServiceTests(unittest.TestCase):
         self.assertEqual(payload, [])
         self.assertTrue(all(source.polled for source in sources))
         self.assertTrue(all(source.overlapped for source in sources))
+
+    def test_source_poll_timeout_keeps_healthy_source_visible_within_global_budget(self):
+        blocker_started = threading.Event()
+        release_blocker = threading.Event()
+        blocker_finished = threading.Event()
+        now = datetime(2026, 8, 4, 8, 0, tzinfo=timezone.utc)
+        healthy = SessionUpdate(
+            "healthy-session",
+            "Healthy source",
+            ToolKind.CODEX,
+            SurfaceKind.TERMINAL,
+            SessionStatus.RUNNING,
+            "healthy",
+            now,
+            source="healthy",
+        )
+
+        class BlockingSource:
+            def poll(self):
+                blocker_started.set()
+                release_blocker.wait()
+                blocker_finished.set()
+                return []
+
+        class HealthySource:
+            def poll(self):
+                return [healthy]
+
+        service = MonitorService(
+            [BlockingSource(), HealthySource()],
+            SessionStore(),
+            ActionExecutor(),
+            source_poll_timeout_seconds=0.05,
+        )
+
+        try:
+            started_at = time.monotonic()
+            with mock.patch("builtins.print") as printer:
+                payload = service.sessions_payload()
+            elapsed = time.monotonic() - started_at
+
+            self.assertTrue(blocker_started.wait(timeout=0.2))
+            self.assertLess(elapsed, 0.5)
+            self.assertEqual([item["session_id"] for item in payload], ["healthy-session"])
+            printer.assert_called_once_with(
+                "AI Progress Monitor source timed out: BlockingSource",
+                flush=True,
+            )
+        finally:
+            release_blocker.set()
+            self.assertTrue(blocker_finished.wait(timeout=1))
+
+    def test_timed_out_source_is_not_repolled_or_waited_for_while_worker_is_blocked(self):
+        blocker_started = threading.Event()
+        release_blocker = threading.Event()
+        blocker_finished = threading.Event()
+
+        class BlockingSource:
+            def __init__(self):
+                self.calls = 0
+                self.lock = threading.Lock()
+
+            def poll(self):
+                with self.lock:
+                    self.calls += 1
+                blocker_started.set()
+                release_blocker.wait()
+                blocker_finished.set()
+                return []
+
+        source = BlockingSource()
+        service = MonitorService(
+            [source],
+            SessionStore(),
+            ActionExecutor(),
+            source_poll_timeout_seconds=0.08,
+        )
+
+        try:
+            with mock.patch("builtins.print"):
+                service.refresh()
+            flight = service._source_poll_flights[id(source)]
+            with mock.patch.object(flight.done, "wait", wraps=flight.done.wait) as old_wait:
+                with mock.patch("builtins.print"):
+                    service.refresh()
+                old_wait.assert_not_called()
+
+            self.assertTrue(blocker_started.wait(timeout=0.2))
+            self.assertEqual(source.calls, 1)
+        finally:
+            release_blocker.set()
+            self.assertTrue(blocker_finished.wait(timeout=1))
+
+    def test_late_timed_out_result_is_discarded_and_next_poll_recovers(self):
+        first_started = threading.Event()
+        release_first = threading.Event()
+        first_finished = threading.Event()
+        now = datetime(2026, 8, 4, 8, 0, tzinfo=timezone.utc)
+        stale = SessionUpdate(
+            "stale-session",
+            "Stale",
+            ToolKind.CODEX,
+            SurfaceKind.TERMINAL,
+            SessionStatus.IDLE,
+            "stale",
+            now,
+            source="test-source",
+        )
+        fresh = replace(
+            stale,
+            session_id="fresh-session",
+            title="Fresh",
+            summary="fresh",
+            updated_at=now + timedelta(seconds=1),
+        )
+
+        class RecoveringSource:
+            def __init__(self):
+                self.calls = 0
+                self.lock = threading.Lock()
+
+            def poll(self):
+                with self.lock:
+                    self.calls += 1
+                    call = self.calls
+                if call == 1:
+                    first_started.set()
+                    release_first.wait()
+                    first_finished.set()
+                    return [stale]
+                return [fresh]
+
+        source = RecoveringSource()
+        service = MonitorService(
+            [source],
+            SessionStore(),
+            ActionExecutor(),
+            source_poll_timeout_seconds=0.05,
+        )
+
+        try:
+            with mock.patch("builtins.print"):
+                self.assertEqual(service.refresh(), [])
+            self.assertTrue(first_started.wait(timeout=0.2))
+            flight = service._source_poll_flights[id(source)]
+            release_first.set()
+            self.assertTrue(first_finished.wait(timeout=1))
+            self.assertTrue(flight.done.wait(timeout=1))
+
+            recovered = service.refresh()
+
+            self.assertEqual(source.calls, 2)
+            self.assertEqual([session.session_id for session in recovered], ["fresh-session"])
+            self.assertNotIn("stale-session", [session.session_id for session in service.store.sessions()])
+        finally:
+            release_first.set()
+
+    def test_completed_and_failed_source_flights_are_repolled_next_round(self):
+        now = datetime(2026, 8, 4, 8, 0, tzinfo=timezone.utc)
+        recovered = SessionUpdate(
+            "recovered-session",
+            "Recovered",
+            ToolKind.CODEX,
+            SurfaceKind.TERMINAL,
+            SessionStatus.IDLE,
+            "recovered",
+            now,
+            source="recovering",
+        )
+
+        class CountingSource:
+            def __init__(self):
+                self.calls = 0
+
+            def poll(self):
+                self.calls += 1
+                return []
+
+        class FailingThenRecoveringSource:
+            def __init__(self):
+                self.calls = 0
+
+            def poll(self):
+                self.calls += 1
+                if self.calls == 1:
+                    raise RuntimeError("private failure")
+                return [recovered]
+
+        counting = CountingSource()
+        recovering = FailingThenRecoveringSource()
+        service = MonitorService(
+            [counting, recovering],
+            SessionStore(),
+            ActionExecutor(),
+            source_poll_timeout_seconds=0.2,
+        )
+
+        with mock.patch("builtins.print"):
+            first = service.refresh()
+            second = service.refresh()
+
+        self.assertEqual(first, [])
+        self.assertEqual(counting.calls, 2)
+        self.assertEqual(recovering.calls, 2)
+        self.assertEqual([session.session_id for session in second], ["recovered-session"])
+
+    def test_partial_source_thread_start_failure_discards_started_flight_and_removes_unstarted_flight(self):
+        first_started = threading.Event()
+        release_first = threading.Event()
+        now = datetime(2026, 8, 4, 8, 0, tzinfo=timezone.utc)
+        healthy = SessionUpdate(
+            "healthy-after-start-failure",
+            "Healthy",
+            ToolKind.CODEX,
+            SurfaceKind.TERMINAL,
+            SessionStatus.IDLE,
+            "healthy",
+            now,
+            source="healthy",
+        )
+
+        class FirstSource:
+            def __init__(self):
+                self.calls = 0
+
+            def poll(self):
+                self.calls += 1
+                if self.calls == 1:
+                    first_started.set()
+                    release_first.wait()
+                return []
+
+        class SecondSource:
+            def __init__(self):
+                self.calls = 0
+
+            def poll(self):
+                self.calls += 1
+                return [healthy]
+
+        first_source = FirstSource()
+        second_source = SecondSource()
+        service = MonitorService(
+            [first_source, second_source],
+            SessionStore(),
+            ActionExecutor(),
+            source_poll_timeout_seconds=0.2,
+        )
+        original_start = threading.Thread.start
+        start_calls = 0
+        first_flight = None
+
+        def flaky_start(thread):
+            nonlocal start_calls
+            start_calls += 1
+            if start_calls == 2:
+                raise RuntimeError("thread start failed")
+            return original_start(thread)
+
+        try:
+            with mock.patch("ai_progress_monitor.service.Thread.start", new=flaky_start):
+                with self.assertRaisesRegex(RuntimeError, "thread start failed"):
+                    service.refresh()
+            self.assertTrue(first_started.wait(timeout=1))
+            first_flight = service._source_poll_flights[id(first_source)]
+            with first_flight.lock:
+                self.assertTrue(first_flight.discard)
+            self.assertNotIn(id(second_source), service._source_poll_flights)
+        finally:
+            release_first.set()
+            if first_flight is not None:
+                self.assertTrue(first_flight.done.wait(timeout=1))
+
+        recovered = service.refresh()
+
+        self.assertEqual(first_source.calls, 2)
+        self.assertEqual(second_source.calls, 1)
+        self.assertEqual(
+            [session.session_id for session in recovered],
+            ["healthy-after-start-failure"],
+        )
+
+    def test_concurrent_refresh_timeout_returns_last_successful_snapshot(self):
+        notify_started = threading.Event()
+        release_notify = threading.Event()
+        alias_read_after_initial = threading.Event()
+        release_alias_read = threading.Event()
+        leader_finished = threading.Event()
+        follower_finished = threading.Event()
+        errors = []
+        follower_result = []
+        now = datetime(2026, 8, 4, 8, 0, tzinfo=timezone.utc)
+        idle = SessionUpdate(
+            "process-321",
+            "Claude Code CLI - timeout-test",
+            ToolKind.CLAUDE_CODE,
+            SurfaceKind.TERMINAL,
+            SessionStatus.IDLE,
+            "idle",
+            now,
+            source="process",
+            process_id=321,
+            status_source="claude-session-prompt",
+        )
+        needs_action = replace(
+            idle,
+            status=SessionStatus.NEEDS_ACTION,
+            summary="needs action",
+            updated_at=now + timedelta(seconds=1),
+            view_ack_required=False,
+            status_source="claude-session",
+        )
+
+        def blocking_sender(_title, _message):
+            notify_started.set()
+            release_notify.wait()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            class BlockingAliasPreferences(MonitorPreferences):
+                def __init__(self, path):
+                    super().__init__(path)
+                    self.alias_calls = 0
+                    self.alias_lock = threading.Lock()
+
+                def session_alias(self, session_id):
+                    with self.alias_lock:
+                        self.alias_calls += 1
+                        call = self.alias_calls
+                    if call > 1:
+                        alias_read_after_initial.set()
+                        release_alias_read.wait()
+                    return super().session_alias(session_id)
+
+            preferences = BlockingAliasPreferences(Path(temp_dir) / "preferences.json")
+            service = MonitorService(
+                [VolatileProcessSource([[idle], [needs_action]])],
+                SessionStore(audit_dir=Path(temp_dir) / "audit"),
+                ActionExecutor(),
+                notifier=NotificationManager(sender=blocking_sender),
+                preferences=preferences,
+                source_poll_timeout_seconds=0.2,
+                concurrent_refresh_wait_timeout_seconds=0.05,
+            )
+            service.preferences.set_notifications_enabled(True)
+            first = service.sessions_payload()
+
+            def run_leader():
+                try:
+                    service.refresh()
+                except BaseException as error:
+                    errors.append(error)
+                finally:
+                    leader_finished.set()
+
+            def run_follower():
+                try:
+                    follower_result.extend(service.sessions_payload())
+                except BaseException as error:
+                    errors.append(error)
+                finally:
+                    follower_finished.set()
+
+            leader = threading.Thread(target=run_leader)
+            follower = threading.Thread(target=run_follower)
+            try:
+                leader.start()
+                self.assertTrue(notify_started.wait(timeout=1))
+                follower.start()
+                completed_before_release = follower_finished.wait(timeout=0.3)
+
+                self.assertTrue(completed_before_release)
+                self.assertEqual(errors, [])
+                self.assertEqual(follower_result, first)
+                self.assertIsNot(follower_result[0], first[0])
+                self.assertEqual(follower_result[0]["status"], "idle")
+                self.assertFalse(alias_read_after_initial.is_set())
+                self.assertEqual(preferences.alias_calls, 1)
+                follower_result[0]["title"] = "mutated follower payload"
+                self.assertNotEqual(follower_result[0]["title"], first[0]["title"])
+            finally:
+                release_notify.set()
+                release_alias_read.set()
+                leader.join(timeout=1)
+                follower.join(timeout=1)
+                self.assertTrue(leader_finished.is_set())
+                self.assertTrue(follower_finished.is_set())
+                self.assertFalse(leader.is_alive())
+                self.assertFalse(follower.is_alive())
+                self.assertEqual(errors, [])
+
+    def test_older_payload_mapping_cannot_overwrite_newer_fallback_cache(self):
+        old_alias_started = threading.Event()
+        release_old_alias = threading.Event()
+        third_poll_started = threading.Event()
+        release_third_poll = threading.Event()
+        old_request_finished = threading.Event()
+        blocked_refresh_finished = threading.Event()
+        errors = []
+        now = datetime(2026, 8, 4, 8, 0, tzinfo=timezone.utc)
+        old = SessionUpdate(
+            "process-101",
+            "Old session",
+            ToolKind.CODEX,
+            SurfaceKind.TERMINAL,
+            SessionStatus.IDLE,
+            "old",
+            now,
+            source="process",
+            process_id=101,
+        )
+        new = replace(
+            old,
+            session_id="process-202",
+            title="New session",
+            summary="new",
+            updated_at=now + timedelta(seconds=1),
+            process_id=202,
+        )
+
+        class SequencedSource:
+            volatile_source = "process"
+
+            def __init__(self):
+                self.calls = 0
+
+            def poll(self):
+                self.calls += 1
+                if self.calls == 1:
+                    return [old]
+                if self.calls == 2:
+                    return [new]
+                third_poll_started.set()
+                release_third_poll.wait()
+                return [new]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            class BlockingOldAliasPreferences(MonitorPreferences):
+                def __init__(self, path):
+                    super().__init__(path)
+                    self.alias_calls = 0
+                    self.alias_lock = threading.Lock()
+
+                def session_alias(self, session_id):
+                    with self.alias_lock:
+                        self.alias_calls += 1
+                    if session_id == "process-101":
+                        old_alias_started.set()
+                        release_old_alias.wait()
+                    return super().session_alias(session_id)
+
+            source = SequencedSource()
+            preferences = BlockingOldAliasPreferences(Path(temp_dir) / "preferences.json")
+            service = MonitorService(
+                [source],
+                SessionStore(audit_dir=Path(temp_dir) / "audit"),
+                ActionExecutor(),
+                preferences=preferences,
+                source_poll_timeout_seconds=0.5,
+                concurrent_refresh_wait_timeout_seconds=0.05,
+            )
+            old_result = []
+
+            def run_old_request():
+                try:
+                    old_result.extend(service.sessions_payload())
+                except BaseException as error:
+                    errors.append(error)
+                finally:
+                    old_request_finished.set()
+
+            old_request = threading.Thread(target=run_old_request)
+            old_request.start()
+            self.assertTrue(old_alias_started.wait(timeout=1))
+
+            new_result = service.sessions_payload()
+            self.assertEqual([item["session_id"] for item in new_result], ["process-202"])
+
+            release_old_alias.set()
+            old_request.join(timeout=1)
+            self.assertTrue(old_request_finished.is_set())
+            self.assertEqual([item["session_id"] for item in old_result], ["process-101"])
+
+            def run_blocked_refresh():
+                try:
+                    service.refresh()
+                except BaseException as error:
+                    errors.append(error)
+                finally:
+                    blocked_refresh_finished.set()
+
+            blocked_refresh = threading.Thread(target=run_blocked_refresh)
+            try:
+                blocked_refresh.start()
+                self.assertTrue(third_poll_started.wait(timeout=1))
+
+                fallback = service.sessions_payload()
+
+                self.assertEqual([item["session_id"] for item in fallback], ["process-202"])
+                self.assertEqual(preferences.alias_calls, 2)
+                self.assertIsNot(fallback[0], new_result[0])
+                fallback[0]["title"] = "mutated fallback"
+                self.assertEqual(new_result[0]["title"], "New session")
+                self.assertEqual(errors, [])
+            finally:
+                release_third_poll.set()
+                blocked_refresh.join(timeout=1)
+                self.assertTrue(blocked_refresh_finished.is_set())
+                self.assertFalse(blocked_refresh.is_alive())
+                self.assertEqual(errors, [])
+
+    def test_concurrent_refresh_timeout_without_successful_snapshot_returns_empty(self):
+        read_started = threading.Event()
+        release_read = threading.Event()
+        leader_finished = threading.Event()
+        follower_finished = threading.Event()
+        follower_result = []
+        errors = []
+
+        class BlockingPreferences:
+            def notifications_enabled(self):
+                return True
+
+            def is_hidden(self, _session_id):
+                read_started.set()
+                release_read.wait()
+                return False
+
+        service = MonitorService(
+            [DemoSource()],
+            SessionStore(),
+            ActionExecutor(),
+            preferences=BlockingPreferences(),
+            concurrent_refresh_wait_timeout_seconds=0.05,
+        )
+
+        def run_leader():
+            try:
+                service.refresh()
+            except BaseException as error:
+                errors.append(error)
+            finally:
+                leader_finished.set()
+
+        def run_follower():
+            try:
+                follower_result.extend(service.sessions_payload())
+            except BaseException as error:
+                errors.append(error)
+            finally:
+                follower_finished.set()
+
+        leader = threading.Thread(target=run_leader)
+        follower = threading.Thread(target=run_follower)
+        try:
+            leader.start()
+            self.assertTrue(read_started.wait(timeout=1))
+            follower.start()
+            self.assertTrue(follower_finished.wait(timeout=0.3))
+            self.assertEqual(follower_result, [])
+        finally:
+            release_read.set()
+            leader.join(timeout=1)
+            follower.join(timeout=1)
+            self.assertTrue(leader_finished.is_set())
+            self.assertTrue(follower_finished.is_set())
+            self.assertFalse(leader.is_alive())
+            self.assertFalse(follower.is_alive())
+            self.assertEqual(errors, [])
+
+    def test_source_and_follower_timeout_configuration_rejects_non_finite_or_non_positive_values(self):
+        invalid_values = [0, -1, float("inf"), float("nan")]
+        for parameter in ["source_poll_timeout_seconds", "concurrent_refresh_wait_timeout_seconds"]:
+            for value in invalid_values:
+                with self.subTest(parameter=parameter, value=value):
+                    with self.assertRaises(ValueError):
+                        MonitorService(
+                            [],
+                            SessionStore(),
+                            ActionExecutor(),
+                            **{parameter: value},
+                        )
+
+    def test_failed_poll_generation_gap_does_not_confirm_verified_running_restart(self):
+        third_started = threading.Event()
+        release_third = threading.Event()
+        third_finished = threading.Event()
+        wall_clock = FakeDateTimeClock(datetime(2026, 8, 4, 10, 0, tzinfo=timezone.utc))
+        monotonic_clock = FakeClock()
+        monotonic_clock.value = 100.0
+        terminal = SessionUpdate(
+            "process-24645",
+            "Claude Code CLI - generation-test",
+            ToolKind.CLAUDE_CODE,
+            SurfaceKind.TERMINAL,
+            SessionStatus.NEEDS_ACTION,
+            "terminal",
+            wall_clock.now(),
+            source="process",
+            process_id=24645,
+            view_ack_required=True,
+            status_source="claude-session",
+            observed_at=wall_clock.now(),
+        )
+        rolled_back_wall = wall_clock.now() - timedelta(hours=1)
+        running = replace(
+            terminal,
+            status=SessionStatus.RUNNING,
+            summary="running candidate",
+            updated_at=rolled_back_wall,
+            view_ack_required=False,
+            status_source="claude-session-verified",
+            observed_at=rolled_back_wall,
+        )
+
+        class GapSource:
+            volatile_source = "process"
+
+            def __init__(self):
+                self.calls = 0
+
+            def poll(self):
+                self.calls += 1
+                if self.calls == 1:
+                    return [terminal]
+                if self.calls == 3:
+                    third_started.set()
+                    release_third.wait()
+                    third_finished.set()
+                return [running]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = GapSource()
+            service = MonitorService(
+                [source],
+                SessionStore(stuck_after_seconds=60, audit_dir=Path(temp_dir) / "audit"),
+                ActionExecutor(),
+                preferences=MonitorPreferences(Path(temp_dir) / "preferences.json"),
+                clock=monotonic_clock.now,
+                now=wall_clock.now,
+                source_poll_timeout_seconds=0.05,
+            )
+
+            try:
+                first = service.refresh()[0]
+                monotonic_clock.advance(1)
+                wall_clock.value = rolled_back_wall
+                second = service.refresh()[0]
+                monotonic_clock.advance(1)
+                wall_clock.advance(1)
+                with mock.patch("builtins.print"):
+                    after_timeout = service.refresh()[0]
+                self.assertTrue(third_started.wait(timeout=0.2))
+                flight = service._source_poll_flights[id(source)]
+                release_third.set()
+                self.assertTrue(third_finished.wait(timeout=1))
+                self.assertTrue(flight.done.wait(timeout=1))
+                monotonic_clock.advance(1)
+                wall_clock.advance(1)
+                after_gap = service.refresh()[0]
+                monotonic_clock.advance(1)
+                wall_clock.advance(1)
+                after_consecutive = service.refresh()[0]
+
+                self.assertEqual(first.status, SessionStatus.NEEDS_ACTION)
+                self.assertEqual(second.status, SessionStatus.NEEDS_ACTION)
+                self.assertEqual(after_timeout.status, SessionStatus.NEEDS_ACTION)
+                self.assertEqual(after_gap.status, SessionStatus.NEEDS_ACTION)
+                self.assertEqual(after_consecutive.status, SessionStatus.RUNNING)
+                self.assertEqual(source.calls, 5)
+            finally:
+                release_third.set()
+
+    def test_service_stamps_only_identity_verified_claude_process_observations(self):
+        observed_at = datetime(2026, 8, 4, 10, 0, tzinfo=timezone.utc)
+        monotonic_clock = FakeClock()
+        monotonic_clock.value = 50.0
+        claude = SessionUpdate(
+            "process-24645",
+            "Claude Code CLI - metadata-test",
+            ToolKind.CLAUDE_CODE,
+            SurfaceKind.TERMINAL,
+            SessionStatus.RUNNING,
+            "running",
+            observed_at,
+            source="process",
+            process_id=24645,
+            status_source="claude-session-verified",
+            observed_at=observed_at,
+        )
+        qoder = SessionUpdate(
+            "qoder-task-1",
+            "Qoder Desktop - metadata-test",
+            ToolKind.UNKNOWN,
+            SurfaceKind.DESKTOP,
+            SessionStatus.RUNNING,
+            "running",
+            observed_at,
+            source="process",
+            process_id=51005,
+            status_source="qoder-log",
+            tool_display_name="Qoder",
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = MonitorService(
+                [VolatileProcessSource([[claude, qoder]])],
+                SessionStore(audit_dir=Path(temp_dir) / "audit"),
+                ActionExecutor(),
+                preferences=MonitorPreferences(Path(temp_dir) / "preferences.json"),
+                clock=monotonic_clock.now,
+                now=lambda: observed_at,
+            )
+
+            sessions = {session.session_id: session for session in service.refresh()}
+
+        stamped = sessions["process-24645"]
+        untouched = sessions["qoder-task-1"]
+        self.assertEqual(stamped.observation_sequence, 1)
+        self.assertEqual(stamped.observed_monotonic, 50.0)
+        self.assertFalse(stamped.observation_clock_adjusted)
+        self.assertEqual(stamped.observation_wall_at, observed_at)
+        self.assertIsNone(untouched.observation_sequence)
+        self.assertIsNone(untouched.observed_monotonic)
+        self.assertFalse(untouched.observation_clock_adjusted)
+        self.assertIsNone(untouched.observation_wall_at)
+
+    def test_service_detects_wall_clock_rollback_and_accepts_verified_prompt(self):
+        wall_clock = FakeDateTimeClock(datetime(2026, 8, 4, 10, 0, tzinfo=timezone.utc))
+        monotonic_clock = FakeClock()
+        monotonic_clock.value = 100.0
+        running = SessionUpdate(
+            "process-24645",
+            "Claude Code CLI - rollback-test",
+            ToolKind.CLAUDE_CODE,
+            SurfaceKind.TERMINAL,
+            SessionStatus.RUNNING,
+            "running",
+            wall_clock.now(),
+            source="process",
+            process_id=24645,
+            status_source="claude-session-verified",
+            observed_at=wall_clock.now(),
+        )
+        rolled_back_wall = wall_clock.now() - timedelta(hours=1)
+        prompt = replace(
+            running,
+            status=SessionStatus.IDLE,
+            summary="prompt after rollback",
+            updated_at=rolled_back_wall,
+            status_source="claude-session-prompt",
+            observed_at=rolled_back_wall,
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = MonitorService(
+                [VolatileProcessSource([[running], [prompt]])],
+                SessionStore(stuck_after_seconds=60, audit_dir=Path(temp_dir) / "audit"),
+                ActionExecutor(),
+                preferences=MonitorPreferences(Path(temp_dir) / "preferences.json"),
+                clock=monotonic_clock.now,
+                now=wall_clock.now,
+            )
+
+            first = service.refresh()[0]
+            monotonic_clock.advance(1)
+            wall_clock.value = rolled_back_wall
+            second = service.refresh()[0]
+
+        self.assertEqual(first.status, SessionStatus.RUNNING)
+        self.assertEqual(second.status, SessionStatus.NEEDS_ACTION)
+        self.assertEqual(second.observation_sequence, 2)
+        self.assertEqual(second.observed_monotonic, 101.0)
+        self.assertTrue(second.observation_clock_adjusted)
+        self.assertEqual(second.observation_wall_at, rolled_back_wall)
+
+    def test_service_uses_monotonic_age_for_verified_running_source_failure_and_recovery(self):
+        wall_clock = FakeDateTimeClock(datetime(2026, 8, 4, 10, 0, tzinfo=timezone.utc))
+        monotonic_clock = FakeClock()
+        monotonic_clock.value = 100.0
+        running = SessionUpdate(
+            "process-24645",
+            "Claude Code CLI - stuck-test",
+            ToolKind.CLAUDE_CODE,
+            SurfaceKind.TERMINAL,
+            SessionStatus.RUNNING,
+            "running",
+            wall_clock.now(),
+            source="process",
+            process_id=24645,
+            status_source="claude-session-verified",
+            observed_at=wall_clock.now(),
+        )
+        rolled_back_wall = wall_clock.now() - timedelta(hours=1)
+        recovered = replace(
+            running,
+            summary="recovered",
+            updated_at=rolled_back_wall,
+            observed_at=rolled_back_wall,
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = MonitorService(
+                [VolatileProcessSource([[running], None, [recovered]])],
+                SessionStore(stuck_after_seconds=60, audit_dir=Path(temp_dir) / "audit"),
+                ActionExecutor(),
+                preferences=MonitorPreferences(Path(temp_dir) / "preferences.json"),
+                clock=monotonic_clock.now,
+                now=wall_clock.now,
+            )
+
+            first = service.refresh()[0]
+            monotonic_clock.advance(60)
+            wall_clock.value = rolled_back_wall
+            during_failure = service.refresh()[0]
+            monotonic_clock.advance(1)
+            wall_clock.advance(1)
+            after_recovery = service.refresh()[0]
+
+        self.assertEqual(first.status, SessionStatus.RUNNING)
+        self.assertEqual(during_failure.status, SessionStatus.STUCK)
+        self.assertEqual(after_recovery.status, SessionStatus.RUNNING)
+        self.assertEqual(
+            service.store._verified_running_monotonic_by_session["process-24645"],
+            161.0,
+        )
+
+    def test_concurrent_refreshes_share_inflight_snapshot_then_next_refresh_advances(self):
+        first_started = threading.Event()
+        release_first = threading.Event()
+        second_call_attempted = threading.Event()
+        second_polled = threading.Event()
+        second_finished = threading.Event()
+        errors = []
+        now = datetime(2026, 7, 31, 5, 25, tzinfo=timezone.utc)
+        old = SessionUpdate(
+            "process-old",
+            "Old process",
+            ToolKind.CODEX,
+            SurfaceKind.TERMINAL,
+            SessionStatus.IDLE,
+            "old",
+            now,
+            source="process",
+            process_id=101,
+        )
+        new = replace(
+            old,
+            session_id="process-new",
+            title="New process",
+            summary="new",
+            updated_at=now + timedelta(seconds=1),
+            process_id=202,
+        )
+
+        class OutOfOrderProcessSource:
+            volatile_source = "process"
+
+            def __init__(self):
+                self._lock = threading.Lock()
+                self._calls = 0
+
+            def poll(self):
+                with self._lock:
+                    self._calls += 1
+                    call = self._calls
+                if call == 1:
+                    first_started.set()
+                    release_first.wait(timeout=2)
+                    return [old]
+                second_polled.set()
+                return [new]
+
+        source = OutOfOrderProcessSource()
+        store = SessionStore(stuck_after_seconds=300)
+        service = MonitorService([source], store, ActionExecutor())
+
+        def refresh(first=False):
+            if not first:
+                second_call_attempted.set()
+            try:
+                service.refresh()
+            except Exception as exc:
+                errors.append(exc)
+            finally:
+                if not first:
+                    second_finished.set()
+
+        first_thread = threading.Thread(target=refresh, kwargs={"first": True})
+        second_thread = threading.Thread(target=refresh)
+        first_thread.start()
+        self.assertTrue(first_started.wait(timeout=1))
+        second_thread.start()
+        self.assertTrue(second_call_attempted.wait(timeout=1))
+        second_entered_before_release = second_polled.wait(timeout=0.2)
+        second_completed_before_release = second_finished.wait(timeout=0.2)
+        release_first.set()
+        first_thread.join(timeout=2)
+        second_thread.join(timeout=2)
+
+        self.assertFalse(first_thread.is_alive())
+        self.assertFalse(second_thread.is_alive())
+        self.assertEqual(errors, [])
+        self.assertFalse(second_entered_before_release)
+        self.assertFalse(second_completed_before_release)
+        self.assertFalse(second_polled.is_set())
+        self.assertEqual(
+            [session.session_id for session in store.sessions(now=now + timedelta(seconds=2))],
+            ["process-old"],
+        )
+
+        service.refresh()
+
+        self.assertTrue(second_polled.is_set())
+        self.assertEqual(
+            [session.session_id for session in store.sessions(now=now + timedelta(seconds=2))],
+            ["process-new"],
+        )
+
+    def test_concurrent_refresh_failure_releases_waiter_and_next_refresh_recovers(self):
+        first_read_started = threading.Event()
+        release_first_read = threading.Event()
+
+        class FailingOncePreferences:
+            def __init__(self):
+                self._lock = threading.Lock()
+                self._failed = False
+
+            def is_hidden(self, _session_id):
+                with self._lock:
+                    should_fail = not self._failed
+                    if should_fail:
+                        self._failed = True
+                if should_fail:
+                    first_read_started.set()
+                    release_first_read.wait(timeout=2)
+                    raise ValueError("first refresh failed")
+                return False
+
+        service = MonitorService(
+            [DemoSource()],
+            SessionStore(),
+            ActionExecutor(),
+            preferences=FailingOncePreferences(),
+        )
+        errors = {}
+
+        def refresh(label):
+            try:
+                service.refresh()
+            except BaseException as error:
+                errors[label] = error
+
+        leader = threading.Thread(target=refresh, args=("leader",))
+        waiter = threading.Thread(target=refresh, args=("waiter",))
+        leader.start()
+        self.assertTrue(first_read_started.wait(timeout=1))
+        flight = service._refresh_flight
+        self.assertIsNotNone(flight)
+        waiter_started_waiting = threading.Event()
+        original_wait = flight.done.wait
+
+        def wait_for_flight(timeout=None):
+            waiter_started_waiting.set()
+            return original_wait(timeout)
+
+        with mock.patch.object(flight.done, "wait", side_effect=wait_for_flight):
+            waiter.start()
+            self.assertTrue(waiter_started_waiting.wait(timeout=1))
+            release_first_read.set()
+            leader.join(timeout=2)
+            waiter.join(timeout=2)
+
+        self.assertFalse(leader.is_alive())
+        self.assertFalse(waiter.is_alive())
+        self.assertIsInstance(errors["leader"], ValueError)
+        self.assertIsInstance(errors["waiter"], RuntimeError)
+        self.assertIsInstance(errors["waiter"].__cause__, ValueError)
+        self.assertEqual(len(service.refresh()), 3)
+
+    def test_recursive_refresh_from_notifier_fails_without_deadlock(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service_holder = {}
+            notifier = NotificationManager(sender=lambda _title, _message: service_holder["service"].refresh())
+            preferences = MonitorPreferences(Path(temp_dir) / "preferences.json")
+            preferences.set_notifications_enabled(True)
+            service = MonitorService(
+                [DemoSource()],
+                SessionStore(audit_dir=Path(temp_dir) / "audit"),
+                ActionExecutor(),
+                notifier=notifier,
+                preferences=preferences,
+            )
+            service_holder["service"] = service
+
+            with self.assertRaisesRegex(RuntimeError, "cannot be called recursively"):
+                service.refresh()
 
     def test_refresh_isolates_one_failed_source_and_keeps_other_sessions_visible(self):
         class BrokenSource:
@@ -1834,6 +2933,118 @@ class MonitorServiceTests(unittest.TestCase):
             self.assertEqual(payload[0]["original_title"], "Claude Code - checkout-flow")
             self.assertTrue(result.ok)
             self.assertEqual(focused, ["Claude Code - checkout-flow"])
+
+    def test_pid_reuse_does_not_inherit_hidden_or_alias_preferences(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            now = datetime(2026, 7, 31, 5, 25, tzinfo=timezone.utc)
+            old_started_at = now - timedelta(days=1)
+            new_started_at = now - timedelta(hours=1)
+            old = SessionUpdate(
+                session_id="process-24645",
+                title="Claude Code CLI - old-task",
+                tool=ToolKind.CLAUDE_CODE,
+                surface=SurfaceKind.TERMINAL,
+                status=SessionStatus.IDLE,
+                summary="old process",
+                updated_at=now,
+                source="process",
+                process_id=24645,
+                cwd="/Users/Gao/Documents/projects/old-task",
+                status_source="process",
+                process_started_at=old_started_at,
+            )
+            new = replace(
+                old,
+                title="Claude Code CLI - new-task",
+                summary="new process",
+                updated_at=now + timedelta(seconds=5),
+                cwd="/Users/Gao/Documents/projects/new-task",
+                process_started_at=new_started_at,
+            )
+            preferences = MonitorPreferences(Path(temp_dir) / "preferences.json")
+            store = SessionStore(audit_dir=Path(temp_dir) / "audit")
+            service = MonitorService([], store, ActionExecutor(), preferences=preferences)
+
+            store.apply_updates([old])
+            self.assertTrue(service.rename_session(old.session_id, "Old task alias").ok)
+            self.assertEqual(service.sessions_payload()[0]["title"], "Old task alias")
+            self.assertTrue(service.hide_session(old.session_id).ok)
+            self.assertEqual(service.sessions_payload(), [])
+
+            store.apply_updates([new])
+            payload = service.sessions_payload()
+
+            self.assertEqual([session["session_id"] for session in payload], [new.session_id])
+            self.assertEqual(payload[0]["title"], new.title)
+
+    def test_legacy_process_preferences_are_visible_during_first_identity_migration(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            now = datetime(2026, 7, 31, 5, 25, tzinfo=timezone.utc)
+            session = SessionUpdate(
+                session_id="process-24645",
+                title="Claude Code CLI - old-task",
+                tool=ToolKind.CLAUDE_CODE,
+                surface=SurfaceKind.TERMINAL,
+                status=SessionStatus.IDLE,
+                summary="old process",
+                updated_at=now,
+                source="process",
+                process_id=24645,
+                cwd="/Users/Gao/Documents/projects/old-task",
+                status_source="process",
+                process_started_at=now - timedelta(days=1),
+            )
+            preferences = MonitorPreferences(Path(temp_dir) / "preferences.json")
+            preferences.hide_session(session.session_id)
+            preferences.rename_session(session.session_id, "Legacy alias")
+            store = SessionStore(audit_dir=Path(temp_dir) / "audit")
+            store.apply_updates([session])
+            service = MonitorService([], store, ActionExecutor(), preferences=preferences)
+
+            hidden_payload = service.hidden_sessions_payload()
+
+            self.assertEqual([item["session_id"] for item in hidden_payload], [session.session_id])
+            self.assertEqual(hidden_payload[0]["title"], "Legacy alias")
+
+    def test_preference_identity_migration_write_failure_degrades_to_legacy_key(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            now = datetime(2026, 7, 31, 5, 25, tzinfo=timezone.utc)
+            session = SessionUpdate(
+                session_id="process-24645",
+                title="Claude Code CLI - old-task",
+                tool=ToolKind.CLAUDE_CODE,
+                surface=SurfaceKind.TERMINAL,
+                status=SessionStatus.IDLE,
+                summary="old process",
+                updated_at=now,
+                source="process",
+                process_id=24645,
+                cwd="/Users/Gao/Documents/projects/old-task",
+                status_source="process",
+                process_started_at=now - timedelta(days=1),
+            )
+            preferences = MonitorPreferences(Path(temp_dir) / "preferences.json")
+            preferences.hide_session(session.session_id)
+            preferences.rename_session(session.session_id, "Legacy alias")
+            store = SessionStore(audit_dir=Path(temp_dir) / "audit")
+            store.apply_updates([session])
+            service = MonitorService([], store, ActionExecutor(), preferences=preferences)
+
+            with mock.patch.object(preferences, "_write_payload", side_effect=OSError("read-only")):
+                hidden_during_failure = service.hidden_sessions_payload()
+
+            hidden_after_recovery = service.hidden_sessions_payload()
+
+            self.assertEqual(
+                [item["session_id"] for item in hidden_during_failure],
+                [session.session_id],
+            )
+            self.assertEqual(hidden_during_failure[0]["title"], "Legacy alias")
+            self.assertEqual(
+                [item["session_id"] for item in hidden_after_recovery],
+                [session.session_id],
+            )
+            self.assertEqual(hidden_after_recovery[0]["title"], "Legacy alias")
 
     def test_rename_and_reset_session_title(self):
         with tempfile.TemporaryDirectory() as temp_dir:

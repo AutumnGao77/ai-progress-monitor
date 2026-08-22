@@ -32,6 +32,23 @@ from ai_progress_monitor.web import (
 
 
 class WebLaunchTests(unittest.TestCase):
+    def test_main_persists_notification_state_next_to_preferences(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            preferences = MonitorPreferences(Path(temp_dir) / "preferences.json")
+            server = mock.Mock()
+            with (
+                mock.patch.object(web, "MonitorPreferences", return_value=preferences),
+                mock.patch.object(web, "NotificationManager") as notifier_type,
+                mock.patch.object(web, "build_sources", return_value=[]),
+                mock.patch.object(web, "create_server_with_port_fallback", return_value=(server, 8765)),
+                mock.patch.object(web, "generate_token", return_value="secret"),
+            ):
+                result = web.main(["--no-windows"])
+
+            self.assertEqual(result, 0)
+            notifier_type.assert_called_once_with(state_path=Path(temp_dir) / "notification-state.json")
+            server.serve_forever.assert_called_once_with()
+
     def test_build_launch_url_contains_token(self):
         self.assertEqual(
             build_launch_url("127.0.0.1", 8765, "secret"),
