@@ -1,5 +1,7 @@
 # AI Progress Monitor v0.2.1 使用说明
 
+> 这是 v0.2.1 的历史使用说明。当前稳定版是 [v0.3.1](https://github.com/AutumnGao77/ai-progress-monitor/releases/tag/v0.3.1)，请优先使用 [v0.3.1 使用说明](ai-progress-monitor-v0.3.1-user-guide.md)。
+
 AI Progress Monitor 是一个桌面小助手：把正在使用的 AI 工具状态收在桌面角落。它不会替你回答问题；当 AI 正在工作、需要你查看或暂时空闲时，树懒 Pet 会用角标和气泡告诉你，点一下就能回到对应窗口继续处理。
 
 ## 先选对下载包

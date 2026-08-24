@@ -12,15 +12,16 @@
 
 | 项目 | 内容 |
 |---|---|
-| 当前稳定版 | [v0.2.1](https://github.com/AutumnGao77/ai-progress-monitor/releases/tag/v0.2.1)，发布并由用户验收于 2026-07-20 |
-| macOS 用户包 | [下载 macOS 13+ Apple Silicon 版本](https://github.com/AutumnGao77/ai-progress-monitor/releases/download/v0.2.1/AI-Progress-Monitor-v0.2.1-macOS-arm64.zip)；需要 Python 3.9+ |
-| 新手使用说明 | [查看 v0.2.1 macOS 使用说明](docs/ai-progress-monitor-v0.2.1-user-guide.md) |
-| 便携/集成包 | [下载 portable 版本](https://github.com/AutumnGao77/ai-progress-monitor/releases/download/v0.2.1/ai-progress-monitor-v0.2.1-portable.zip)；用于 Web/CLI 集成、诊断和 Windows 轻量预览 |
-| v0.3.0 撤回候选 | GitHub Release 当前为 Draft；该候选在最终验收中确认存在运行时阻断缺陷，旧附件仅保留为历史证据，不得发布或作为用户下载包。修复后的 v0.3.1 仍待准备；详见 `docs/qa/2026-07-30-v0.3.0-release-packaging-validation.md` |
+| 当前稳定版 | [v0.3.1](https://github.com/AutumnGao77/ai-progress-monitor/releases/tag/v0.3.1)，2026-08-24 发布并完成最终包人工验收与 GitHub 回下载校验 |
+| macOS 用户包 | [下载 macOS 13+ Apple Silicon 版本](https://github.com/AutumnGao77/ai-progress-monitor/releases/download/v0.3.1/AI-Progress-Monitor-v0.3.1-macOS-arm64.zip)；需要 Python 3.9+ |
+| 新手使用说明 | [查看 v0.3.1 macOS 使用说明](docs/ai-progress-monitor-v0.3.1-user-guide.md) |
+| 便携/集成包 | [下载 portable 版本](https://github.com/AutumnGao77/ai-progress-monitor/releases/download/v0.3.1/ai-progress-monitor-v0.3.1-portable.zip)；用于 Web/CLI 集成、诊断和 Windows 轻量预览 |
+| 发布验收记录 | [查看 v0.3.1 最终构建、哈希、回下载与人工验收证据](docs/qa/2026-08-24-v0.3.1-release-packaging-validation.md) |
+| v0.3.0 撤回候选 | GitHub Release 保持 Draft；该候选在最终验收中确认存在运行时阻断缺陷，旧附件仅保留为历史证据，不得发布或作为用户下载包。替代补丁 v0.3.1 已正式发布；详见 `docs/qa/2026-07-30-v0.3.0-release-packaging-validation.md` |
 
 ## 当前能力
 
-> 以下能力描述当前 `main` 的开发能力。公开稳定包 v0.2.1 的用户可见范围以其 Release 与 v0.2.1 使用说明为准；v0.3.0 候选已经撤回，v0.3.1 替代版本仍在准备中。
+> 以下能力描述当前 `main` 与公开稳定版 v0.3.1 的用户可见范围；安装和操作以 v0.3.1 Release 与使用说明为准。v0.3.0 候选已经撤回，不得下载或重新发布。
 
 | 能力 | 状态 |
 |---|---|

@@ -2,13 +2,13 @@
 
 结论：每次交付前必须先证明核心逻辑、事件接入、原生悬浮入口、进程探测边界、Pet 左键/右键边界和隐私减负主路径都可用。
 
-Pet 外观主题切换的执行 PRD 是 `docs/prd/2026-07-11-pet-appearance-theme-switching-prd.md`；系统通知开关的执行 PRD 是 `docs/prd/2026-07-14-notification-preference-toggle-prd.md`；新增 AI 工具监控的执行 PRD 是 `docs/prd/2026-07-14-ai-tool-monitoring-expansion-prd.md`；ChatGPT 迁移与多工具回归记录是 `docs/qa/2026-07-17-chatgpt-and-multi-tool-regression-test-cases.md`；v0.2.1 历史双包记录是 `docs/qa/2026-07-17-v0.2.1-release-packaging-validation.md`；v0.3.0 撤回候选、校验和、回下载、工具驱动实机证据和撤回原因记录在 `docs/qa/2026-07-30-v0.3.0-release-packaging-validation.md`。发布前需确认 PRD、README、QA 报告和本清单中的菜单、资源、偏好、API、App 验收描述一致。
+Pet 外观主题切换的执行 PRD 是 `docs/prd/2026-07-11-pet-appearance-theme-switching-prd.md`；系统通知开关的执行 PRD 是 `docs/prd/2026-07-14-notification-preference-toggle-prd.md`；新增 AI 工具监控的执行 PRD 是 `docs/prd/2026-07-14-ai-tool-monitoring-expansion-prd.md`；ChatGPT 迁移与多工具回归记录是 `docs/qa/2026-07-17-chatgpt-and-multi-tool-regression-test-cases.md`；v0.2.1 历史双包记录是 `docs/qa/2026-07-17-v0.2.1-release-packaging-validation.md`；v0.3.0 撤回候选、校验和、回下载、工具驱动实机证据和撤回原因记录在 `docs/qa/2026-07-30-v0.3.0-release-packaging-validation.md`；v0.3.1 最终构建、GitHub 回下载、人工验收和发布证据记录在 `docs/qa/2026-08-24-v0.3.1-release-packaging-validation.md`。发布前需确认 PRD、README、QA 报告和本清单中的菜单、资源、偏好、API、App 验收描述一致。
 
 ## v0.3.0 撤回候选状态
 
 | 项目 | 历史要求 | 当前状态 |
 |---|---|---|
-| Release | 标题使用与历史版本一致的 `v0.3.0`；发布前不得把候选状态写成已通过 | GitHub 技术状态为 Draft、非 Prerelease、不是 Latest；产品状态为已撤回，公开稳定版仍为 v0.2.1 |
+| Release | 标题使用与历史版本一致的 `v0.3.0`；发布前不得把候选状态写成已通过 | GitHub 技术状态为 Draft、非 Prerelease、不是 Latest；产品状态为已撤回，公开稳定版现为 v0.3.1 |
 | 源码基线 | PR #5 合并提交 `770d447` 与测试稳定性 PR #6 合并提交 `ed468b8`，再叠加版本、发布文档和 portable 解压态入口修复 | PR #7 已合并；最终 `main` 为 `ff667a3813d90cd701a016d6ae5a0f08612587a8` |
 | 附件 | `AI-Progress-Monitor-v0.3.0-macOS-arm64.zip`、`ai-progress-monitor-v0.3.0-portable.zip` | 保留在 Draft Release 作为历史证据；远端字节数与 SHA-256 正确，但附件不包含后续运行时修复且不得发布 |
 | 自动化门 | 本地完整测试、`scripts/validate_release.py`、PR CI 和合并后 `main` CI | 本地 517 项和发布校验通过；后续审计确认当时远端 workflow 漏掉 6 个模块、100 项测试，旧 CI 不能作为完整门禁 |
@@ -17,28 +17,32 @@ Pet 外观主题切换的执行 PRD 是 `docs/prd/2026-07-11-pet-appearance-them
 | GitHub 发布门 | annotated tag、附件、回下载哈希、用户验收和明确授权全部满足后才能发布 | 不得发布 v0.3.0，不得移动 tag、替换附件或复用旧 SHA-256 |
 | 权威证据 | `docs/qa/2026-07-30-v0.3.0-release-packaging-validation.md` | 已按撤回状态回填；后续发布证据必须属于 v0.3.1 |
 
-## v0.3.1 Draft PR 状态（截至 2026-08-22，未发布）
+## v0.3.1 当前发布基线
 
-| 项目 | 当前证据 | 状态 |
-|---|---|---|
-| 源码候选 | 分支 `codex/fix-runtime-state-and-notification-dedup` 已推送并创建 Draft PR #9；版本为 `0.3.1`，运行态、并发刷新、通知去重和 3 个 P2 修复均已进入该分支 | 尚未合并、打 Tag 或发布 |
-| 完整 CI 门 | 旧 PR run 在手工枚举测试模块的 workflow 下通过，但漏掉 6 个模块、100 项测试；本分支已改为直接执行 `scripts/validate_release.py`，与本地完整门禁共用同一入口；本地 630 项和统一发布校验已通过 | 必须在包含本次改动的新 PR CI 上复核，旧 run 不能放行 |
-| 构建防错门 | `build_release.py` 要求仓库根目录、完整 `--source-commit`、干净工作区、版本一致和 Tag 冲突检查；从指定 Git commit 导出仅含已跟踪文件且保留权限的隔离 TAR 快照完成校验和打包，二次校验后才安全替换 `dist/`；正式附件再用 `--require-tag` 校验 annotated tag 精确指向源码提交 | 17 条定向回归与本地完整门禁通过；仍须通过新 PR CI |
-| 早期 macOS 候选包 | `AI-Progress-Monitor-v0.3.1-macOS-arm64.zip` 曾独立解包并通过版本、arm64、macOS 13+、资源与 ad-hoc 验签 | 只对应 `9d280a0`；不包含后续 P2 和门禁修复，不得发布 |
-| 早期 portable 候选包 | `ai-progress-monitor-v0.3.1-portable.zip` 曾通过入口帮助、doctor、monitor command 与包内 E2E | 只对应 `9d280a0`；不包含后续 P2 和门禁修复，不得发布 |
-| 人工验收 | 用户已验证早期包和后续 Dev App 的 Zed / VS Code 状态、精准聚焦、通知关闭/恢复、去重、重启、隐藏与恢复 | 不能替代最终 Tag 对应附件的回下载验收；最终包尚未生成 |
-| 命令行锁定门 | 隔离偏好为开启时使用 `--no-notifications` 启动，实际状态为关闭且锁定；开启请求返回 `409 notifications_forced_disabled`，原偏好与未知字段未改写，文件权限为 `600` | 功能证据通过；最终 portable 包仍需复核 |
-| GitHub Release | 当前不存在 v0.3.1 Release 或 Tag；v0.3.0 Draft 不得复用 | 待合并、完整 CI、annotated tag、双包构建、Draft 回下载和最终人工验收后再申请发布授权 |
+| 项目 | 最终结果 |
+|---|---|
+| Release | [v0.3.1](https://github.com/AutumnGao77/ai-progress-monitor/releases/tag/v0.3.1)，2026-08-24 发布，非 Draft / Prerelease，当前为 Latest |
+| 源码基线 | PR #9 已合并；`main`、合并后成功 CI、annotated tag 和最终构建源码均为 `47d8fa7b814d1bc34b3bba3969da31578f9c2a71` |
+| Tag 固定点 | annotated tag `v0.3.1`；Tag 对象 `d3799ebd2befb4ce72a88109237265edf85560f3`，解析后指向上述源码提交，发布后不得移动 |
+| 自动化门 | 630 项完整测试、统一 `scripts/validate_release.py`、PR CI 和合并后 `main` Validate run 均通过 |
+| 正式构建门 | 在干净仓库中使用完整 `--source-commit` 和 `--require-tag`，从隔离 Git 快照生成最终 macOS、portable 和 `.pyz`；版本、Tag、源码提交和包边界一致 |
+| macOS 最终包 | `AI-Progress-Monitor-v0.3.1-macOS-arm64.zip`；arm64、最低 macOS 13、ad-hoc 签名、一个正式 App、README 和 LICENSE，独立解包与严格验签通过 |
+| portable 最终包 | `ai-progress-monitor-v0.3.1-portable.zip`；包含 `.pyz`、脚本、诊断和 Windows 预览入口，不含 macOS App；解包态入口和 E2E 通过 |
+| 通知功能 | 用户可在“系统通知 > 开启 / 关闭”间切换；关闭不影响 Pet 状态、角标、气泡或跳转；重新开启和正常重启不补发旧通知；每次进入待处理最多提醒一次 |
+| 人工验收 | 最终 macOS ZIP 完成启动、偏好保持、通知关闭/恢复/重启、Zed 与 VS Code 状态稳定、单次通知、精准聚焦、点击后空闲、隐藏与恢复验收 |
+| GitHub 回下载 | 两个 Draft 附件分别回下载；完整大小、ZIP 完整性、SHA-256 和逐字节比较均与已验收本地最终包一致 |
+| 发布授权 | 用户检查 Draft 标题、正文和附件后明确授权发布；发布后再次确认 Release 状态、Latest、正文和附件对象未变化 |
+| 权威证据 | `docs/qa/2026-08-24-v0.3.1-release-packaging-validation.md` |
 
-早期候选包 SHA-256（历史证据，不得用于最终发布）：
+最终发布包 SHA-256：
 
 | 文件 | SHA-256 |
 |---|---|
-| `AI-Progress-Monitor-v0.3.1-macOS-arm64.zip` | `5f5c5aea5a15e09f6f9a6514ab8a8cb72453448f17dbae3c8d88a16f60646f9a` |
-| `ai-progress-monitor-v0.3.1-portable.zip` | `f2efe5c69755137c5038e2cb2bf152efc8eb9614625259a1f1484ecb233c19c2` |
-| `ai-progress-monitor.pyz` | `7212855f579a893d5d38fa62b2bd486893008dd51f576fb5c4dbcfb292bf4ebd` |
+| `AI-Progress-Monitor-v0.3.1-macOS-arm64.zip` | `861a49c3dfda390761bd2f1377fd44497d053a7ffa39df8324062b6291101f98` |
+| `ai-progress-monitor-v0.3.1-portable.zip` | `4b2089bf051dd8d91b8b8729226bc4fd796690db21bd076b56bd2c5fec0f52d3` |
+| `ai-progress-monitor.pyz`（构建中间产物，不作为 GitHub Release 附件） | `1e8ed9676e608a6aa6d975ba3a12f6fcc4fa085cf91a1ebd7c469855765eb93d` |
 
-以上哈希只对应候选包源码提交 `9d280a02f5e4d644c87c6724f54ed35adc275ffa`。其后的 P2、完整 CI 和构建防错修复已改变最终源码与发布流程，因此旧包与本表哈希不得作为最终发布依据。进入公开发布前，必须从最终 annotated tag 对应提交重新构建双包、重新计算哈希、上传到新的 v0.3.1 Draft Release，并回下载后完成最终人工验收。
+早期 `9d280a0` 候选及其旧哈希只保留在历史验收记录中，不得与以上最终包混用。v0.3.0 仍是已撤回 Draft，不能因 v0.3.1 发布而移动其 Tag、替换附件或改变撤回结论。
 
 ## v0.2.1 历史发布基线
 

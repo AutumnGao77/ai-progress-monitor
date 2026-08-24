@@ -22,20 +22,22 @@ macOS v0.2.1 基线已完成 PRD 主路径验收并正式发布：默认 Pet、�
 
 2026-08-22，发布前审计确认旧 GitHub workflow 通过手工枚举测试模块，漏跑 6 个模块、100 项测试；同时旧构建脚本没有校验干净工作区、完整源码提交、版本一致性和 Tag 指向。本轮将 CI 收口到统一的 `scripts/validate_release.py`，并为构建增加显式完整提交和 annotated tag 门禁。该修复只提高发布可信度，不补发、不移动或复用 v0.3.0 Tag 和附件；必须在新 PR CI 通过后，才能进入 v0.3.1 最终合并与候选包阶段。
 
-ChatGPT 与多工具功能回归范围、445 项自动化结果和最小人工验收结论以 `docs/qa/2026-07-17-chatgpt-and-multi-tool-regression-test-cases.md` 为准；v0.2.1 最终双包、SHA-256 和发布后人工验收以 `docs/qa/2026-07-17-v0.2.1-release-packaging-validation.md` 为准；v0.3.0 历史候选构建、SHA-256、回下载结果和撤回结论记录在 `docs/qa/2026-07-30-v0.3.0-release-packaging-validation.md`。下文较早章节保留历史测试名、测试数和产物名时，不代表当前用户界面、发布资格或发布结构仍采用旧版本。
+2026-08-24，PR #9 已合并，合并后完整 Validate CI 在 `47d8fa7b814d1bc34b3bba3969da31578f9c2a71` 上通过；同一提交创建 annotated `v0.3.1` Tag 并使用 `--require-tag` 生成最终双包。用户先验收本地最终带标签 ZIP，再检查 GitHub Draft；两个 GitHub 附件回下载后通过完整大小、ZIP 完整性、SHA-256 和逐字节比较。用户明确授权后，v0.3.1 已正式发布并成为 Latest。
+
+ChatGPT 与多工具功能回归范围、445 项自动化结果和最小人工验收结论以 `docs/qa/2026-07-17-chatgpt-and-multi-tool-regression-test-cases.md` 为准；v0.2.1 最终双包、SHA-256 和发布后人工验收以 `docs/qa/2026-07-17-v0.2.1-release-packaging-validation.md` 为准；v0.3.0 历史候选构建、SHA-256、回下载结果和撤回结论记录在 `docs/qa/2026-07-30-v0.3.0-release-packaging-validation.md`；v0.3.1 最终发布证据记录在 `docs/qa/2026-08-24-v0.3.1-release-packaging-validation.md`。下文较早章节保留历史测试名、测试数和产物名时，不代表当前用户界面、发布资格或发布结构仍采用旧版本。
 
 菜单栏头像图标中的 `Show Monitor`、外接屏跨屏拖动、气泡点击聚焦、状态稳定性已完成自动化覆盖和本地手动测试。历史上曾执行旧版 `python3 scripts/build_release.py` 生成 v0.3.0 候选包，但最终用户验收未通过；2026-08-06 又从精确源码提交构建 `v0.3.1` 早期本地双包候选并完成独立解包验收。该旧候选包不包含 Draft 审查后的 P2 与发布门禁修复，不能沿用为最终发布包。
 
 | 项目 | 结论 |
 |---|---|
-| 当前公开基线 | v0.2.1；v0.3.0 annotated tag 固定指向 `ff667a38`，但对应 Release 为 Draft 且产品状态已撤回，不是稳定版 |
-| 后续修复候选 | `codex/fix-runtime-state-and-notification-dedup` 已推送并创建 Draft PR #9；原候选包源码提交为 `9d280a02f5e4d644c87c6724f54ed35adc275ffa`，Draft 审查后又修复 3 个 P2，并补完整 CI 和构建来源门禁；尚未合并、打 Tag 或发布 |
-| 自动化测试 | v0.2.1 发布基线 445 项均通过；v0.3.0 portable 阻断修复后独立取得 `517 tests OK`；v0.3.1 当前 Draft 源码于 2026-08-22 完成 `630 tests OK` 和 `release-validation-ok`，远端新 CI 待执行 |
+| 当前公开基线 | v0.3.1；2026-08-24 正式发布并成为 Latest。v0.3.0 annotated tag 固定指向 `ff667a38`，对应 Release 保持 Draft 且产品状态已撤回 |
+| v0.3.1 发布源码 | PR #9 已合并；最终源码、合并后 CI、annotated tag 和带标签构建均绑定 `47d8fa7b814d1bc34b3bba3969da31578f9c2a71` |
+| 自动化测试 | v0.2.1 发布基线 445 项均通过；v0.3.0 portable 阻断修复后独立取得 `517 tests OK`；v0.3.1 完成 `630 tests OK`、`release-validation-ok`、PR CI 和合并后完整 Validate CI |
 | Swift 编译 | 通过 |
-| 发布包构建 | v0.3.0 撤回候选双包只保留历史记录；v0.3.1 早期本地候选双包与 `.pyz` 已从精确提交独立构建并记录 SHA-256，但最终包必须重建 |
+| 发布包构建 | v0.3.0 撤回候选双包只保留历史记录；v0.3.1 已从最终 annotated tag 提交重建 macOS、portable 与 `.pyz`，双包完成 GitHub 回下载和逐字节校验 |
 | 本地校验 | 通过，包含 release 校验、JS 语法、敏感信息扫描、源码 E2E、portable 包内 E2E、版本、架构、签名、包卫生和 `--no-notifications` 隔离锁定态 |
-| 真实运行 | macOS 开发态 App 已多轮真实测试；v0.3.0 历史候选与 GitHub 回下载 App、v0.3.1 早期本地候选 App 均完成对应范围的工具或人工检查，但 v0.3.0 最终人工验收未通过，v0.3.1 最终附件尚未生成 |
-| 完整目标状态 | v0.3.1 尚未完成；必须依次通过完整 PR CI、合并后 CI、annotated tag、最终双包构建、Draft 回下载、确切附件人工验收和明确发布授权 |
+| 真实运行 | v0.3.0 最终人工验收未通过；v0.3.1 最终带标签 macOS ZIP 已完成通知、状态稳定、Zed / VS Code 精准聚焦、重启和隐藏/恢复人工验收 |
+| 完整目标状态 | v0.3.1 的完整 PR CI、合并后 CI、annotated tag、最终双包、Draft 回下载、确切附件人工验收和明确发布授权均已完成 |
 | 外观状态 | 三态 Pet 图片、APP 头像、透明背景和发布包已完成；后续换图优先走 `pet_assets` 配置 |
 
 ## 验收范围
@@ -357,7 +359,7 @@ ChatGPT 与多工具功能回归范围、445 项自动化结果和最小人工�
 | 测试数据清理 | 受控会话先切为空闲，再删除唯一临时 JSON 并重启 Dev App；受保护接口确认测试会话不存在，用户确认气泡消失且通知仍为 2 条、没有新增第 3 条 | 程序核对 + 用户确认通过 |
 | 最终自动化门禁 | 通知、服务、Store、Web 启动与文档定向模块在正常本机权限下为 219/219；完整 discovery 共 608 项，随最终 `validate_release.py` 全部通过；编译、App/Event/E2E/Bridge/Doctor 帮助、JavaScript、通知参数和敏感信息扫描均为 `[OK]`，最终输出 `release-validation-ok` | 通过 |
 | Draft P2 修复自动化门禁 | 新增 3 条回归后完整 discovery 共 611 项；定向模块和 `validate_release.py` 在正常本机权限下全部通过 | 通过后才可作为当前 Draft 源码证据；包级仍须重建 |
-| 发布门禁审计 | 2026-08-22 新增 17 条 CI / 构建回归和 2 条发布文档契约；GitHub workflow 改为调用完整 `scripts/validate_release.py`。构建清除外部 Git/Python 控制环境，确认仓库根目录，绑定干净工作区的完整提交、版本和 annotated tag；从 Git TAR 隔离快照打包，二次校验后安全交换 `dist/`，双重交换失败仍保留旧包备份 | 定向 60 项、完整 discovery 630 项与本地 `release-validation-ok` 均通过；新 PR CI 待执行，最终包仍未构建 |
+| 发布门禁审计 | 2026-08-22 新增 17 条 CI / 构建回归和 2 条发布文档契约；GitHub workflow 改为调用完整 `scripts/validate_release.py`。构建清除外部 Git/Python 控制环境，确认仓库根目录，绑定干净工作区的完整提交、版本和 annotated tag；从 Git TAR 隔离快照打包，二次校验后安全交换 `dist/`，双重交换失败仍保留旧包备份 | 定向 60 项、完整 discovery 630 项与本地 `release-validation-ok` 通过；后续 PR CI、合并后 CI 和最终带标签构建均通过 |
 | v0.3.1 精确提交构建 | 从提交 `9d280a02f5e4d644c87c6724f54ed35adc275ffa` 的独立源码归档构建 macOS、portable 和 `.pyz`；构建目录与仓库现有 `dist/` 隔离 | 通过 |
 | macOS 候选包检查 | 独立解包后根目录仅含 App、README、LICENSE；版本为 `0.3.1`，架构 arm64，最低 macOS 13，App 图标与运行资源存在，严格 ad-hoc 验签通过；未包含 Swift 源码、脚本、候选素材或 `.DS_Store` | 通过；未做 Developer ID 签名或 Apple 公证 |
 | portable 候选包检查 | 独立解包后包含 `.pyz`、脚本、Windows 入口、README 和 LICENSE，不含 macOS App；入口帮助、doctor、monitor command 与解包态 E2E 通过 | 通过 |
@@ -369,6 +371,8 @@ ChatGPT 与多工具功能回归范围、445 项自动化结果和最小人工�
 | 命令行锁定态 | 隔离偏好原值为开启并含其他字段；portable 候选使用 `--no-notifications` 后接口返回实际关闭且锁定，开启请求为 `409 notifications_forced_disabled`，偏好字节未改写、JSON 合法、权限 `600` | 通过 |
 | 候选包 SHA-256 | macOS ZIP `5f5c5aea5a15e09f6f9a6514ab8a8cb72453448f17dbae3c8d88a16f60646f9a`；portable ZIP `f2efe5c69755137c5038e2cb2bf152efc8eb9614625259a1f1484ecb233c19c2`；`.pyz` `7212855f579a893d5d38fa62b2bd486893008dd51f576fb5c4dbcfb292bf4ebd` | 本地候选记录完成 |
 | 发布边界 | 截至 2026-08-22，分支已 push 并创建 Draft PR #9，尚未 merge、创建 v0.3.1 tag、创建 v0.3.1 GitHub Release、上传最终附件或回下载验证。旧候选哈希仅锚定源码提交 `9d280a02f5e4d644c87c6724f54ed35adc275ffa`；Draft P2 与发布门禁修复后必须从最终 annotated tag 提交重新构建并重算 | 未发布；公开稳定版仍为 v0.2.1 |
+| v0.3.1 最终带标签构建 | annotated tag `v0.3.1` 解析到 `47d8fa7b814d1bc34b3bba3969da31578f9c2a71`；使用 `--require-tag` 生成最终双包，macOS ZIP SHA-256 为 `861a49c3dfda390761bd2f1377fd44497d053a7ffa39df8324062b6291101f98`，portable ZIP 为 `4b2089bf051dd8d91b8b8729226bc4fd796690db21bd076b56bd2c5fec0f52d3` | 通过 |
+| v0.3.1 最终发布 | 两个 GitHub 附件回下载后与本地最终包逐字节一致；用户检查 Draft 并明确授权，2026-08-24 发布为 Latest | 通过；权威证据见 `docs/qa/2026-08-24-v0.3.1-release-packaging-validation.md` |
 
 ## 当前运行日志关键证据
 
