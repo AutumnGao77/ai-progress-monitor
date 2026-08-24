@@ -12,14 +12,16 @@ The current stable delivery focus is the local Web Companion plus the validated 
 
 | Item | Details |
 |---|---|
-| Stable release | [v0.2.1](https://github.com/AutumnGao77/ai-progress-monitor/releases/tag/v0.2.1), published and accepted by the user on 2026-07-20 |
-| macOS package | [Download for macOS 13+ on Apple silicon](https://github.com/AutumnGao77/ai-progress-monitor/releases/download/v0.2.1/AI-Progress-Monitor-v0.2.1-macOS-arm64.zip); Python 3.9+ required |
-| Portable package | [Download the portable package](https://github.com/AutumnGao77/ai-progress-monitor/releases/download/v0.2.1/ai-progress-monitor-v0.2.1-portable.zip) for Web/CLI integrations, diagnostics, and the Windows preview |
-| Withdrawn v0.3.0 candidate | The GitHub Release is currently a draft. Final acceptance confirmed release-blocking runtime defects, so the retained attachments are historical evidence only and must not be published or presented as supported downloads. The v0.3.1 replacement remains pending; see `docs/qa/2026-07-30-v0.3.0-release-packaging-validation.md` |
+| Stable release | [v0.3.1](https://github.com/AutumnGao77/ai-progress-monitor/releases/tag/v0.3.1), published on 2026-08-24 after exact-package manual acceptance and GitHub re-download verification |
+| macOS package | [Download for macOS 13+ on Apple silicon](https://github.com/AutumnGao77/ai-progress-monitor/releases/download/v0.3.1/AI-Progress-Monitor-v0.3.1-macOS-arm64.zip); Python 3.9+ required |
+| macOS guide | [Read the v0.3.1 macOS user guide](docs/ai-progress-monitor-v0.3.1-user-guide.md) |
+| Portable package | [Download the portable package](https://github.com/AutumnGao77/ai-progress-monitor/releases/download/v0.3.1/ai-progress-monitor-v0.3.1-portable.zip) for Web/CLI integrations, diagnostics, and the Windows preview |
+| Release evidence | [Review the final v0.3.1 build, hashes, re-download, and manual acceptance record](docs/qa/2026-08-24-v0.3.1-release-packaging-validation.md) |
+| Withdrawn v0.3.0 candidate | The GitHub Release remains a draft. Final acceptance confirmed release-blocking runtime defects, so the retained attachments are historical evidence only and must not be published or presented as supported downloads. The v0.3.1 replacement is now the public stable release; see `docs/qa/2026-07-30-v0.3.0-release-packaging-validation.md` |
 
 ## Features
 
-> The capabilities below describe the current `main` development line. For the public v0.2.1 package, use its Release and versioned guide as the authoritative user-visible scope. The v0.3.0 candidate is withdrawn, and its v0.3.1 replacement is still being prepared.
+> The capabilities below describe the current `main` line and the public v0.3.1 stable release. Use the v0.3.1 Release and versioned guide as the authoritative installation and usage scope. The v0.3.0 candidate is withdrawn and must not be downloaded or republished.
 
 | Feature | Status |
 |---|---|

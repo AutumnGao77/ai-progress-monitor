@@ -1,6 +1,4 @@
-# AI Progress Monitor v0.3.0 使用说明
-
-> 当前状态：v0.3.0 候选已经撤回，GitHub Release 保持 Draft。最终验收确认旧附件存在运行时阻断缺陷，因此不得下载使用或重新发布；本说明仅保留历史功能说明。修复后的 [v0.3.1](https://github.com/AutumnGao77/ai-progress-monitor/releases/tag/v0.3.1) 已正式发布并完成验收。
+# AI Progress Monitor v0.3.1 使用说明
 
 AI Progress Monitor 是一个桌面小助手：把正在使用的 AI 工具状态收在桌面角落。它不会替你回答问题；当 AI 正在工作、需要你查看或暂时空闲时，树懒 Pet 会用角标和气泡告诉你，点一下就能回到对应窗口继续处理。
 
@@ -8,10 +6,9 @@ AI Progress Monitor 是一个桌面小助手：把正在使用的 AI 工具状�
 
 | 你的情况 | 下载内容 | 下载链接 | 打开后有什么 |
 |---|---|---|---|
-| 普通用户使用 Apple 芯片 Mac（M1 / M2 / M3 / M4） | macOS 稳定版 v0.3.1 | [下载 v0.3.1](https://github.com/AutumnGao77/ai-progress-monitor/releases/tag/v0.3.1) | `AI Progress Monitor.app`、`README.txt`、`LICENSE` |
-| 维护者查阅 v0.3.0 历史证据 | 已撤回候选 | 只查看 `docs/qa/2026-07-30-v0.3.0-release-packaging-validation.md`，不下载或发布 Draft 附件 | 历史结构、哈希和撤回原因 |
+| 使用 Apple 芯片 Mac（M1 / M2 / M3 / M4），只想直接使用 | macOS 用户包 | [下载 macOS 版](https://github.com/AutumnGao77/ai-progress-monitor/releases/download/v0.3.1/AI-Progress-Monitor-v0.3.1-macOS-arm64.zip) | `AI Progress Monitor.app`、`README.txt`、`LICENSE` |
 
-当前公开稳定版是 v0.3.1，稳定交付平台为 macOS；v0.3.0 不会重新发布。portable 包面向 Web/CLI 集成、诊断和 Windows 轻量预览，不是普通 Mac 用户的首选。
+当前正式版稳定交付平台为 macOS。普通 Mac 用户请下载 macOS 用户包；portable 包面向 Web/CLI 集成、诊断和 Windows 轻量预览，不是普通 Mac 用户的首选。
 
 ## 使用前请确认
 
@@ -19,7 +16,7 @@ AI Progress Monitor 是一个桌面小助手：把正在使用的 AI 工具状�
 |---|---|
 | 已稳定验收的平台 | macOS 13 或更高版本，且为 Apple 芯片 Mac |
 | 运行环境 | 需要 Python 3.9 或更高版本 |
-| 支持范围 | 当前正式版仅支持 macOS；Windows 原生入口仍是轻量预览 |
+| 支持范围 | macOS 原生悬浮 App 已稳定验收；Windows 原生入口仍是轻量预览 |
 | AI 工具 | 可识别 ChatGPT 桌面端、Claude Code、Codex CLI、Qoder / Qoder CN、WorkBuddy 等已配置工具；不同工具的状态精度会有差异 |
 | 隐私 | 监控在本机完成；Pet 默认不显示你的提示词或回答正文 |
 
@@ -31,7 +28,7 @@ AI Progress Monitor 是一个桌面小助手：把正在使用的 AI 工具状�
 4. 像平时一样使用 ChatGPT、Claude Code、Codex 或其他已支持工具。
 5. 看到 Pet 右上角出现数字时，左键点击 Pet 查看气泡；再点击某条气泡，App 会尝试带你回到对应的 AI 工具窗口。
 
-首次打开时，macOS 可能提示无法验证开发者。这是因为 v0.3.0 使用本地 ad-hoc 签名，尚未经过 Apple 公证。请右键点击 App 选择“打开”，或到“系统设置 → 隐私与安全性”中允许打开；不需要关闭整个系统的安全保护。
+首次打开时，macOS 可能提示无法验证开发者。这是因为 v0.3.1 使用本地 ad-hoc 签名，尚未经过 Apple 公证。请右键点击 App 选择“打开”，或到“系统设置 → 隐私与安全性”中允许打开；不需要关闭整个系统的安全保护。
 
 ## 你会看到什么
 
@@ -69,7 +66,9 @@ Pet 平时安静待在桌面角落，不会弹出一个占满屏幕的控制面�
 | 点击气泡回到原窗口 | 继续工作 |
 | 会话监测与状态记录 | 继续运行 |
 
-系统通知默认开启。偏好保存在本机，升级旧版本时如果没有该字段，也会保持默认开启。高级用户使用 `--no-notifications` 启动时，本次运行会强制关闭通知，菜单显示“关闭”已选中且两个选项均不可修改，但不会覆盖已保存的用户偏好。
+系统通知默认开启，偏好保存在本机。关闭通知后，已经发生的待处理状态不会在重新开启时补发；一个会话持续保持待处理时也不会周期性重复提醒，只有它离开后再次进入新的待处理状态，才可能按冷却规则产生新通知。
+
+高级用户使用 `--no-notifications` 启动时，本次运行会强制关闭通知，菜单显示“关闭”已选中且两个选项均不可修改，但不会覆盖已经保存的用户偏好。
 
 ## 它适合做什么
 
@@ -85,11 +84,11 @@ Pet 平时安静待在桌面角落，不会弹出一个占满屏幕的控制面�
 |---|---|
 | Pet 不是聊天窗口 | 不提供直接回复、批准命令或阅读长回答的入口；请点击气泡回到原工具处理 |
 | 打开前的旧历史不会全部出现 | App 从启动后开始监控，避免一打开就堆满旧任务；但仍在运行的 CLI 或桌面 App 可能显示为空闲入口 |
-| 状态不是每个工具都同样精确 | ChatGPT 桌面端和 Claude Code 可识别更多会话信号；Codex、Qoder、WorkBuddy 等 CLI 有时只能根据进程活动做保守判断 |
+| 状态不是每个工具都同样精确 | ChatGPT 桌面端和 Claude Code 可识别更多会话信号；其他已支持工具有时只能根据进程活动做保守判断 |
 | 窗口跳转可能受系统权限影响 | 有辅助功能权限时定位更准确；没有权限时会尽量激活对应 App。若失败，手动切回原窗口即可 |
 | 已查看的桌面对话不会永久保留 | 转为空闲后会保留约 15 分钟，随后从列表移出；对应桌面 App 仍开着时，会留下一个空闲入口 |
-| 当前不支持 Intel Mac | macOS 用户包只面向 Apple Silicon；Intel Mac 不在 v0.3.0 的候选验证范围内 |
+| 当前不支持 Intel Mac | macOS 用户包只面向 Apple Silicon；Intel Mac 不在 v0.3.1 的已验收范围内 |
 
 ## 获取最新版与反馈
 
-本说明对应已经撤回的 v0.3.0 历史候选，不代表可用或受支持的公开版本。公开最新版请查看 [v0.3.1 Release](https://github.com/AutumnGao77/ai-progress-monitor/releases/tag/v0.3.1) 和 [v0.3.1 使用说明](ai-progress-monitor-v0.3.1-user-guide.md)，不得使用旧 Draft 附件替代。下载、启动或窗口跳转遇到问题时，可在该项目的 GitHub Issues 中反馈，并附上你的系统版本、使用的 AI 工具和复现步骤；请不要提交对话正文、密钥或其他敏感内容。
+本说明对应 [v0.3.1 Release](https://github.com/AutumnGao77/ai-progress-monitor/releases/tag/v0.3.1)。下载、启动、通知或窗口跳转遇到问题时，可在该项目的 GitHub Issues 中反馈，并附上你的系统版本、使用的 AI 工具和复现步骤；请不要提交对话正文、密钥或其他敏感内容。

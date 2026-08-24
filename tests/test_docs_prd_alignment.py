@@ -262,7 +262,7 @@ class DocsPrdAlignmentTests(unittest.TestCase):
         self.assertIn("Do not disable Gatekeeper globally", current_docs)
         self.assertNotIn("dist/ai-progress-monitor-release.zip", current_docs)
 
-    def test_current_release_docs_mark_v030_withdrawn_and_v021_stable(self):
+    def test_current_release_docs_mark_v030_withdrawn_and_v031_stable(self):
         agents = (ROOT / "AGENTS.md").read_text()
         readme = (ROOT / "README.md").read_text()
         readme_en = (ROOT / "README.en.md").read_text()
@@ -273,19 +273,34 @@ class DocsPrdAlignmentTests(unittest.TestCase):
         release_qa = (
             ROOT / "docs" / "qa" / "2026-07-30-v0.3.0-release-packaging-validation.md"
         ).read_text()
+        release_v031_qa = (
+            ROOT / "docs" / "qa" / "2026-08-24-v0.3.1-release-packaging-validation.md"
+        ).read_text()
+        user_guide = (
+            ROOT / "docs" / "ai-progress-monitor-v0.3.1-user-guide.md"
+        ).read_text()
         promo = (ROOT / "docs" / "promo" / "index.html").read_text()
 
-        self.assertIn("current public release baseline is `v0.2.1`", agents)
-        self.assertIn("| 当前稳定版 | [v0.2.1]", readme)
-        self.assertIn("| Stable release | [v0.2.1]", readme_en)
+        self.assertIn("current public release baseline is `v0.3.1`", agents)
+        self.assertIn("| 当前稳定版 | [v0.3.1]", readme)
+        self.assertIn("| Stable release | [v0.3.1]", readme_en)
+        self.assertIn("ai-progress-monitor-v0.3.1-user-guide.md", readme)
         self.assertIn("## v0.3.0 撤回候选状态", checklist)
-        self.assertIn("当前公开稳定版仍为 v0.2.1", notification_prd)
+        self.assertIn("## v0.3.1 当前发布基线", checklist)
+        self.assertIn("v0.3.1 已于 2026-08-24 正式发布", notification_prd)
         self.assertIn("产品判定 v0.3.0 候选撤回", release_qa)
-        self.assertIn("下载稳定版 v0.2.1", promo)
+        self.assertIn("下载稳定版 v0.3.1", promo)
+        self.assertIn("系统通知", user_guide)
+        self.assertIn(
+            "861a49c3dfda390761bd2f1377fd44497d053a7ffa39df8324062b6291101f98",
+            release_v031_qa,
+        )
         self.assertNotIn("## v0.3.0 发布结果", checklist)
         self.assertNotIn("releases/tag/v0.3.0\">下载", promo)
-        self.assertNotIn("右键可切换外观、关闭系统通知", promo)
-        self.assertIn("右键可切换外观、隐藏 Pet 或退出程序", promo)
+        self.assertIn(
+            "右键可切换外观、关闭或开启系统通知、隐藏 Pet 或退出程序",
+            promo,
+        )
 
     def test_active_release_docs_require_exact_source_commit_and_final_tag(self):
         paths = [
