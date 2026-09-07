@@ -2500,11 +2500,30 @@ def _read_chatgpt_session_update(
         if record.get("type") == "turn_context":
             cwd = _optional_str(payload.get("cwd")) or cwd
         payload_type = str(payload.get("type") or "").strip()
+        # New desktop logs wrap visible replies in completed items, and also
+        # expose them as assistant response messages instead of agent_message.
+        if payload_type == "item_completed" and record.get("type") == "event_msg":
+            item = payload.get("item")
+            if isinstance(item, dict) and item.get("type") == "AgentMessage":
+                payload_type = "agent_message"
+        elif (
+            record.get("type") == "response_item"
+            and payload_type == "message"
+            and payload.get("role") == "assistant"
+        ):
+            payload_type = "agent_message"
         if payload_type == "task_started":
             last_started_index = index
             latest_running_signal_index = index
+            last_needs_action_index = -1
+            pending_user_input_call_indices.clear()
         elif payload_type == "task_complete":
             last_completed_index = index
+        elif payload_type == "turn_aborted":
+            last_completed_index = index
+            latest_visible_reply_index = -1
+            last_needs_action_index = -1
+            pending_user_input_call_indices.clear()
         elif payload_type in {"approval_requested", "apply_patch_approval_requested", "exec_approval_requested", "user_input_requested"}:
             last_needs_action_index = index
         elif payload_type == "agent_message":
@@ -2584,7 +2603,7 @@ def _chatgpt_session_status(
     if last_started_index > last_completed_index or latest_running_signal_index > last_completed_index:
         return SessionStatus.RUNNING
     if last_completed_index >= 0:
-        if latest_visible_reply_index >= last_started_index:
+        if latest_visible_reply_index >= 0 and latest_visible_reply_index >= last_started_index:
             return SessionStatus.NEEDS_ACTION
         return SessionStatus.IDLE
     return None
@@ -2600,6 +2619,7 @@ def _chatgpt_session_requires_view_ack(
     return (
         status == SessionStatus.NEEDS_ACTION
         and last_completed_index >= 0
+        and latest_visible_reply_index >= 0
         and latest_visible_reply_index >= last_started_index
         and last_needs_action_index <= last_completed_index
     )
