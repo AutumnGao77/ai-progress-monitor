@@ -6,22 +6,23 @@
 
 结论：这是一个本地优先、低侵入的 AI 工作进度监控助手，用来聚合主流 AI 工具在终端/桌面端中的状态，并在需要用户处理时提醒。当前稳定交付重点是本地 Web Companion 和已验收的 macOS 原生悬浮窗口；Windows 保留轻量预览入口，尚未作为稳定交付版本验收。
 
-产品规则：打开这个 App 之后，才开始监控所有 AI 对话的进度并按状态反馈；打开前已经沉淀在历史文件里的桌面/JSON 会话不纳入本轮气泡列表。当前仍存活的 CLI 和桌面 App 属于现场，可显示为空闲入口或当前状态，后续活动继续更新；有具体会话时，具体会话优先于通用存活入口。桌面端具体对话被用户点击查看并转为空闲后，在气泡列表保留 15 分钟；15 分钟后自动移出，如果该桌面 App 仍存活，则保留 App 空闲入口。
+产品规则：打开这个 App 之后，才开始监控所有 AI 对话的进度并按状态反馈；打开前已经沉淀在历史文件里的桌面/JSON 会话不纳入本轮气泡列表；例外是当前 ChatGPT App 日志中仍未处理的审批，重启 Pet 后仍需显示为待处理。当前仍存活的 CLI 和桌面 App 属于现场，可显示为空闲入口或当前状态，后续活动继续更新；有具体会话时，具体会话优先于通用存活入口。桌面端具体对话被用户点击查看并转为空闲后，在气泡列表保留 15 分钟；15 分钟后自动移出，如果该桌面 App 仍存活，则保留 App 空闲入口。
 
 ## 当前发布
 
 | 项目 | 内容 |
 |---|---|
-| 当前稳定版 | [v0.3.1](https://github.com/AutumnGao77/ai-progress-monitor/releases/tag/v0.3.1)，2026-08-24 发布并完成最终包人工验收与 GitHub 回下载校验 |
-| macOS 用户包 | [下载 macOS 13+ Apple Silicon 版本](https://github.com/AutumnGao77/ai-progress-monitor/releases/download/v0.3.1/AI-Progress-Monitor-v0.3.1-macOS-arm64.zip)；需要 Python 3.9+ |
-| 新手使用说明 | [查看 v0.3.1 macOS 使用说明](docs/ai-progress-monitor-v0.3.1-user-guide.md) |
-| 便携/集成包 | [下载 portable 版本](https://github.com/AutumnGao77/ai-progress-monitor/releases/download/v0.3.1/ai-progress-monitor-v0.3.1-portable.zip)；用于 Web/CLI 集成、诊断和 Windows 轻量预览 |
-| 发布验收记录 | [查看 v0.3.1 最终构建、哈希、回下载与人工验收证据](docs/qa/2026-08-24-v0.3.1-release-packaging-validation.md) |
-| v0.3.0 撤回候选 | GitHub Release 保持 Draft；该候选在最终验收中确认存在运行时阻断缺陷，旧附件仅保留为历史证据，不得发布或作为用户下载包。替代补丁 v0.3.1 已正式发布；详见 `docs/qa/2026-07-30-v0.3.0-release-packaging-validation.md` |
+| 当前稳定版 | [查看最新正式发布及附件](https://github.com/AutumnGao77/ai-progress-monitor/releases/latest)；版本、源码提交及 SHA-256 以该发布页为准 |
+| macOS 用户包 | 在最新发布页下载 `AI-Progress-Monitor-v<版本>-macOS-arm64.zip`；支持 macOS 13+ Apple Silicon，需要 Python 3.9+ |
+| 新手使用说明 | [查看 macOS 基础使用说明](docs/ai-progress-monitor-v0.3.1-user-guide.md)；v0.3.2 沿用安装与操作方式 |
+| 便携/集成包 | 在最新发布页下载 `ai-progress-monitor-v<版本>-portable.zip`；用于 Web/CLI 集成、诊断和 Windows 轻量预览 |
+| v0.3.2 修复 | 兼容新版 ChatGPT 桌面会话事件；等待审批显示待处理，批准后恢复进行中，完成后提示查看；恢复未处理审批并处理日志轮转、大量追加与时钟回拨 |
+| 历史验收记录 | [v0.3.1 最终包验收记录](docs/qa/2026-08-24-v0.3.1-release-packaging-validation.md)；该记录仅对应 v0.3.1 |
+| v0.3.0 撤回候选 | GitHub Release 保持 Draft；旧附件仅保留为历史证据，不得发布或作为用户下载包；详见 `docs/qa/2026-07-30-v0.3.0-release-packaging-validation.md` |
 
 ## 当前能力
 
-> 以下能力描述当前 `main` 与公开稳定版 v0.3.1 的用户可见范围；安装和操作以 v0.3.1 Release 与使用说明为准。v0.3.0 候选已经撤回，不得下载或重新发布。
+> 以下能力描述当前源码；已发布版本的范围以最新正式发布页为准。v0.3.0 候选已经撤回，不得下载或重新发布。
 
 | 能力 | 状态 |
 |---|---|
@@ -37,7 +38,7 @@
 | Claude Code / ChatGPT / Codex CLI 状态模型 | 已支持 |
 | JSON 事件源 | 已支持，推荐作为可靠接入方式 |
 | 通用 AI 工具识别配置 | 已支持，桌面 App 和 CLI 通过工具定义表接入；配置项包含 `key`、`display_name`、内部工具类型、CLI 可执行名、桌面主程序路径、忽略进程 token、自动聊天目录 pattern。当前覆盖 Claude、Codex、Qoder、WorkBuddy、ChatGPT、Gemini、Perplexity、Poe、Cursor Agent、Qwen Code、Aider、OpenCode、Goose、Continue、Kiro 等主流工具的存活入口 |
-| ChatGPT 桌面端会话识别 | 已支持，兼容读取 `~/.codex/sessions` 中的会话事件，未完成任务显示为进行中；已查看后转空闲的具体桌面对话保留 15 分钟后移出；如果只有 ChatGPT App 存活且没有具体会话事件，则显示空闲入口 |
+| ChatGPT 桌面端会话识别 | 已支持，兼容读取 `~/.codex/sessions` 中的会话事件，明确等待审批时显示待处理，批准后恢复进行中；macOS 本地应用日志可补充会话文件未及时更新的审批状态；已查看后转空闲的具体桌面对话保留 15 分钟后移出；如果只有 ChatGPT App 存活且没有具体会话事件，则显示空闲入口 |
 | Claude/Codex/Qoder/WorkBuddy CLI 进程检测 | 已支持，直接启动已配置 AI CLI 时显示 process-only 气泡；WorkBuddy 同时识别 `workbuddy` 和 `codebuddy` CLI；Claude CLI 优先读取 Claude 会话状态，明确 idle 时不因短暂 CPU/MCP 活跃翻成进行中，读不到时回退到进程活跃度；Codex、Qoder、WorkBuddy 等其他 CLI 暂按进程活跃度保守判断 |
 | macOS / Windows 窗口扫描 | 已支持基础窗口标题扫描 |
 | 桌面窗口 ID / 进程信息跟踪 | 已支持，用于更可靠地回到原窗口 |

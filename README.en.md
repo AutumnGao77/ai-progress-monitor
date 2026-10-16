@@ -12,16 +12,17 @@ The current stable delivery focus is the local Web Companion plus the validated 
 
 | Item | Details |
 |---|---|
-| Stable release | [v0.3.1](https://github.com/AutumnGao77/ai-progress-monitor/releases/tag/v0.3.1), published on 2026-08-24 after exact-package manual acceptance and GitHub re-download verification |
-| macOS package | [Download for macOS 13+ on Apple silicon](https://github.com/AutumnGao77/ai-progress-monitor/releases/download/v0.3.1/AI-Progress-Monitor-v0.3.1-macOS-arm64.zip); Python 3.9+ required |
-| macOS guide | [Read the v0.3.1 macOS user guide](docs/ai-progress-monitor-v0.3.1-user-guide.md) |
-| Portable package | [Download the portable package](https://github.com/AutumnGao77/ai-progress-monitor/releases/download/v0.3.1/ai-progress-monitor-v0.3.1-portable.zip) for Web/CLI integrations, diagnostics, and the Windows preview |
-| Release evidence | [Review the final v0.3.1 build, hashes, re-download, and manual acceptance record](docs/qa/2026-08-24-v0.3.1-release-packaging-validation.md) |
-| Withdrawn v0.3.0 candidate | The GitHub Release remains a draft. Final acceptance confirmed release-blocking runtime defects, so the retained attachments are historical evidence only and must not be published or presented as supported downloads. The v0.3.1 replacement is now the public stable release; see `docs/qa/2026-07-30-v0.3.0-release-packaging-validation.md` |
+| Stable release | [Latest published release and downloads](https://github.com/AutumnGao77/ai-progress-monitor/releases/latest); see that page for the version, source commit, and SHA-256 hashes |
+| macOS package | Download `AI-Progress-Monitor-v<version>-macOS-arm64.zip` from the latest release; macOS 13+ on Apple silicon and Python 3.9+ required |
+| macOS guide | [macOS installation and usage guide](docs/ai-progress-monitor-v0.3.1-user-guide.md); v0.3.2 retains these installation and interaction steps |
+| Portable package | Download `ai-progress-monitor-v<version>-portable.zip` from the latest release for Web/CLI integrations, diagnostics, and the Windows preview |
+| v0.3.2 fixes | Supports newer ChatGPT Desktop events and approval lifecycles: needs-action while waiting, running after approval, and review on completion; recovers unanswered approvals after Pet restarts and handles rotated logs, large appends, and clock rollback |
+| Historical release evidence | [v0.3.1 package acceptance record](docs/qa/2026-08-24-v0.3.1-release-packaging-validation.md); this evidence applies only to v0.3.1 |
+| Withdrawn v0.3.0 candidate | Its GitHub Release remains a draft. Retained attachments are historical evidence only and must not be published or presented as supported downloads; see `docs/qa/2026-07-30-v0.3.0-release-packaging-validation.md` |
 
 ## Features
 
-> The capabilities below describe the current `main` line and the public v0.3.1 stable release. Use the v0.3.1 Release and versioned guide as the authoritative installation and usage scope. The v0.3.0 candidate is withdrawn and must not be downloaded or republished.
+> The capabilities below describe the current source. See the latest published release for the supported scope of that version. The v0.3.0 candidate is withdrawn and must not be downloaded or republished.
 
 | Feature | Status |
 |---|---|
@@ -33,7 +34,7 @@ The current stable delivery focus is the local Web Companion plus the validated 
 | Bubble list | Shows session/tool labels and status without exposing content |
 | Click to focus | Clicking a bubble returns to the matching AI tool window when possible; project editors share one project-window validation and exact-focus policy rather than a Zed-specific path |
 | Direct CLI detection | Detects configured AI CLI sessions conservatively, including Claude Code, Codex, Qoder, WorkBuddy, and `codebuddy` |
-| ChatGPT Desktop session detection | Reads explicitly identified ChatGPT/Codex Desktop-originated events from the compatible local `~/.codex/sessions` store; Codex CLI remains separate |
+| ChatGPT Desktop session detection | Reads explicitly identified ChatGPT/Codex Desktop-originated events from the compatible local `~/.codex/sessions` store; macOS app logs supplement explicit approval lifecycles and recover unanswered approvals after Pet restarts; Codex CLI remains separate |
 | Qoder desktop status detection | Reads local Qoder/Qoder CN logs and cache metadata; ordinary results can be acknowledged after viewing, while explicit quota, plan, or model-configuration blockers remain needs-action until the source state changes |
 | WorkBuddy desktop status detection | Reads explicit local WorkBuddy session database and runtime-log states, and falls back to a desktop idle entry when only the app is running |
 | JSON event source | Supported for reliable integrations |

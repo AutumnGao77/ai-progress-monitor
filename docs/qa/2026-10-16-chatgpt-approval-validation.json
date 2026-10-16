@@ -1,0 +1,81 @@
+{
+  "verified_date": "2026-10-16",
+  "display_timezone": "Asia/Shanghai",
+  "scope": "ChatGPT Desktop 审批状态的三个边界修复与本机开发版运行验证；仅记录该阶段，最终源码和包验证以正式发布页为准",
+  "branch": "codex/fix-chatgpt-session-events",
+  "base_commit": "bb9290ee199f43a6536ad8d4cb42af1c10158e3a",
+  "changes_committed": false,
+  "regression_cases": [
+    {
+      "case": "两次扫描之间日志增长超过旧读取上限",
+      "result": "通过；从上次位置顺序续读，超出单次预算时分批追平，不跳过响应"
+    },
+    {
+      "case": "等待审批时重启 Pet，审批记录位于旧日志前部或多份轮转日志中",
+      "result": "通过；回放当前应用保留的日志，未完成审批跨 Pet 启动时间保留"
+    },
+    {
+      "case": "会话文件不再更新，批准后任务继续执行",
+      "result": "通过；匹配响应后恢复进行中，明确完成后转为可查看结果；取消和应用退出分别清除状态"
+    }
+  ],
+  "automated_checks": {
+    "release_validation": "release-validation-ok",
+    "unit_tests": 669,
+    "compile": "passed",
+    "javascript_syntax": "passed",
+    "cli_help_checks": "passed",
+    "tracked_public_text_privacy": "passed",
+    "new_source_and_tests_privacy": "passed",
+    "diff_whitespace": "passed"
+  },
+  "runtime": {
+    "bundled_python_matches_worktree": true,
+    "signature_verified": true,
+    "native_instance_count": 1,
+    "backend_parent_verified": true,
+    "sessions_api_ok": true,
+    "paused": false,
+    "status_counts": {
+      "needs_action": 1
+    },
+    "source_hashes": {
+      "ai_progress_monitor/sources.py": "0ffbffaee81ae760aad6f4136760a7b05136b78474c0823e803f179b295f38bd",
+      "ai_progress_monitor/chatgpt_approvals.py": "6f87f348dc598c91bf6407ce6cf1ab984e2be18dbc1514f0e685094926fa42eb"
+    },
+    "observed_waiting": {
+      "timestamp": "2026-10-16 05:28:24 +0000",
+      "total": 1,
+      "needs_action": 1,
+      "running": 0,
+      "idle": 0
+    },
+    "observed_resumed": {
+      "timestamp": "2026-10-16 05:31:33 +0000",
+      "total": 1,
+      "needs_action": 0,
+      "running": 1,
+      "idle": 0
+    },
+    "chatgpt_source_timeout_observed": false,
+    "backend_exit_observed": false
+  },
+  "assessment": {
+    "ready_for_commit_review": true,
+    "ready_for_public_release": false,
+    "current_package_version": "0.3.1",
+    "public_packages_built_from_this_change": false,
+    "remaining_release_steps": [
+      "升级尚未使用的新版本号并固定源码提交",
+      "从该提交构建 macOS 和 portable 两份正式包并校验哈希",
+      "最终候选包验收及对应 annotated tag 校验",
+      "取得明确发布授权后执行推送和发布"
+    ]
+  },
+  "worktree_sha256": {
+    "src/ai_progress_monitor/sources.py": "0ffbffaee81ae760aad6f4136760a7b05136b78474c0823e803f179b295f38bd",
+    "src/ai_progress_monitor/chatgpt_approvals.py": "6f87f348dc598c91bf6407ce6cf1ab984e2be18dbc1514f0e685094926fa42eb",
+    "tests/test_chatgpt_approvals.py": "da09ab67951e0621f2e3e1d2214b27134ba078bb238e194fbfd7fa597300edec"
+  },
+  "record_type": "historical_development_checkpoint_before_clock_rollback_fix"
+}
