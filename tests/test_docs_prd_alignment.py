@@ -262,7 +262,7 @@ class DocsPrdAlignmentTests(unittest.TestCase):
         self.assertIn("Do not disable Gatekeeper globally", current_docs)
         self.assertNotIn("dist/ai-progress-monitor-release.zip", current_docs)
 
-    def test_current_release_docs_mark_v030_withdrawn_and_v031_stable(self):
+    def test_release_docs_use_latest_downloads_and_preserve_historical_evidence(self):
         agents = (ROOT / "AGENTS.md").read_text()
         readme = (ROOT / "README.md").read_text()
         readme_en = (ROOT / "README.en.md").read_text()
@@ -281,15 +281,19 @@ class DocsPrdAlignmentTests(unittest.TestCase):
         ).read_text()
         promo = (ROOT / "docs" / "promo" / "index.html").read_text()
 
-        self.assertIn("current public release baseline is `v0.3.1`", agents)
-        self.assertIn("| 当前稳定版 | [v0.3.1]", readme)
-        self.assertIn("| Stable release | [v0.3.1]", readme_en)
+        self.assertIn("`v0.3.1` historical release baseline", agents)
+        latest_release = "https://github.com/AutumnGao77/ai-progress-monitor/releases/latest"
+        for text in (readme, readme_en, promo):
+            self.assertIn(latest_release, text)
+            self.assertNotIn("releases/download/v0.3.0/", text)
+        self.assertIn("v0.3.0 撤回候选", readme)
+        self.assertIn("Withdrawn v0.3.0 candidate", readme_en)
         self.assertIn("ai-progress-monitor-v0.3.1-user-guide.md", readme)
         self.assertIn("## v0.3.0 撤回候选状态", checklist)
-        self.assertIn("## v0.3.1 当前发布基线", checklist)
+        self.assertIn("## v0.3.1 历史发布基线", checklist)
         self.assertIn("v0.3.1 已于 2026-08-24 正式发布", notification_prd)
         self.assertIn("产品判定 v0.3.0 候选撤回", release_qa)
-        self.assertIn("下载稳定版 v0.3.1", promo)
+        self.assertIn("下载最新稳定版", promo)
         self.assertIn("系统通知", user_guide)
         self.assertIn(
             "861a49c3dfda390761bd2f1377fd44497d053a7ffa39df8324062b6291101f98",

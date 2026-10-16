@@ -8,20 +8,20 @@ Pet 外观主题切换的执行 PRD 是 `docs/prd/2026-07-11-pet-appearance-them
 
 | 项目 | 历史要求 | 当前状态 |
 |---|---|---|
-| Release | 标题使用与历史版本一致的 `v0.3.0`；发布前不得把候选状态写成已通过 | GitHub 技术状态为 Draft、非 Prerelease、不是 Latest；产品状态为已撤回，公开稳定版现为 v0.3.1 |
+| Release | 标题使用与历史版本一致的 `v0.3.0`；发布前不得把候选状态写成已通过 | GitHub 技术状态为 Draft、非 Prerelease、不是 Latest；产品状态为已撤回，公开稳定版以 GitHub 最新正式发布页为准 |
 | 源码基线 | PR #5 合并提交 `770d447` 与测试稳定性 PR #6 合并提交 `ed468b8`，再叠加版本、发布文档和 portable 解压态入口修复 | PR #7 已合并；最终 `main` 为 `ff667a3813d90cd701a016d6ae5a0f08612587a8` |
 | 附件 | `AI-Progress-Monitor-v0.3.0-macOS-arm64.zip`、`ai-progress-monitor-v0.3.0-portable.zip` | 保留在 Draft Release 作为历史证据；远端字节数与 SHA-256 正确，但附件不包含后续运行时修复且不得发布 |
 | 自动化门 | 本地完整测试、`scripts/validate_release.py`、PR CI 和合并后 `main` CI | 本地 517 项和发布校验通过；后续审计确认当时远端 workflow 漏掉 6 个模块、100 项测试，旧 CI 不能作为完整门禁 |
 | 候选包验证门 | 双包结构、版本、架构、最低系统、签名、资源、SHA-256 和工具驱动核心交互 | 历史结构与工具驱动检查通过，但最终人工验收发现状态抖动和并发刷新阻塞，候选失去发布资格 |
 | 用户验收门 | 用户亲自测试最终候选包，并明确确认“验收通过，可以发布” | 未通过；v0.3.0 放行路径已关闭，不能通过补测旧附件恢复 |
 | GitHub 发布门 | annotated tag、附件、回下载哈希、用户验收和明确授权全部满足后才能发布 | 不得发布 v0.3.0，不得移动 tag、替换附件或复用旧 SHA-256 |
-| 权威证据 | `docs/qa/2026-07-30-v0.3.0-release-packaging-validation.md` | 已按撤回状态回填；后续发布证据必须属于 v0.3.1 |
+| 权威证据 | `docs/qa/2026-07-30-v0.3.0-release-packaging-validation.md` | 已按撤回状态回填；后续发布证据必须对应实际新版本 |
 
-## v0.3.1 当前发布基线
+## v0.3.1 历史发布基线
 
 | 项目 | 最终结果 |
 |---|---|
-| Release | [v0.3.1](https://github.com/AutumnGao77/ai-progress-monitor/releases/tag/v0.3.1)，2026-08-24 发布，非 Draft / Prerelease，当前为 Latest |
+| Release | [v0.3.1](https://github.com/AutumnGao77/ai-progress-monitor/releases/tag/v0.3.1)，2026-08-24 发布，非 Draft / Prerelease，发布时为 Latest；当前 Latest 以最新正式发布页为准 |
 | 源码基线 | PR #9 已合并；`main`、合并后成功 CI、annotated tag 和最终构建源码均为 `47d8fa7b814d1bc34b3bba3969da31578f9c2a71` |
 | Tag 固定点 | annotated tag `v0.3.1`；Tag 对象 `d3799ebd2befb4ce72a88109237265edf85560f3`，解析后指向上述源码提交，发布后不得移动 |
 | 自动化门 | 630 项完整测试、统一 `scripts/validate_release.py`、PR CI 和合并后 `main` Validate run 均通过 |

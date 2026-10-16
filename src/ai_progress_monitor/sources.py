@@ -14,6 +14,7 @@ from typing import Callable, Iterable, List, Optional, Tuple
 
 from .cleanup import cleanup_session_files
 from .classifier import classify_session_text
+from .chatgpt_approvals import DesktopApprovalLog
 from .models import ActionKind, SafeAction, SessionStatus, SessionUpdate, SurfaceKind, ToolKind
 from .terminal_bridge import clean_terminal_text
 from .window_focus import project_window_title_match_score
@@ -281,17 +282,26 @@ class ChatGPTSessionSource:
         running_stale_seconds: float = CODEX_SESSION_RUNNING_STALE_SECONDS,
         completed_visible_seconds: float = CODEX_SESSION_COMPLETED_VISIBLE_SECONDS,
         source_started_at: Optional[datetime] = None,
+        approval_log: Optional[DesktopApprovalLog] = None,
     ):
         self.directory = directory or DEFAULT_CHATGPT_SESSIONS_DIR
         self.now = now or (lambda: datetime.now(timezone.utc))
         self.running_stale_seconds = running_stale_seconds
         self.completed_visible_seconds = completed_visible_seconds
         self.source_started_at = source_started_at
+        # Explicit test/custom session directories must not read host app logs.
+        self.approval_log = approval_log or (DesktopApprovalLog() if directory is None else None)
 
-    def poll(self) -> List[SessionUpdate]:
-        if not self.directory.exists():
-            return []
+    def poll(self) -> Optional[List[SessionUpdate]]:
         current = self.now()
+        if self.approval_log is not None:
+            if self.approval_log.poll() is None:
+                # An incomplete replay must not flash a resolved historical prompt
+                # or remove the last complete snapshot from the service.
+                return None
+            signals = dict(self.approval_log.session_signals)
+        else:
+            signals = {}
         updates: List[SessionUpdate] = []
         paths_with_mtime = []
         for path in self.directory.glob("**/*.jsonl"):
@@ -300,17 +310,60 @@ class ChatGPTSessionSource:
             except OSError:
                 continue
         paths = [path for _mtime, path in sorted(paths_with_mtime, key=lambda item: item[0], reverse=True)]
-        for path in paths[:80]:
-            update = _read_chatgpt_session_update(
-                path,
-                current,
-                self.running_stale_seconds,
-                self.completed_visible_seconds,
-                self.source_started_at,
+        selected = paths[:80]
+        # Outstanding desktop approvals may refer to an old, no-longer-written rollout.
+        selected.extend(path for path in paths[80:] if _codex_session_id_from_path(path) in signals)
+        for path in selected:
+            evidence = _read_chatgpt_session_evidence(path)
+            if evidence is None:
+                continue
+            update = evidence.update
+            thread_id = update.session_id.removeprefix("chatgpt-session-")
+            signal = signals.pop(thread_id, None)
+            pending_approval = False
+            if signal is not None:
+                boundary_is_newer = evidence.boundary_at is not None and evidence.boundary_at > signal.updated_at
+                attention_is_newer = (
+                    update.status == SessionStatus.NEEDS_ACTION and not update.view_ack_required
+                    and evidence.status_at > signal.updated_at
+                )
+                log_pending = signal.status == SessionStatus.NEEDS_ACTION and not signal.view_ack_required
+                if boundary_is_newer or attention_is_newer or (
+                    not log_pending and evidence.status_at > signal.updated_at
+                ):
+                    self.approval_log.dismiss_through(thread_id, max(evidence.status_at, signal.updated_at))
+                else:
+                    update = replace(update, status=signal.status,
+                                     updated_at=max(update.updated_at, signal.updated_at),
+                                     view_ack_required=signal.view_ack_required)
+                    pending_approval = log_pending
+            if self._visible(update, current, pending_approval):
+                updates.append(update)
+        for thread_id, signal in signals.items():
+            update = SessionUpdate(
+                session_id=f"chatgpt-session-{thread_id}", title="ChatGPT Desktop",
+                tool=ToolKind.CHATGPT, surface=SurfaceKind.DESKTOP, status=signal.status,
+                summary="ChatGPT 桌面端会话状态", updated_at=signal.updated_at,
+                source="chatgpt-session", focus_app_name="ChatGPT",
+                view_ack_required=signal.view_ack_required, tool_display_name="ChatGPT",
             )
-            if update is not None:
+            pending_approval = signal.status == SessionStatus.NEEDS_ACTION and not signal.view_ack_required
+            if self._visible(update, current, pending_approval):
                 updates.append(update)
         return updates
+
+    def _visible(self, update: SessionUpdate, now: datetime, pending_approval: bool) -> bool:
+        # A still-unanswered live-app approval must survive a Pet restart.
+        if pending_approval:
+            return True
+        if self.source_started_at is not None and update.updated_at < self.source_started_at:
+            return False
+        age_seconds = (now - update.updated_at).total_seconds()
+        if update.status == SessionStatus.IDLE and age_seconds > self.completed_visible_seconds:
+            return False
+        if update.status == SessionStatus.RUNNING and age_seconds > self.running_stale_seconds:
+            return False
+        return True
 
 
 def _classify_window_rows(rows: Iterable[str]) -> Iterable[SessionUpdate]:
@@ -2465,13 +2518,14 @@ def _is_terminating_process(stat: str) -> bool:
     return text.startswith("Z") or "E" in text[1:]
 
 
-def _read_chatgpt_session_update(
-    path: Path,
-    now: datetime,
-    running_stale_seconds: float,
-    completed_visible_seconds: float,
-    source_started_at: Optional[datetime],
-) -> Optional[SessionUpdate]:
+@dataclass(frozen=True)
+class _ChatGPTSessionEvidence:
+    update: SessionUpdate
+    boundary_at: Optional[datetime]
+    status_at: datetime
+
+
+def _read_chatgpt_session_evidence(path: Path) -> Optional[_ChatGPTSessionEvidence]:
     records = _read_codex_jsonl_records(path)
     if not records:
         return None
@@ -2500,11 +2554,30 @@ def _read_chatgpt_session_update(
         if record.get("type") == "turn_context":
             cwd = _optional_str(payload.get("cwd")) or cwd
         payload_type = str(payload.get("type") or "").strip()
+        # New desktop logs wrap visible replies in completed items, and also
+        # expose them as assistant response messages instead of agent_message.
+        if payload_type == "item_completed" and record.get("type") == "event_msg":
+            item = payload.get("item")
+            if isinstance(item, dict) and item.get("type") == "AgentMessage":
+                payload_type = "agent_message"
+        elif (
+            record.get("type") == "response_item"
+            and payload_type == "message"
+            and payload.get("role") == "assistant"
+        ):
+            payload_type = "agent_message"
         if payload_type == "task_started":
             last_started_index = index
             latest_running_signal_index = index
+            last_needs_action_index = -1
+            pending_user_input_call_indices.clear()
         elif payload_type == "task_complete":
             last_completed_index = index
+        elif payload_type == "turn_aborted":
+            last_completed_index = index
+            latest_visible_reply_index = -1
+            last_needs_action_index = -1
+            pending_user_input_call_indices.clear()
         elif payload_type in {"approval_requested", "apply_patch_approval_requested", "exec_approval_requested", "user_input_requested"}:
             last_needs_action_index = index
         elif payload_type == "agent_message":
@@ -2522,7 +2595,10 @@ def _read_chatgpt_session_update(
                 pending_user_input_call_indices.pop(call_id, None)
         elif payload_type == "reasoning":
             latest_running_signal_index = index
-    fallback_at = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
+    try:
+        fallback_at = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
+    except OSError:
+        return None
     updated_at = latest_at or fallback_at
     if not user_thread or not chatgpt_desktop_thread:
         return None
@@ -2539,8 +2615,6 @@ def _read_chatgpt_session_update(
     )
     if status is None:
         return None
-    if source_started_at is not None and updated_at < source_started_at:
-        return None
     view_ack_required = _chatgpt_session_requires_view_ack(
         status,
         last_started_index,
@@ -2548,14 +2622,24 @@ def _read_chatgpt_session_update(
         effective_needs_action_index,
         latest_visible_reply_index,
     )
-    age_seconds = (now - updated_at).total_seconds()
-    if status == SessionStatus.IDLE and age_seconds > completed_visible_seconds:
-        return None
-    if status == SessionStatus.RUNNING and age_seconds > running_stale_seconds:
-        return None
+    boundary_index = max(last_started_index, last_completed_index)
+    boundary_at = (
+        _parse_codex_timestamp(records[boundary_index].get("timestamp"))
+        if boundary_index >= 0 else None
+    )
+    if status == SessionStatus.RUNNING:
+        status_index = max(last_started_index, latest_running_signal_index)
+    elif status == SessionStatus.NEEDS_ACTION and not view_ack_required:
+        status_index = effective_needs_action_index
+    else:
+        status_index = last_completed_index
+    status_at = (
+        _parse_codex_timestamp(records[status_index].get("timestamp"))
+        if status_index >= 0 else None
+    ) or updated_at
     folder = Path(cwd).name if cwd else session_id
     title = f"ChatGPT Desktop - {folder}" if folder else "ChatGPT Desktop"
-    return SessionUpdate(
+    update = SessionUpdate(
         session_id=f"chatgpt-session-{session_id}",
         title=title,
         tool=ToolKind.CHATGPT,
@@ -2571,6 +2655,8 @@ def _read_chatgpt_session_update(
         generated_conversation_path=_is_generated_conversation_path(ToolKind.CHATGPT, cwd),
     )
 
+    return _ChatGPTSessionEvidence(update, boundary_at, status_at)
+
 
 def _chatgpt_session_status(
     last_started_index: int,
@@ -2584,7 +2670,7 @@ def _chatgpt_session_status(
     if last_started_index > last_completed_index or latest_running_signal_index > last_completed_index:
         return SessionStatus.RUNNING
     if last_completed_index >= 0:
-        if latest_visible_reply_index >= last_started_index:
+        if latest_visible_reply_index >= 0 and latest_visible_reply_index >= last_started_index:
             return SessionStatus.NEEDS_ACTION
         return SessionStatus.IDLE
     return None
@@ -2600,6 +2686,7 @@ def _chatgpt_session_requires_view_ack(
     return (
         status == SessionStatus.NEEDS_ACTION
         and last_completed_index >= 0
+        and latest_visible_reply_index >= 0
         and latest_visible_reply_index >= last_started_index
         and last_needs_action_index <= last_completed_index
     )
