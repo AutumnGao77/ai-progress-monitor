@@ -4,6 +4,19 @@
 
 Pet 外观主题切换的执行 PRD 是 `docs/prd/2026-07-11-pet-appearance-theme-switching-prd.md`；系统通知开关的执行 PRD 是 `docs/prd/2026-07-14-notification-preference-toggle-prd.md`；新增 AI 工具监控的执行 PRD 是 `docs/prd/2026-07-14-ai-tool-monitoring-expansion-prd.md`；ChatGPT 迁移与多工具回归记录是 `docs/qa/2026-07-17-chatgpt-and-multi-tool-regression-test-cases.md`；v0.2.1 历史双包记录是 `docs/qa/2026-07-17-v0.2.1-release-packaging-validation.md`；v0.3.0 撤回候选、校验和、回下载、工具驱动实机证据和撤回原因记录在 `docs/qa/2026-07-30-v0.3.0-release-packaging-validation.md`；v0.3.1 最终构建、GitHub 回下载、人工验收和发布证据记录在 `docs/qa/2026-08-24-v0.3.1-release-packaging-validation.md`。发布前需确认 PRD、README、QA 报告和本清单中的菜单、资源、偏好、API、App 验收描述一致。
 
+## v0.3.3 发布基线
+
+v0.3.3 已于 2026-10-22 发布并设为 Latest。权威包级证据见 [v0.3.3 发布验证](qa/2026-10-22-v0.3.3-release-validation.md)；后续最新稳定版本以 [GitHub Release](https://github.com/AutumnGao77/ai-progress-monitor/releases/latest) 为准。
+
+| 项目 | 结果 |
+|---|---|
+| 发布源码与 tag | `46be694779fe1dbeb3ab5c17f68aa2a64aef4f23`；附注标签 `v0.3.3` 固定指向该提交 |
+| 自动检查 | 本地 781 项、PR CI、主分支 CI、干净源码快照带标签构建均通过 |
+| 包级验收 | macOS arm64 / macOS 13+，签名、版本、资源、源码字节一致；最终 App 原生交互和后端恢复通过 |
+| 授权识别 | 真实 Chrome 等待与允许恢复通过；拒绝和等待期间重启由回归及隔离模拟覆盖 |
+| 附件闭环 | macOS 和 portable 两个 ZIP 已公开；回下载大小、SHA-256、ZIP 完整性及字节比较一致 |
+| 已知边界 | ad-hoc 签名、未公证、需要 Python 3.9+；Windows 仍为预览；内部本地请求协议带版本校验 |
+
 ## v0.3.0 撤回候选状态
 
 | 项目 | 历史要求 | 当前状态 |

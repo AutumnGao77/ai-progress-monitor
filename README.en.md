@@ -16,7 +16,7 @@ The current stable delivery focus is the local Web Companion plus the validated 
 | macOS package | Download `AI-Progress-Monitor-v<version>-macOS-arm64.zip` from the latest release; macOS 13+ on Apple silicon and Python 3.9+ required |
 | macOS guide | [macOS installation and usage guide](docs/ai-progress-monitor-v0.3.1-user-guide.md); later versions retain these installation and interaction steps |
 | Portable package | Download `ai-progress-monitor-v<version>-portable.zip` from the latest release for Web/CLI integrations, diagnostics, and the Windows preview |
-| v0.3.3 source changes | Corrects ChatGPT app-permission waits, asynchronous questions, long-session replay, and completion states; supports Qoder CN 0.4.8 session storage; reduces process scanning overhead and preserves viewed results across temporary source gaps; see the [release notes](docs/releases/v0.3.3.md) |
+| v0.3.3 fixes | Corrects ChatGPT app-permission waits, asynchronous questions, long-session replay, and completion states; supports Qoder CN 0.4.8 session storage; reduces process scanning overhead and preserves viewed results across temporary source gaps; see the [release notes](docs/releases/v0.3.3.md) |
 | Historical release evidence | [v0.3.1 package acceptance record](docs/qa/2026-08-24-v0.3.1-release-packaging-validation.md); this evidence applies only to v0.3.1 |
 | Withdrawn v0.3.0 candidate | Its GitHub Release remains a draft. Retained attachments are historical evidence only and must not be published or presented as supported downloads; see `docs/qa/2026-07-30-v0.3.0-release-packaging-validation.md` |
 
