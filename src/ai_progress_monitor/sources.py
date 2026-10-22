@@ -7,6 +7,7 @@ import re
 import signal
 import sqlite3
 import subprocess
+import time
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -15,7 +16,10 @@ from typing import Callable, Iterable, List, Optional, Tuple
 from .cleanup import cleanup_session_files
 from .classifier import classify_session_text
 from .chatgpt_approvals import DesktopApprovalLog
+from .chatgpt_history import LifecycleHistory, has_visible_content
+from .chatgpt_questions import async_question_ids, answered_question_ids, rejected_async_call
 from .models import ActionKind, SafeAction, SessionStatus, SessionUpdate, SurfaceKind, ToolKind
+from .qoder_desktop import QoderDesktopReader
 from .terminal_bridge import clean_terminal_text
 from .window_focus import project_window_title_match_score
 
@@ -38,6 +42,8 @@ CODEX_SESSION_RUNNING_STALE_SECONDS = 10 * 60.0
 CODEX_SESSION_COMPLETED_VISIBLE_SECONDS = 120.0
 CODEX_SESSION_TAIL_BYTES = 256 * 1024
 CODEX_SESSION_HEAD_BYTES = 64 * 1024
+CHATGPT_HISTORY_POLL_BYTE_BUDGET = 64 * 1024 * 1024
+CHATGPT_HISTORY_POLL_TIME_BUDGET = 1.0
 QODER_TASK_RUNNING_STALE_SECONDS = 10 * 60.0
 QODER_REFRESH_STALE_SNAPSHOT_SECONDS = 3.0
 QODER_TERMINAL_RESULT_IDLE_GRACE_SECONDS = 5.0
@@ -251,6 +257,7 @@ class ProcessSource:
         )
         self.source_started_at = source_started_at
         self.now = now or (lambda: datetime.now(timezone.utc))
+        self._qoder_desktop_reader = QoderDesktopReader()
 
     def poll(self) -> Optional[List[SessionUpdate]]:
         system = platform.system().lower()
@@ -268,6 +275,7 @@ class ProcessSource:
                 workbuddy_db_paths=self.workbuddy_db_paths,
                 source_started_at=self.source_started_at,
                 now=self.now(),
+                qoder_desktop_reader=self._qoder_desktop_reader,
             )
         )
 
@@ -291,6 +299,7 @@ class ChatGPTSessionSource:
         self.source_started_at = source_started_at
         # Explicit test/custom session directories must not read host app logs.
         self.approval_log = approval_log or (DesktopApprovalLog() if directory is None else None)
+        self._session_histories: dict[Path, LifecycleHistory] = {}
 
     def poll(self) -> Optional[List[SessionUpdate]]:
         current = self.now()
@@ -302,6 +311,10 @@ class ChatGPTSessionSource:
             signals = dict(self.approval_log.session_signals)
         else:
             signals = {}
+        if self.source_started_at is not None:
+            signals = {thread: signal for thread, signal in signals.items()
+                       if signal.updated_at >= self.source_started_at
+                       or (signal.status == SessionStatus.NEEDS_ACTION and not signal.view_ack_required)}
         updates: List[SessionUpdate] = []
         paths_with_mtime = []
         for path in self.directory.glob("**/*.jsonl"):
@@ -313,28 +326,80 @@ class ChatGPTSessionSource:
         selected = paths[:80]
         # Outstanding desktop approvals may refer to an old, no-longer-written rollout.
         selected.extend(path for path in paths[80:] if _codex_session_id_from_path(path) in signals)
+        self._session_histories = {path: history for path, history in self._session_histories.items() if path in selected}
+        history_budget = CHATGPT_HISTORY_POLL_BYTE_BUDGET
+        history_deadline = time.monotonic() + CHATGPT_HISTORY_POLL_TIME_BUDGET
+        candidates = {}
         for path in selected:
+            try:
+                initial_stat = path.stat()
+            except OSError:
+                return None
             evidence = _read_chatgpt_session_evidence(path)
             if evidence is None:
                 continue
             update = evidence.update
             thread_id = update.session_id.removeprefix("chatgpt-session-")
+            # A file untouched since startup cannot contain new activity. Live
+            # desktop log signals can still require replay of that older file.
+            if (self.source_started_at is not None and thread_id not in signals
+                    and initial_stat.st_mtime < self.source_started_at.timestamp()
+                    and evidence.update.updated_at < self.source_started_at):
+                continue
+            history = self._session_histories.setdefault(path, LifecycleHistory())
+            middle = history.read_middle(path, CODEX_SESSION_HEAD_BYTES, CODEX_SESSION_TAIL_BYTES,
+                                         history_budget, history_deadline)
+            history_budget -= history.bytes_read
+            if middle is None:
+                return None
+            if middle:
+                evidence = _read_chatgpt_session_evidence(path, middle)
+                if evidence is None:
+                    return None
+            try:
+                final_stat = path.stat()
+            except OSError:
+                return None
+            if (initial_stat.st_ino, initial_stat.st_size, initial_stat.st_mtime_ns) != (
+                    final_stat.st_ino, final_stat.st_size, final_stat.st_mtime_ns):
+                # Retry a consistent file snapshot rather than combining a
+                # newer tail with an older replay of the middle.
+                return None
+            # Resumed conversations can have multiple rollouts with the same
+            # thread ID. Merge logs once against the freshest session evidence.
+            previous = candidates.get(thread_id)
+            if previous is None or evidence.update.updated_at > previous.update.updated_at:
+                candidates[thread_id] = evidence
+        for thread_id, evidence in candidates.items():
+            update = evidence.update
             signal = signals.pop(thread_id, None)
+            if self.approval_log is not None:
+                self.approval_log.resolve_questions(thread_id, evidence.answered_async_questions)
+                signal = self.approval_log.session_signals.get(thread_id)
             pending_approval = False
             if signal is not None:
                 boundary_is_newer = evidence.boundary_at is not None and evidence.boundary_at > signal.updated_at
                 attention_is_newer = (
                     update.status == SessionStatus.NEEDS_ACTION and not update.view_ack_required
+                    and not evidence.pending_async_input
                     and evidence.status_at > signal.updated_at
                 )
                 log_pending = signal.status == SessionStatus.NEEDS_ACTION and not signal.view_ack_required
-                if boundary_is_newer or attention_is_newer or (
+                # A delayed completion notification contains no reply content.
+                # The matching completed rollout is authoritative about whether
+                # that turn actually produced anything for the user to review.
+                same_completed_turn = (
+                    signal.view_ack_required and evidence.completed_turn_id is not None
+                    and signal.turn_id == evidence.completed_turn_id
+                )
+                if same_completed_turn or boundary_is_newer or attention_is_newer or (
                     not log_pending and evidence.status_at > signal.updated_at
                 ):
                     self.approval_log.dismiss_through(thread_id, max(evidence.status_at, signal.updated_at))
-                else:
+                elif not (evidence.pending_async_input and signal.status == SessionStatus.RUNNING):
                     update = replace(update, status=signal.status,
-                                     updated_at=max(update.updated_at, signal.updated_at),
+                                     updated_at=(max(update.updated_at, signal.updated_at)
+                                                 if signal.status == SessionStatus.RUNNING else signal.updated_at),
                                      view_ack_required=signal.view_ack_required)
                     pending_approval = log_pending
             if self._visible(update, current, pending_approval):
@@ -375,6 +440,12 @@ def _classify_window_rows(rows: Iterable[str]) -> Iterable[SessionUpdate]:
         process_name = metadata.get("process_name")
         window_id = metadata.get("window_id")
         process_id = _optional_int(metadata.get("process_id"))
+        definition = _tool_definition_for_update(ToolKind.UNKNOWN, process_name)
+        if definition is not None and not definition.window_title_is_session_evidence:
+            # The app's current window title can change when an old chat is
+            # opened or renamed. Its lifecycle source owns conversations;
+            # ProcessSource supplies the app-wide idle fallback.
+            continue
         lower = f"{process_name or ''} {title}".lower()
         if not any(token in lower for token in ("claude", "codex", "chatgpt")):
             continue
@@ -453,6 +524,8 @@ class AiToolDefinition:
     ignored_command_tokens: Tuple[str, ...] = ()
     ignored_desktop_command_tokens: Tuple[str, ...] = ()
     generated_conversation_path_patterns: Tuple[str, ...] = ()
+    window_title_is_session_evidence: bool = True
+    desktop_session_databases: Tuple[Tuple[str, Path], ...] = ()
 
 
 AI_TOOL_DEFINITIONS: Tuple[AiToolDefinition, ...] = (
@@ -476,6 +549,7 @@ AI_TOOL_DEFINITIONS: Tuple[AiToolDefinition, ...] = (
         tool=ToolKind.CHATGPT,
         cli_executables=("chatgpt", "chatgpt.exe"),
         desktop_main_binaries=("/chatgpt.app/contents/macos/chatgpt",),
+        window_title_is_session_evidence=False,
         generated_conversation_path_patterns=(
             r"(^|/|\\)Documents(/|\\)(Codex|ChatGPT)(/|\\)\d{4}-\d{2}-\d{2}(/|\\)[^/\\]+$",
         ),
@@ -520,8 +594,13 @@ AI_TOOL_DEFINITIONS: Tuple[AiToolDefinition, ...] = (
         desktop_main_binaries=(
             "/qoder.app/contents/macos/qoder",
             "/qoder.app/contents/macos/electron",
+            "/qoder cn.app/contents/macos/qoder cn",
             "/qoder cn.app/contents/macos/electron",
         ),
+        desktop_session_databases=((
+            "/qoder cn.app/contents/macos/qoder cn",
+            Path.home() / "Library" / "Application Support" / "com.qodercn.app.stable" / "main.sqlite",
+        ),),
         generated_conversation_path_patterns=(
             r"(^|/|\\)Documents(/|\\)QoderCN(/|\\)\d{4}-\d{2}-\d{2}(/|\\)[^/\\]+$",
             r"(^|/|\\)Documents(/|\\)Qoder(/|\\)\d{4}-\d{2}-\d{2}(/|\\)[^/\\]+$",
@@ -555,6 +634,7 @@ def _classify_process_rows(
     workbuddy_db_paths: Iterable[Path] = DEFAULT_WORKBUDDY_DB_PATHS,
     source_started_at: Optional[datetime] = None,
     now: Optional[datetime] = None,
+    qoder_desktop_reader: Optional[QoderDesktopReader] = None,
 ) -> Iterable[SessionUpdate]:
     current = now or datetime.now(timezone.utc)
     qoder_log_dirs = _qoder_log_dirs(qoder_logs_dir, qoder_logs_dirs)
@@ -582,7 +662,29 @@ def _classify_process_rows(
             tool = tool_definition.tool
             surface = SurfaceKind.DESKTOP
             title = f"{tool_display_name} Desktop"
-            if tool_definition.key == "qoder" and qoder_log_dirs:
+            modern_db = next((path for binary, path in tool_definition.desktop_session_databases
+                              if _looks_like_invoked_desktop_binary(process_name, command, binary)), None)
+            if modern_db is not None:
+                reader = qoder_desktop_reader or QoderDesktopReader()
+                modern_states = reader.read(modern_db, now=current, source_started_at=source_started_at)
+                if modern_states:
+                    for state in modern_states:
+                        yield SessionUpdate(
+                            session_id=f"qoder-desktop-{state.session_id}",
+                            title=f"{tool_display_name} Desktop - {state.title or '对话'}",
+                            tool=tool, surface=surface, status=state.status,
+                            summary=_qoder_task_summary(state.status), updated_at=state.updated_at,
+                            source="process", process_id=process_id, process_name=process_name or title,
+                            focus_process_id=focus_process_id or process_id,
+                            focus_app_name=focus_app_name or tool_display_name, cwd=state.cwd,
+                            view_ack_required=state.status == SessionStatus.NEEDS_ACTION and not state.user_attention_signal,
+                            status_source="qoder-desktop", tool_display_name=tool_display_name,
+                            generated_conversation_path=_is_generated_conversation_path(tool, state.cwd, tool_display_name),
+                        )
+                    continue
+                # The new executable must never revive an old IDE's quota blocker
+                # when its current database is empty, unavailable or being migrated.
+            if tool_definition.key == "qoder" and qoder_log_dirs and modern_db is None:
                 selected_qoder_log_dirs = _qoder_log_dirs_for_process(process_name, command, qoder_log_dirs)
                 cache_key = tuple(str(path) for path in selected_qoder_log_dirs)
                 if cache_key not in qoder_states_by_dirs:
@@ -2490,6 +2592,21 @@ def _shell_case_pattern(value: str) -> str:
     return value.replace(" ", "\\ ")
 
 
+def _posix_candidate_case_patterns() -> str:
+    """Cheap shell-only prefilter; no subprocess per unrelated system process."""
+    def insensitive(value: str) -> str:
+        return _shell_case_pattern("".join(
+            f"[{letter.lower()}{letter.upper()}]" if letter.isascii() and letter.isalpha() else letter
+            for letter in value
+        ))
+
+    patterns = []
+    for definition in AI_TOOL_DEFINITIONS:
+        patterns.extend(insensitive(executable) + ":*" for executable in definition.cli_executables)
+        patterns.extend("*:*" + insensitive(binary) + "*" for binary in definition.desktop_main_binaries)
+    return "|".join(patterns)
+
+
 def _windows_process_name_regex() -> str:
     names = sorted({executable for definition in AI_TOOL_DEFINITIONS for executable in definition.cli_executables})
     escaped = [name.replace(".", "\\.") for name in names]
@@ -2523,10 +2640,13 @@ class _ChatGPTSessionEvidence:
     update: SessionUpdate
     boundary_at: Optional[datetime]
     status_at: datetime
+    pending_async_input: bool
+    answered_async_questions: dict[str, datetime]
+    completed_turn_id: Optional[str]
 
 
-def _read_chatgpt_session_evidence(path: Path) -> Optional[_ChatGPTSessionEvidence]:
-    records = _read_codex_jsonl_records(path)
+def _read_chatgpt_session_evidence(path: Path, middle_records: Optional[List[dict]] = None) -> Optional[_ChatGPTSessionEvidence]:
+    records = _read_codex_jsonl_records(path, middle_records) if middle_records else _read_codex_jsonl_records(path)
     if not records:
         return None
     session_id = _codex_session_id_from_path(path)
@@ -2538,12 +2658,12 @@ def _read_chatgpt_session_evidence(path: Path) -> Optional[_ChatGPTSessionEviden
     last_completed_index = -1
     last_needs_action_index = -1
     pending_user_input_call_indices: dict[str, int] = {}
+    pending_async_indices: dict[str, int] = {}
+    answered_async_indices: dict[str, int] = {}
     latest_running_signal_index = -1
     latest_visible_reply_index = -1
     for index, record in enumerate(records):
         timestamp = _parse_codex_timestamp(record.get("timestamp"))
-        if timestamp is not None and (latest_at is None or timestamp >= latest_at):
-            latest_at = timestamp
         payload = _codex_payload(record)
         if record.get("type") == "session_meta":
             session_id = _optional_str(payload.get("id")) or _optional_str(payload.get("session_id")) or session_id
@@ -2554,35 +2674,62 @@ def _read_chatgpt_session_evidence(path: Path) -> Optional[_ChatGPTSessionEviden
         if record.get("type") == "turn_context":
             cwd = _optional_str(payload.get("cwd")) or cwd
         payload_type = str(payload.get("type") or "").strip()
+        reply_payload = payload
+        questions = async_question_ids(payload)
+        answers = answered_question_ids(str(record.get("type")), payload)
+        for question in answers:
+            pending_async_indices.pop(question, None)
+            answered_async_indices[question] = index
+        if answers:
+            latest_running_signal_index = index
         # New desktop logs wrap visible replies in completed items, and also
         # expose them as assistant response messages instead of agent_message.
         if payload_type == "item_completed" and record.get("type") == "event_msg":
             item = payload.get("item")
             if isinstance(item, dict) and item.get("type") == "AgentMessage":
                 payload_type = "agent_message"
+                reply_payload = item
+                questions.update(async_question_ids(item))
         elif (
             record.get("type") == "response_item"
             and payload_type == "message"
             and payload.get("role") == "assistant"
         ):
             payload_type = "agent_message"
+        for question in questions:
+            if question not in answered_async_indices:
+                pending_async_indices.setdefault(question, index)
+        # Settings and other metadata are not activity, and must never reopen
+        # a viewed result or keep a dormant session running.
+        if (record.get("type") == "session_meta" or answers or payload_type in {
+            "task_started", "task_complete", "turn_aborted", "approval_requested",
+            "apply_patch_approval_requested", "exec_approval_requested", "user_input_requested",
+            "agent_message", "function_call", "custom_tool_call", "function_call_output",
+            "custom_tool_call_output", "reasoning", "token_count",
+        }):
+            if timestamp is not None and (latest_at is None or timestamp >= latest_at):
+                latest_at = timestamp
         if payload_type == "task_started":
             last_started_index = index
             latest_running_signal_index = index
             last_needs_action_index = -1
             pending_user_input_call_indices.clear()
+            pending_async_indices.clear()
         elif payload_type == "task_complete":
             last_completed_index = index
+            pending_async_indices.clear()
         elif payload_type == "turn_aborted":
             last_completed_index = index
             latest_visible_reply_index = -1
             last_needs_action_index = -1
             pending_user_input_call_indices.clear()
+            pending_async_indices.clear()
         elif payload_type in {"approval_requested", "apply_patch_approval_requested", "exec_approval_requested", "user_input_requested"}:
             last_needs_action_index = index
         elif payload_type == "agent_message":
             latest_running_signal_index = index
-            latest_visible_reply_index = index
+            if has_visible_content(reply_payload):
+                latest_visible_reply_index = index
         elif payload_type in {"function_call", "custom_tool_call"}:
             if _is_codex_user_input_tool_call(payload):
                 call_id = _codex_tool_call_id(payload) or f"record-{index}"
@@ -2593,6 +2740,9 @@ def _read_chatgpt_session_evidence(path: Path) -> Optional[_ChatGPTSessionEviden
             call_id = _codex_tool_call_id(payload)
             if call_id is not None:
                 pending_user_input_call_indices.pop(call_id, None)
+                if rejected_async_call(payload):
+                    pending_async_indices = {key: value for key, value in pending_async_indices.items()
+                                             if json.loads(key)[1] != call_id}
         elif payload_type == "reasoning":
             latest_running_signal_index = index
     try:
@@ -2605,6 +2755,7 @@ def _read_chatgpt_session_evidence(path: Path) -> Optional[_ChatGPTSessionEviden
     effective_needs_action_index = max(
         last_needs_action_index,
         max(pending_user_input_call_indices.values(), default=-1),
+        max(pending_async_indices.values(), default=-1),
     )
     status = _chatgpt_session_status(
         last_started_index,
@@ -2637,6 +2788,10 @@ def _read_chatgpt_session_evidence(path: Path) -> Optional[_ChatGPTSessionEviden
         _parse_codex_timestamp(records[status_index].get("timestamp"))
         if status_index >= 0 else None
     ) or updated_at
+    if status != SessionStatus.RUNNING:
+        # Review acknowledgments identify a result by its state event, not by
+        # later usage reports or background metadata written to the same file.
+        updated_at = status_at
     folder = Path(cwd).name if cwd else session_id
     title = f"ChatGPT Desktop - {folder}" if folder else "ChatGPT Desktop"
     update = SessionUpdate(
@@ -2655,7 +2810,18 @@ def _read_chatgpt_session_evidence(path: Path) -> Optional[_ChatGPTSessionEviden
         generated_conversation_path=_is_generated_conversation_path(ToolKind.CHATGPT, cwd),
     )
 
-    return _ChatGPTSessionEvidence(update, boundary_at, status_at)
+    answered_async_questions = {
+        key: _parse_codex_timestamp(records[index].get("timestamp")) or updated_at
+        for key, index in answered_async_indices.items()
+    }
+    completed_turn_id = None
+    if last_completed_index >= last_started_index and last_completed_index >= 0:
+        completed_payload = _codex_payload(records[last_completed_index])
+        if completed_payload.get("type") == "task_complete":
+            completed_turn_id = _optional_str(completed_payload.get("turn_id"))
+    return _ChatGPTSessionEvidence(update, boundary_at, status_at,
+                                  bool(pending_async_indices), answered_async_questions,
+                                  completed_turn_id)
 
 
 def _chatgpt_session_status(
@@ -2692,7 +2858,7 @@ def _chatgpt_session_requires_view_ack(
     )
 
 
-def _read_codex_jsonl_records(path: Path) -> List[dict]:
+def _read_codex_jsonl_records(path: Path, middle_records: Optional[List[dict]] = None) -> List[dict]:
     try:
         size = path.stat().st_size
         with path.open("rb") as handle:
@@ -2700,7 +2866,8 @@ def _read_codex_jsonl_records(path: Path) -> List[dict]:
             if size > CODEX_SESSION_HEAD_BYTES + CODEX_SESSION_TAIL_BYTES:
                 handle.seek(max(0, size - CODEX_SESSION_TAIL_BYTES))
                 tail = handle.read()
-                raw = head + b"\n" + tail
+                middle = b"\n".join(json.dumps(record).encode("utf-8") for record in (middle_records or []))
+                raw = head + b"\n" + middle + b"\n" + tail
             else:
                 raw = head + handle.read()
     except OSError:
@@ -3064,6 +3231,7 @@ def _posix_process_command() -> List[str]:
     cli_process_case_patterns = _posix_cli_process_case_patterns()
     desktop_process_case_patterns = _posix_desktop_process_case_patterns()
     ignored_desktop_command_case_patterns = _posix_ignored_desktop_command_case_patterns()
+    candidate_case_patterns = _posix_candidate_case_patterns()
     script = (
         "focus_app_name() { case \"$1\" in "
         "*/Terminal.app/*) printf 'Terminal' ;; "
@@ -3104,6 +3272,7 @@ def _posix_process_command() -> List[str]:
         "printf '%s\\n' \"$all_process_rows\" | while read -r pid ppid pgid stat cpu start_weekday start_month start_day start_time start_year comm args; do "
         "case \"$stat\" in Z*|?*E*) continue ;; esac; "
         "exe_raw=${comm##*/}; "
+        f"case \"$exe_raw:$args\" in {candidate_case_patterns}) ;; *) continue ;; esac; "
         "case \"$exe_raw\" in sh|bash|zsh|fish) shell_process=1 ;; *) shell_process=0 ;; esac; "
         "desktop_process=0; "
         "case \"$args\" in *.app/Contents/MacOS/*|*.app/contents/macos/*) "

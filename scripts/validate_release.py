@@ -131,6 +131,14 @@ def check_sensitive_text() -> None:
         if not path.is_file():
             continue
         text = path.read_text(encoding="utf-8", errors="ignore")
+        # Encoded raster bytes can coincidentally spell short identity tokens.
+        # Keep the URI header and surrounding text; SVG/HTML data stays scanned.
+        text = re.sub(
+            r"(data:image/(?:png|jpeg|jpg|gif|webp|x-icon);base64,)[A-Za-z0-9+/=]+",
+            r"\1",
+            text,
+            flags=re.IGNORECASE,
+        )
         if company_token_pattern.search(text):
             raise SystemExit(f"[FAIL] sensitive company token: {path}")
         if legacy_sensitive_pattern.search(text):

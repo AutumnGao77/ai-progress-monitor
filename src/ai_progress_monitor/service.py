@@ -14,6 +14,7 @@ from .models import ActionResult, SessionStatus, SessionUpdate, SurfaceKind, Too
 from .notifier import NotificationManager
 from .preferences import MonitorPreferences
 from .store import SessionStore
+from .state_trace import SessionStateTrace
 from .terminal_bridge import clean_terminal_text
 from .window_focus import (
     FocusResult,
@@ -31,6 +32,7 @@ CLOCK_ROLLBACK_TOLERANCE_SECONDS = 2.0
 FULL_PROCESS_DESKTOP_STATUS_SOURCES = frozenset(
     {
         "qoder-log",
+        "qoder-desktop",
         "workbuddy-db",
         "workbuddy-log",
     }
@@ -100,6 +102,7 @@ class MonitorService:
         self.focus_manager = focus_manager or WindowFocusManager()
         self.preferences = preferences or MonitorPreferences()
         self.paused = False
+        self._state_trace = SessionStateTrace()
         self.process_empty_grace_seconds = process_empty_grace_seconds
         self.clock = clock or time.monotonic
         self.now = now or (lambda: datetime.now(timezone.utc))
@@ -117,6 +120,7 @@ class MonitorService:
         self._native_project_window_inventory: Optional[NativeProjectWindowInventory] = None
         self._native_project_window_inventory_updated_at: Optional[float] = None
         self._process_empty_started_at: Optional[float] = None
+        self._chatgpt_process_identities: set = set()
         self._refresh_flight_lock = Lock()
         self._refresh_flight: Optional[_RefreshFlight] = None
         self._refresh_generation = 0
@@ -210,6 +214,7 @@ class MonitorService:
                 else:
                     self.store.apply_updates(updates)
         sessions = self.visible_sessions()
+        self._state_trace.observe(sessions)
         if self.notifier is not None:
             with self._notification_lock:
                 self._sync_notifications_enabled(sessions)
@@ -509,7 +514,7 @@ class MonitorService:
             updates = self._retain_recent_full_process_desktop_sessions(updates)
             updates = self._add_desktop_app_fallbacks(updates)
         elif source == "chatgpt-session":
-            updates = self._retain_viewed_chatgpt_sessions(updates, desktop_process_updates)
+            updates = self._retain_chatgpt_sessions(updates, desktop_process_updates)
         self.store.replace_source_updates(source, updates)
         if source == "process" and not updates:
             self._process_empty_started_at = None
@@ -537,15 +542,21 @@ class MonitorService:
             return []
         return None
 
-    def _retain_viewed_chatgpt_sessions(
+    def _retain_chatgpt_sessions(
         self,
         updates: List[SessionUpdate],
         desktop_process_updates: Optional[List[SessionUpdate]],
     ) -> List[SessionUpdate]:
-        if desktop_process_updates is not None and not any(
-            update.tool == ToolKind.CHATGPT for update in desktop_process_updates
-        ):
-            return updates
+        previous_processes = self._chatgpt_process_identities
+        if desktop_process_updates is not None:
+            self._chatgpt_process_identities = {
+                (update.process_id, update.process_started_at)
+                for update in desktop_process_updates
+                if update.tool == ToolKind.CHATGPT and update.process_id is not None
+            }
+            if not any(update.tool == ToolKind.CHATGPT for update in desktop_process_updates):
+                return updates
+        same_app = bool(previous_processes & self._chatgpt_process_identities)
         live_ids = {update.session_id for update in updates}
         current = self.now()
         retained = [
@@ -554,9 +565,15 @@ class MonitorService:
             if session.source == "chatgpt-session"
             and session.session_id not in live_ids
             and session.surface == SurfaceKind.DESKTOP
-            and session.status == SessionStatus.IDLE
-            and self.store.session_viewed_at(session.session_id) is not None
-            and not self._is_expired_viewed_desktop_idle_session(session, current)
+            and (
+                # Silence is not a terminal event. Keep an observed active turn
+                # while its app remains alive, including an uncertain scan.
+                # Explicit completion/abort updates above always take priority.
+                (same_app and session.status in {SessionStatus.RUNNING, SessionStatus.STUCK})
+                or (session.status == SessionStatus.IDLE
+                    and self.store.session_viewed_at(session.session_id) is not None
+                    and not self._is_expired_viewed_desktop_idle_session(session, current))
+            )
         ]
         return updates + retained
 

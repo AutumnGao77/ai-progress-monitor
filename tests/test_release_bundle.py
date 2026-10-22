@@ -701,6 +701,21 @@ class ReleaseBundleTests(unittest.TestCase):
             with mock.patch.object(validate_release, "ROOT", root):
                 validate_release.check_sensitive_text()
 
+    def test_sensitive_scan_does_not_treat_raster_base64_as_visible_text(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            page = Path(temp_dir) / "index.html"
+            page.write_text('<img src="data:image/png;base64,AA+' + ('s' 'to') + '/AA==">')
+            with mock.patch.object(validate_release, "iter_public_text_paths", return_value=[page]):
+                validate_release.check_sensitive_text()
+
+    def test_sensitive_scan_still_checks_text_next_to_raster_base64(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            page = Path(temp_dir) / "index.html"
+            page.write_text('<img src="data:image/png;base64,AAAA"> owner: ' + ('s' 'to'))
+            with mock.patch.object(validate_release, "iter_public_text_paths", return_value=[page]):
+                with self.assertRaises(SystemExit):
+                    validate_release.check_sensitive_text()
+
     def test_release_readme_mentions_direct_cli_and_wrapper_boundary(self):
         source = (Path(__file__).resolve().parents[1] / "scripts" / "build_release.py").read_text()
 

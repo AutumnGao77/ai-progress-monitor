@@ -23,8 +23,8 @@ class ChatGPTEventCompatibilityTests(unittest.TestCase):
 
     def test_completed_modern_reply_stays_available_for_review(self):
         for reply in [
-            {"type": "event_msg", "payload": {"type": "item_completed", "item": {"type": "AgentMessage", "phase": "final_answer", "content": []}}},
-            {"type": "response_item", "payload": {"type": "message", "role": "assistant", "phase": "final_answer", "content": []}},
+            {"type": "event_msg", "payload": {"type": "item_completed", "item": {"type": "AgentMessage", "phase": "final_answer", "content": [{"type": "output_text", "text": "Finished"}]}}},
+            {"type": "response_item", "payload": {"type": "message", "role": "assistant", "phase": "final_answer", "content": [{"type": "output_text", "text": "Finished"}]}},
         ]:
             with self.subTest(reply=reply):
                 updates = self.read_events([
@@ -111,7 +111,7 @@ class ChatGPTEventCompatibilityTests(unittest.TestCase):
         for ending, expected in [
             ([{"type": "event_msg", "payload": {"type": "turn_aborted"}}], SessionStatus.IDLE),
             ([
-                {"type": "event_msg", "payload": {"type": "item_completed", "item": {"type": "AgentMessage", "phase": "final_answer"}}},
+                {"type": "event_msg", "payload": {"type": "item_completed", "item": {"type": "AgentMessage", "phase": "final_answer", "content": [{"type": "Text", "text": "Finished"}]}}},
                 {"type": "event_msg", "payload": {"type": "task_complete"}},
             ], SessionStatus.NEEDS_ACTION),
         ]:

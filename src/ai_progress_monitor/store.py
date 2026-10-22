@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections import OrderedDict
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -26,13 +27,16 @@ class _PendingVerifiedRunning:
 
 
 class SessionStore:
-    def __init__(self, stuck_after_seconds: int = 300, audit_dir: Optional[Path] = None):
+    def __init__(self, stuck_after_seconds: int = 300, audit_dir: Optional[Path] = None,
+                 detached_view_history_limit: int = 512):
         self.stuck_after_seconds = stuck_after_seconds
         self.audit_dir = audit_dir or Path.home() / ".ai-progress-monitor"
         self._lock = RLock()
         self._sessions: Dict[str, SessionUpdate] = {}
         self._viewed_at_by_session: Dict[str, datetime] = {}
         self._viewed_wall_time_by_session: Dict[str, datetime] = {}
+        self._detached_desktop_views = OrderedDict()
+        self._detached_view_history_limit = max(0, detached_view_history_limit)
         self._verified_observed_at_by_session: Dict[str, datetime] = {}
         self._verified_running_observed_at_by_session: Dict[str, datetime] = {}
         self._verified_observation_sequence_by_session: Dict[str, int] = {}
@@ -46,6 +50,12 @@ class SessionStore:
 
     def _apply_updates_locked(self, updates: Iterable[SessionUpdate]) -> None:
         for update in updates:
+            prior_view = self._detached_desktop_views.pop(update.session_id, None)
+            if prior_view is not None and _has_stable_desktop_conversation_identity(update):
+                result_at, viewed_at = prior_view
+                if update.updated_at <= result_at:
+                    self._viewed_at_by_session[update.session_id] = result_at
+                    self._viewed_wall_time_by_session[update.session_id] = viewed_at
             existing = self._sessions.get(update.session_id)
             if _has_changed_claude_process_identity(existing, update):
                 self._clear_session_state_locked(update.session_id)
@@ -300,6 +310,17 @@ class SessionStore:
             self._apply_updates_locked(updates)
 
     def _clear_session_state_locked(self, session_id: str) -> None:
+        session = self._sessions.get(session_id)
+        result_at = self._viewed_at_by_session.get(session_id)
+        viewed_at = self._viewed_wall_time_by_session.get(session_id)
+        if (session is not None and _has_stable_desktop_conversation_identity(session)
+                and result_at is not None and viewed_at is not None):
+            # Removing a bubble is not a new result. Keep only bounded in-memory
+            # acknowledgements so a transient dropout or app update cannot reopen it.
+            self._detached_desktop_views[session_id] = (result_at, viewed_at)
+            self._detached_desktop_views.move_to_end(session_id)
+            while len(self._detached_desktop_views) > self._detached_view_history_limit:
+                self._detached_desktop_views.popitem(last=False)
         self._sessions.pop(session_id, None)
         self._viewed_at_by_session.pop(session_id, None)
         self._viewed_wall_time_by_session.pop(session_id, None)
@@ -308,6 +329,7 @@ class SessionStore:
         self._verified_observation_sequence_by_session.pop(session_id, None)
         self._verified_running_monotonic_by_session.pop(session_id, None)
         self._pending_verified_running_by_session.pop(session_id, None)
+
 
     def sessions(
         self,
@@ -552,6 +574,13 @@ def _is_unverified_claude_terminal_running(session: SessionUpdate) -> bool:
         _is_claude_terminal_semantic_state(session)
         and session.status == SessionStatus.RUNNING
         and session.observed_at is None
+    )
+
+
+def _has_stable_desktop_conversation_identity(session: SessionUpdate) -> bool:
+    return session.surface == SurfaceKind.DESKTOP and (
+        session.source == "chatgpt-session"
+        or session.status_source in {"qoder-log", "qoder-desktop", "workbuddy-db", "workbuddy-log"}
     )
 
 

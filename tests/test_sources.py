@@ -25,6 +25,7 @@ from ai_progress_monitor.sources import (
     _run_command,
 )
 from ai_progress_monitor.store import SessionStore
+from ai_progress_monitor.qoder_desktop import QoderDesktopState
 
 
 def write_json_session(path: Path, status: str, updated_at: datetime) -> None:
@@ -213,6 +214,20 @@ class SourceTests(unittest.TestCase):
         self.assertEqual(updates[0].process_id, 1234)
         self.assertEqual(updates[0].process_name, "Codex")
         self.assertEqual(updates[0].title, "Codex Desktop - PRD polish")
+
+    def test_chatgpt_native_window_titles_are_not_conversation_activity(self):
+        for name in ['ChatGPT', 'chatgpt']:
+            for title in ['AI · Introduction', 'ChatGPT - Old conversation', '正在执行 Yes/No']:
+                with self.subTest(process=name, title=title):
+                    rows = [f'window_id=42\tprocess_id=1234\tprocess_name={name}\ttitle={title}']
+                    self.assertEqual(list(_classify_window_rows(rows)), [])
+
+    def test_chatgpt_window_filter_keeps_browser_and_terminal_fallbacks(self):
+        rows = [
+            'window_id=42\tprocess_id=1234\tprocess_name=Safari\ttitle=ChatGPT - browser chat',
+            'window_id=43\tprocess_id=1235\tprocess_name=Terminal\ttitle=Claude Code - working',
+        ]
+        self.assertEqual([item.session_id for item in _classify_window_rows(rows)], ['window-42', 'window-43'])
 
     def test_macos_window_source_tracks_project_windows_that_are_not_ai_sessions(self):
         source = OsWindowSource()
@@ -1687,7 +1702,7 @@ class SourceTests(unittest.TestCase):
                     {
                         "type": "response_item",
                         "timestamp": "2026-07-02T14:01:30+00:00",
-                        "payload": {"type": "agent_message"},
+                        "payload": {"type": "agent_message", "message": "Finished"},
                     },
                     {
                         "type": "event_msg",
@@ -1725,7 +1740,7 @@ class SourceTests(unittest.TestCase):
                     {
                         "type": "response_item",
                         "timestamp": "2026-07-02T14:01:30+00:00",
-                        "payload": {"type": "agent_message"},
+                        "payload": {"type": "agent_message", "message": "Finished"},
                     },
                     {
                         "type": "event_msg",
@@ -1762,7 +1777,7 @@ class SourceTests(unittest.TestCase):
                     {
                         "type": "response_item",
                         "timestamp": "2026-07-02T14:01:30+00:00",
-                        "payload": {"type": "agent_message"},
+                        "payload": {"type": "agent_message", "message": "Finished"},
                     },
                     {
                         "type": "event_msg",
@@ -1999,6 +2014,50 @@ class SourceTests(unittest.TestCase):
                 self.assertEqual(updates[0].tool_display_name, expected_display_name)
                 self.assertEqual(updates[0].focus_process_id, expected_focus_pid)
                 self.assertEqual(updates[0].focus_app_name, expected_focus_app)
+
+    def test_qodercn_named_binary_preserves_desktop_lifecycle_and_focus(self):
+        binaries = ("Qoder CN", "Electron")
+        for binary in binaries:
+            for source_status, expected_status in (
+                (None, SessionStatus.IDLE),
+                ("Running", SessionStatus.RUNNING),
+                ("Completed", SessionStatus.NEEDS_ACTION),
+            ):
+                with self.subTest(binary=binary, status=source_status), tempfile.TemporaryDirectory() as temp_dir:
+                    log_dir = Path(temp_dir) / "QoderCN" / "logs"
+                    log_path = log_dir / "20261021T200000" / "questWindow" / "quest.log"
+                    log_path.parent.mkdir(parents=True)
+                    if source_status:
+                        log_path.write_text(
+                            '2026-10-21 20:00:00.000 [info] task.status.update '
+                            '{"taskId":"task-qa.session.execution","status":"' + source_status + '"}\n',
+                            encoding="utf-8",
+                        )
+                    rows = [
+                        "process_id=51005\tprocess_name=/Applications/Qo\tcommand="
+                        f"/Applications/Qoder CN.app/Contents/MacOS/{binary} --aicoding-open-agents-window\tstat=S",
+                        "process_id=51006\tprocess_name=Qoder CN Helper\tcommand="
+                        "/Applications/Qoder CN.app/Contents/Frameworks/Qoder CN Helper.app/Contents/MacOS/Qoder CN Helper --type=renderer\tstat=S",
+                    ]
+                    modern_states = [] if source_status is None else [QoderDesktopState(
+                        "synthetic-qa", expected_status,
+                        datetime(2026, 10, 21, 20, 0).astimezone(timezone.utc),
+                    )]
+                    with mock.patch("ai_progress_monitor.sources.QoderDesktopReader.read", return_value=modern_states):
+                        updates = list(_classify_process_rows(
+                            rows, qoder_logs_dirs=(log_dir,), workbuddy_db_paths=(),
+                            now=datetime(2026, 10, 21, 20, 0, 30).astimezone(timezone.utc),
+                        ))
+                    self.assertEqual(len(updates), 1)
+                    update = updates[0]
+                    self.assertEqual(update.tool_display_name, "Qoder CN")
+                    self.assertEqual(update.surface, SurfaceKind.DESKTOP)
+                    self.assertEqual(update.status, expected_status)
+                    self.assertEqual(update.focus_process_id, 51005)
+                    self.assertEqual(update.focus_app_name, "Qoder CN")
+                    self.assertEqual(update.view_ack_required, source_status == "Completed")
+                    if source_status:
+                        self.assertEqual(update.status_source, "qoder-desktop" if binary == "Qoder CN" else "qoder-log")
 
     def test_qoder_desktop_idle_fallback_ignores_bundled_helper_process(self):
         rows = [
@@ -4558,6 +4617,36 @@ class SourceTests(unittest.TestCase):
         self.assertIn("process_started_at=Fri Jul 24 08:56:12 2026", completed.stdout)
         self.assertIn("focus_process_id=400", completed.stdout)
         self.assertIn("focus_app_name=Visual Studio Code", completed.stdout)
+
+    def test_unrelated_process_volume_does_not_spawn_case_conversion_per_row(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            fixture = root / "rows"
+            rows = [
+                f"{1000 + i} 1 1 S 0.0 Thu Oct 22 00:00:00 2026 /usr/bin/ordinary /usr/bin/ordinary"
+                for i in range(120)
+            ]
+            rows += [
+                "200 1 200 R+ 1.0 Thu Oct 22 00:00:00 2026 /tmp/ClAuDe /tmp/ClAuDe",
+                "201 1 201 S 0.0 Thu Oct 22 00:00:00 2026 /Applications/Qoder /Applications/Qoder CN.app/Contents/MacOS/Qoder CN",
+                "202 1 202 Z 0.0 Thu Oct 22 00:00:00 2026 /tmp/claude /tmp/claude",
+            ]
+            fixture.write_text("\n".join(rows) + "\n")
+            fake_ps = root / "ps"
+            fake_ps.write_text('#!/bin/sh\ncat "$QA_PROCESS_ROWS"\n')
+            fake_ps.chmod(0o755)
+            fake_tr = root / "tr"
+            fake_tr.write_text('#!/bin/sh\nprintf "called\\n" >> "$QA_TR_CALLS"\nexec /usr/bin/tr "$@"\n')
+            fake_tr.chmod(0o755)
+            calls = root / "calls"
+            environment = dict(os.environ, PATH=str(root) + ":" + os.environ["PATH"],
+                               QA_PROCESS_ROWS=str(fixture), QA_TR_CALLS=str(calls))
+            completed = subprocess.run(_posix_process_command(), capture_output=True, text=True, env=environment)
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertIn("process_id=200", completed.stdout)
+            self.assertIn("process_id=201", completed.stdout)
+            self.assertNotIn("process_id=202", completed.stdout)
+            self.assertLessEqual(len(calls.read_text().splitlines()), 5)
         self.assertNotIn("focus_process_id=300", completed.stdout)
 
     def test_posix_process_command_keeps_child_activity_and_mcp_filter_with_start_columns(self):

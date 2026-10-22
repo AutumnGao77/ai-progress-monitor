@@ -26,6 +26,65 @@ class _AttemptTrackingRLock:
 
 
 class SessionStoreTests(unittest.TestCase):
+    def test_viewed_desktop_result_does_not_reopen_after_source_disappearance(self):
+        now = datetime(2026, 10, 22, tzinfo=timezone.utc)
+        for source_name in ["workbuddy-db", "workbuddy-log", "qoder-log", "qoder-desktop"]:
+            with self.subTest(source=source_name):
+                store = SessionStore()
+                result = SessionUpdate(
+                    "conversation-one", "Synthetic result", ToolKind.UNKNOWN,
+                    SurfaceKind.DESKTOP, SessionStatus.NEEDS_ACTION, "Done", now,
+                    source="process", status_source=source_name,
+                    process_id=100, view_ack_required=True,
+                )
+                store.apply_updates([result])
+                store.mark_session_viewed(result.session_id, viewed_at=now + timedelta(seconds=5))
+                store.replace_source_updates("process", [])
+                self.assertEqual(store.sessions(now=now), [])
+                store.replace_source_updates("process", [replace(result, process_id=101)])
+                self.assertEqual(store.sessions(now=now)[0].status, SessionStatus.IDLE)
+                self.assertEqual(store.session_viewed_at(result.session_id), now + timedelta(seconds=5))
+
+    def test_new_result_and_real_attention_are_not_cleared_by_detached_view(self):
+        now = datetime(2026, 10, 22, tzinfo=timezone.utc)
+        for update in [dict(updated_at=now + timedelta(seconds=10)), dict(view_ack_required=False)]:
+            with self.subTest(update=update):
+                store = SessionStore()
+                result = SessionUpdate(
+                    "conversation-one", "Synthetic result", ToolKind.UNKNOWN,
+                    SurfaceKind.DESKTOP, SessionStatus.NEEDS_ACTION, "Done", now,
+                    source="process", status_source="workbuddy-db", view_ack_required=True,
+                )
+                store.apply_updates([result])
+                store.mark_session_viewed(result.session_id, viewed_at=now)
+                store.replace_source_updates("process", [])
+                store.replace_source_updates("process", [replace(result, **update)])
+                self.assertEqual(store.sessions(now=now)[0].status, SessionStatus.NEEDS_ACTION)
+
+    def test_detached_view_history_is_bounded_and_excludes_process_only_identities(self):
+        now = datetime(2026, 10, 22, tzinfo=timezone.utc)
+        store = SessionStore(detached_view_history_limit=2)
+        for index in range(3):
+            result = SessionUpdate(
+                "conversation-" + str(index), "Synthetic result", ToolKind.UNKNOWN,
+                SurfaceKind.DESKTOP, SessionStatus.NEEDS_ACTION, "Done", now,
+                source="process", status_source="qoder-desktop", view_ack_required=True,
+            )
+            store.apply_updates([result])
+            store.mark_session_viewed(result.session_id, viewed_at=now)
+            store.replace_source_updates("process", [])
+        store.apply_updates([replace(result, session_id="conversation-0")])
+        self.assertEqual(store.sessions(now=now)[0].status, SessionStatus.NEEDS_ACTION)
+        store.apply_updates([replace(result, session_id="conversation-2")])
+        self.assertEqual(next(x for x in store.sessions(now=now) if x.session_id == "conversation-2").status,
+                         SessionStatus.IDLE)
+        cli = replace(result, session_id="process-123", surface=SurfaceKind.TERMINAL, status_source="process")
+        store.apply_updates([cli])
+        store.mark_session_viewed(cli.session_id, viewed_at=now)
+        store.replace_source_updates("process", [])
+        store.apply_updates([cli])
+        self.assertEqual(store.sessions(now=now)[0].status, SessionStatus.NEEDS_ACTION)
+
     def test_keeps_latest_update_for_same_session(self):
         store = SessionStore(stuck_after_seconds=60)
         old = SessionUpdate(
