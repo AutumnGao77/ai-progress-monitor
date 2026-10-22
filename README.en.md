@@ -8,6 +8,8 @@ AI Progress Monitor is a local-first, low-interruption desktop companion for tra
 
 The current stable delivery focus is the local Web Companion plus the validated macOS floating companion app. A lightweight Windows floating entry is kept as a preview path, but it has not been accepted as a stable delivery target yet.
 
+All configured AI tools follow the same idle rule across desktop and CLI sessions: an idle conversation leaves the list after 15 minutes. While the tool is still running, one idle entry remains per product. Viewed results use the viewing time; explicit idle events use their source timestamp; process-only CLI sessions use continuously observed idle time. Polling heartbeats do not reset the timer. New activity restores the conversation, and running or genuine user-attention states do not expire under this rule.
+
 ## Current Release
 
 | Item | Details |

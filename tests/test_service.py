@@ -13,7 +13,7 @@ from ai_progress_monitor.models import SessionStatus, SessionUpdate, SurfaceKind
 from ai_progress_monitor.notifier import NotificationManager
 from ai_progress_monitor.preferences import MonitorPreferences
 from ai_progress_monitor.service import MonitorService
-from ai_progress_monitor.sources import JsonSessionSource
+from ai_progress_monitor.sources import AI_TOOL_DEFINITIONS, JsonSessionSource
 from ai_progress_monitor.store import SessionStore
 from ai_progress_monitor.window_focus import FocusResult, WindowFocusManager
 
@@ -1162,6 +1162,7 @@ class MonitorServiceTests(unittest.TestCase):
             [source],
             SessionStore(),
             ActionExecutor(),
+            now=lambda: now,
             source_poll_timeout_seconds=0.05,
         )
 
@@ -1219,6 +1220,7 @@ class MonitorServiceTests(unittest.TestCase):
             [counting, recovering],
             SessionStore(),
             ActionExecutor(),
+            now=lambda: now,
             source_poll_timeout_seconds=0.2,
         )
 
@@ -1271,6 +1273,7 @@ class MonitorServiceTests(unittest.TestCase):
             [first_source, second_source],
             SessionStore(),
             ActionExecutor(),
+            now=lambda: now,
             source_poll_timeout_seconds=0.2,
         )
         original_start = threading.Thread.start
@@ -2477,6 +2480,7 @@ class MonitorServiceTests(unittest.TestCase):
                 "app alive",
                 datetime(2026, 7, 2, 8, 59, tzinfo=timezone.utc),
                 source="process",
+                status_source="desktop-process",
                 process_id=38434,
                 focus_process_id=38434,
                 focus_app_name="Codex",
@@ -2828,26 +2832,256 @@ class MonitorServiceTests(unittest.TestCase):
         self.assertEqual([session["session_id"] for session in payload], ["qoder-task-alpha"])
         self.assertEqual(payload[0]["monitoring_level"], "full")
 
-    def test_unviewed_desktop_idle_conversation_does_not_expire_by_idle_retention(self):
-        clock = FakeDateTimeClock(datetime(2026, 7, 2, 9, 16, tzinfo=timezone.utc))
-        store = SessionStore()
-        store.apply_updates(
-            [
-                SessionUpdate(
-                    "desktop-idle",
-                    "Codex Desktop - hello",
-                    ToolKind.CODEX,
-                    SurfaceKind.DESKTOP,
-                    SessionStatus.IDLE,
-                    "idle but not viewed",
-                    datetime(2026, 7, 2, 9, 0, tzinfo=timezone.utc),
-                    source="codex-session",
-                )
-            ]
-        )
-        service = MonitorService([], store, ActionExecutor(), now=clock.now)
+    def test_unviewed_idle_desktop_conversations_expire_to_one_app_bubble(self):
+        for name, status_source in (("Qoder", "qoder-log"), ("Qoder CN", "qoder-log"),
+                                    ("Qoder CN", "qoder-desktop"),
+                                    ("WorkBuddy", "workbuddy-db"), ("WorkBuddy", "workbuddy-log")):
+            with self.subTest(name=name, status_source=status_source):
+                clock = FakeDateTimeClock(datetime(2026, 7, 14, 9, 0, tzinfo=timezone.utc))
+                updates = [SessionUpdate(
+                    "conversation-" + str(index), name + " conversation " + str(index),
+                    ToolKind.UNKNOWN, SurfaceKind.DESKTOP, SessionStatus.IDLE,
+                    "idle", clock.now(), source="process", process_id=11063,
+                    focus_process_id=11063, focus_app_name=name,
+                    status_source=status_source, tool_display_name=name,
+                ) for index in range(3)]
+                source = VolatileProcessSource([updates] * 5)
+                service = MonitorService([source], SessionStore(), ActionExecutor(), now=clock.now)
+                self.assertEqual(len(service.sessions_payload()), 3)
+                clock.advance(seconds=899)
+                self.assertEqual(len(service.sessions_payload()), 3)
+                clock.advance(seconds=1)
+                payload = service.sessions_payload()
+                self.assertEqual([(row["session_id"], row["status"]) for row in payload],
+                                 [("process-11063", "idle")])
+                clock.advance(seconds=60)
+                self.assertEqual(len(service.sessions_payload()), 1)
+                source.batches = [[replace(updates[0], status=SessionStatus.RUNNING,
+                                           updated_at=clock.now())]]
+                self.assertEqual([row["session_id"] for row in service.sessions_payload()],
+                                 ["conversation-0"])
 
-        self.assertEqual([session["session_id"] for session in service.sessions_payload()], ["desktop-idle"])
+    def test_all_cli_tools_compact_after_continuous_idle_despite_scan_heartbeats(self):
+        for definition in AI_TOOL_DEFINITIONS:
+            if not definition.cli_executables:
+                continue
+            with self.subTest(tool=definition.key):
+                clock = FakeDateTimeClock(datetime(2026, 10, 22, 9, 0, tzinfo=timezone.utc))
+                store = SessionStore()
+                updates = [SessionUpdate(
+                    "process-" + str(100 + index), definition.display_name + " CLI - project-" + str(index),
+                    definition.tool, SurfaceKind.TERMINAL, SessionStatus.IDLE, "idle", clock.now(),
+                    source="process", process_id=100 + index, status_source="process",
+                    tool_display_name=definition.display_name, process_started_at=clock.now(),
+                ) for index in range(2)]
+                store.apply_updates(updates)
+                service = MonitorService([], store, ActionExecutor(), now=clock.now,
+                                         clock=lambda: clock.now().timestamp())
+                self.assertEqual(len(service.sessions_payload()), 2)
+                clock.advance(seconds=899)
+                store.apply_updates([replace(u, updated_at=clock.now()) for u in updates])
+                self.assertEqual(len(service.sessions_payload()), 2)
+                clock.advance(seconds=1)
+                store.apply_updates([replace(u, updated_at=clock.now()) for u in updates])
+                payload = service.sessions_payload()
+                self.assertEqual(len(payload), 1)
+                self.assertEqual(payload[0]["status_source"], "tool-idle")
+                self.assertNotIn("project-", payload[0]["title"])
+                clock.advance(seconds=1)
+                store.apply_updates([replace(updates[1], status=SessionStatus.RUNNING, updated_at=clock.now())])
+                self.assertEqual([r["session_id"] for r in service.sessions_payload()], ["process-101"])
+                store.replace_source_updates("process", [])
+                self.assertEqual(service.sessions_payload(), [])
+
+    def test_compacted_cli_focus_does_not_restart_idle_visibility(self):
+        with tempfile.TemporaryDirectory() as directory:
+            clock = FakeDateTimeClock(datetime(2026, 10, 22, 9, 0, tzinfo=timezone.utc))
+            store = SessionStore(audit_dir=Path(directory))
+            store.apply_updates([SessionUpdate(
+                "process-100", "Codex CLI - project", ToolKind.CODEX, SurfaceKind.TERMINAL,
+                SessionStatus.IDLE, "idle", clock.now(), source="process", process_id=100,
+                focus_process_id=200, focus_app_name="Terminal", cwd="/Users/Gao/project",
+                status_source="process",
+            )])
+            focus = WindowFocusManager(sender=lambda target: FocusResult(True, "focused"))
+            service = MonitorService([], store, ActionExecutor(), now=clock.now,
+                                     clock=lambda: clock.now().timestamp(), focus_manager=focus)
+            service.sessions_payload()
+            clock.advance(seconds=900)
+            self.assertEqual(service.sessions_payload()[0]["status_source"], "tool-idle")
+            self.assertTrue(service.focus_session("process-100").ok)
+            self.assertTrue(service.mark_session_viewed("process-100").ok)
+            self.assertEqual(service.sessions_payload()[0]["status_source"], "tool-idle")
+
+    def test_idle_cli_timer_restarts_for_new_activity_and_process_identity(self):
+        clock = FakeDateTimeClock(datetime(2026, 10, 22, 9, 0, tzinfo=timezone.utc))
+        store = SessionStore()
+        idle = SessionUpdate("process-100", "Codex CLI - project", ToolKind.CODEX,
+                             SurfaceKind.TERMINAL, SessionStatus.IDLE, "idle", clock.now(),
+                             source="process", process_id=100, process_started_at=clock.now(),
+                             status_source="process")
+        store.apply_updates([idle])
+        service = MonitorService([], store, ActionExecutor(), now=clock.now,
+                                 clock=lambda: clock.now().timestamp())
+        service.sessions_payload()
+        clock.advance(seconds=899)
+        store.apply_updates([replace(idle, status=SessionStatus.RUNNING, updated_at=clock.now())])
+        service.sessions_payload()
+        clock.advance(seconds=1)
+        store.apply_updates([replace(idle, updated_at=clock.now())])
+        self.assertEqual(service.sessions_payload()[0]["status_source"], "process")
+        clock.advance(seconds=900)
+        self.assertEqual(service.sessions_payload()[0]["status_source"], "tool-idle")
+        store.apply_updates([replace(idle, updated_at=clock.now(), process_started_at=clock.now())])
+        self.assertEqual(service.sessions_payload()[0]["status_source"], "process")
+
+    def test_expired_wrapper_conversation_without_live_process_disappears(self):
+        clock = FakeDateTimeClock(datetime(2026, 10, 22, 9, 15, tzinfo=timezone.utc))
+        store = SessionStore()
+        store.apply_updates([SessionUpdate(
+            "wrapper", "Codex CLI - project", ToolKind.CODEX, SurfaceKind.TERMINAL,
+            SessionStatus.IDLE, "idle", clock.now() - timedelta(minutes=15), source="json",
+        )])
+        service = MonitorService([], store, ActionExecutor(), now=clock.now)
+        self.assertEqual(service.sessions_payload(), [])
+
+    def test_cli_and_desktop_share_one_idle_product_entry(self):
+        clock = FakeDateTimeClock(datetime(2026, 10, 22, 9, 0, tzinfo=timezone.utc))
+        store = SessionStore()
+        for pid, surface, status_source in ((100, SurfaceKind.TERMINAL, "process"),
+                                            (200, SurfaceKind.DESKTOP, "desktop-process")):
+            store.apply_updates([SessionUpdate(
+                "process-" + str(pid), "WorkBuddy", ToolKind.UNKNOWN, surface,
+                SessionStatus.IDLE, "idle", clock.now(), source="process", process_id=pid,
+                status_source=status_source, tool_display_name="WorkBuddy",
+            )])
+        service = MonitorService([], store, ActionExecutor(), now=clock.now,
+                                 clock=lambda: clock.now().timestamp())
+        service.sessions_payload()
+        clock.advance(seconds=900)
+        self.assertEqual([r["session_id"] for r in service.sessions_payload()], ["process-200"])
+
+    def test_cli_idle_expiry_uses_monotonic_time_when_wall_clock_moves_back(self):
+        wall = FakeDateTimeClock(datetime(2026, 10, 22, 9, 0, tzinfo=timezone.utc))
+        monotonic = FakeClock()
+        store = SessionStore()
+        store.apply_updates([SessionUpdate(
+            "process-100", "Codex CLI - project", ToolKind.CODEX, SurfaceKind.TERMINAL,
+            SessionStatus.IDLE, "idle", wall.now(), source="process", process_id=100,
+            status_source="process",
+        )])
+        service = MonitorService([], store, ActionExecutor(), now=wall.now, clock=monotonic.now)
+        service.sessions_payload()
+        wall.advance(seconds=-3600)
+        monotonic.advance(seconds=900)
+        self.assertEqual(service.sessions_payload()[0]["status_source"], "tool-idle")
+        store.replace_source_updates("process", [])
+        self.assertEqual(service.sessions_payload(), [])
+        self.assertEqual(service._process_idle_timers, {})
+
+    def test_viewed_cli_result_expires_and_true_attention_remains(self):
+        with tempfile.TemporaryDirectory() as directory:
+            clock = FakeDateTimeClock(datetime(2026, 10, 22, 9, 0, tzinfo=timezone.utc))
+            store = SessionStore(audit_dir=Path(directory))
+            result = SessionUpdate(
+                "process-100", "Claude Code CLI - project", ToolKind.CLAUDE_CODE,
+                SurfaceKind.TERMINAL, SessionStatus.NEEDS_ACTION, "done", clock.now(),
+                source="process", process_id=100, status_source="claude-session",
+                view_ack_required=True,
+            )
+            store.apply_updates([result])
+            service = MonitorService([], store, ActionExecutor(), now=clock.now)
+            self.assertTrue(service.mark_session_viewed("process-100").ok)
+            clock.advance(seconds=899)
+            self.assertEqual(service.sessions_payload()[0]["status_source"], "claude-session")
+            clock.advance(seconds=1)
+            self.assertEqual(service.sessions_payload()[0]["status_source"], "tool-idle")
+            store.apply_updates([replace(result, updated_at=clock.now(), view_ack_required=False)])
+            clock.advance(seconds=3600)
+            payload = service.sessions_payload()
+            self.assertEqual(payload[0]["status"], "needs_action")
+            self.assertEqual(payload[0]["status_source"], "claude-session")
+
+    def test_previous_view_does_not_expire_a_new_idle_period(self):
+        for source, surface, status_source in (("process", SurfaceKind.TERMINAL, "process"),
+                                                ("chatgpt-session", SurfaceKind.DESKTOP, "chatgpt-session")):
+            with self.subTest(source=source):
+                clock = FakeDateTimeClock(datetime(2026, 10, 22, 9, 0, tzinfo=timezone.utc))
+                store = SessionStore()
+                idle = SessionUpdate("process-100", "Conversation", ToolKind.CHATGPT,
+                                     surface, SessionStatus.IDLE, "idle", clock.now(),
+                                     source=source, process_id=100, status_source=status_source)
+                store.apply_updates([idle])
+                store.mark_session_viewed(idle.session_id, viewed_at=clock.now())
+                service = MonitorService([], store, ActionExecutor(), now=clock.now,
+                                         clock=lambda: clock.now().timestamp())
+                service.sessions_payload()
+                clock.advance(seconds=900)
+                store.apply_updates([replace(idle, status=SessionStatus.RUNNING, updated_at=clock.now())])
+                service.sessions_payload()
+                clock.advance(seconds=1)
+                store.apply_updates([replace(idle, updated_at=clock.now())])
+                payload = service.sessions_payload()
+                self.assertEqual(len(payload), 1)
+                self.assertEqual(payload[0]["status_source"], status_source)
+
+    def test_each_desktop_tool_has_only_one_idle_app_entry(self):
+        store = SessionStore()
+        tools = [(definition.display_name, definition.tool)
+                 for definition in AI_TOOL_DEFINITIONS if definition.desktop_main_binaries]
+        tools.append(("Qoder CN", ToolKind.UNKNOWN))
+        updates = []
+        for name, tool in tools:
+            for index in range(2):
+                pid = 60000 + len(updates)
+                updates.append(SessionUpdate(
+                    name + str(index), name + " Desktop", tool, SurfaceKind.DESKTOP,
+                    SessionStatus.IDLE, "app open", datetime.now(timezone.utc),
+                    source="process", process_id=pid, focus_process_id=pid,
+                    focus_app_name=name, status_source="desktop-process", tool_display_name=name,
+                ))
+        store.apply_updates(updates)
+        service = MonitorService([], store, ActionExecutor())
+        payload = service.sessions_payload()
+        self.assertCountEqual([row["tool_display_name"] for row in payload],
+                              [name for name, _ in tools])
+
+    def test_old_active_desktop_conversations_do_not_expire(self):
+        clock = FakeDateTimeClock(datetime(2026, 7, 14, 9, 16, tzinfo=timezone.utc))
+        for status in (SessionStatus.RUNNING, SessionStatus.NEEDS_ACTION):
+            with self.subTest(status=status):
+                store = SessionStore()
+                store.apply_updates([SessionUpdate(
+                    "conversation", "Qoder", ToolKind.UNKNOWN, SurfaceKind.DESKTOP,
+                    status, "active", clock.now() - timedelta(minutes=16),
+                    source="process", process_id=11063, status_source="qoder-log",
+                    tool_display_name="Qoder",
+                )])
+                service = MonitorService([], store, ActionExecutor(), now=clock.now)
+                self.assertEqual(len(service.sessions_payload()), 1)
+
+    def test_all_desktop_tools_expire_unviewed_idle_conversations(self):
+        tools = [(d.display_name, d.tool) for d in AI_TOOL_DEFINITIONS if d.desktop_main_binaries]
+        tools.append(("Qoder CN", ToolKind.UNKNOWN))
+        for name, tool in tools:
+            with self.subTest(tool=name):
+                clock = FakeDateTimeClock(datetime(2026, 7, 2, 9, 0, tzinfo=timezone.utc))
+                store = SessionStore()
+                store.apply_updates([
+                    SessionUpdate("conversation", name + " conversation", tool,
+                                  SurfaceKind.DESKTOP, SessionStatus.IDLE, "idle", clock.now(),
+                                  source="chatgpt-session" if tool == ToolKind.CHATGPT else "test-session",
+                                  process_id=123),
+                    SessionUpdate("process-123", name + " Desktop", tool,
+                                  SurfaceKind.DESKTOP, SessionStatus.IDLE, "app open", clock.now(),
+                                  source="process", process_id=123, status_source="desktop-process",
+                                  tool_display_name=name),
+                ])
+                service = MonitorService([], store, ActionExecutor(), now=clock.now)
+                clock.advance(seconds=899)
+                self.assertEqual([r["session_id"] for r in service.sessions_payload()], ["conversation"])
+                clock.advance(seconds=1)
+                self.assertEqual([r["session_id"] for r in service.sessions_payload()], ["process-123"])
 
     def test_focus_session_does_not_mark_viewed_on_failure(self):
         with tempfile.TemporaryDirectory() as temp_dir:

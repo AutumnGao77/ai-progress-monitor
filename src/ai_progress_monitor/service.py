@@ -120,6 +120,8 @@ class MonitorService:
         self._native_project_window_inventory: Optional[NativeProjectWindowInventory] = None
         self._native_project_window_inventory_updated_at: Optional[float] = None
         self._process_empty_started_at: Optional[float] = None
+        self._idle_visibility_lock = RLock()
+        self._process_idle_timers: Dict[str, Tuple[float, Optional[datetime]]] = {}
         self._chatgpt_process_identities: set = set()
         self._refresh_flight_lock = Lock()
         self._refresh_flight: Optional[_RefreshFlight] = None
@@ -572,7 +574,7 @@ class MonitorService:
                 (same_app and session.status in {SessionStatus.RUNNING, SessionStatus.STUCK})
                 or (session.status == SessionStatus.IDLE
                     and self.store.session_viewed_at(session.session_id) is not None
-                    and not self._is_expired_viewed_desktop_idle_session(session, current))
+                    and not self._is_expired_idle_session(session, current))
             )
         ]
         return updates + retained
@@ -582,12 +584,20 @@ class MonitorService:
 
     def visible_sessions(self) -> List[SessionUpdate]:
         current = self.now()
-        sessions = [
-            session
-            for session in self._store_sessions(now=current)
-            if not self.preferences.is_hidden(self._session_preference_key(session))
-            and not self._is_expired_viewed_desktop_idle_session(session, current)
-        ]
+        observed = self._store_sessions(now=current)
+        self._sync_process_idle_timers(observed, current)
+        eligible = [session for session in observed
+                    if not self.preferences.is_hidden(self._session_preference_key(session))]
+        sessions = [session for session in eligible
+                    if not self._is_expired_idle_session(session, current)]
+        # Only an observed process can keep a tool entry alive. A historical
+        # wrapper/JSON record alone is not evidence that its tool still runs.
+        sessions.extend(
+            _tool_idle_fallback_for_process(session)
+            for session in eligible
+            if session.source == "process" and session.surface != SurfaceKind.DESKTOP
+            and session.process_id is not None and self._is_expired_idle_session(session, current)
+        )
         full_process_ids = {
             session.process_id
             for session in sessions
@@ -603,11 +613,40 @@ class MonitorService:
             for session in sessions
             if _is_full_desktop_session(session) and session.tool == ToolKind.UNKNOWN and session.tool_display_name
         }
-        return [
-            session
-            for session in sessions
-            if not self._is_duplicate_process_session(session, full_process_ids, full_desktop_tools, full_desktop_display_names)
-        ]
+        candidates = [session for session in sessions
+                      if not self._is_duplicate_process_session(
+                          session, full_process_ids, full_desktop_tools, full_desktop_display_names)]
+        detailed_tools = {_tool_identity_key(session) for session in candidates
+                          if not _is_tool_idle_fallback(session)}
+        visible = []
+        idle_app_keys = set()
+        for session in candidates:
+            if _is_tool_idle_fallback(session):
+                key = _tool_identity_key(session)
+                if key in detailed_tools or key in idle_app_keys:
+                    continue
+                idle_app_keys.add(key)
+            visible.append(session)
+        return visible
+
+    def _sync_process_idle_timers(self, sessions: List[SessionUpdate], now: datetime) -> None:
+        monotonic_now = float(self.clock())
+        with self._idle_visibility_lock:
+            current = {}
+            for session in sessions:
+                if not _uses_process_idle_timer(session) or session.status != SessionStatus.IDLE:
+                    continue
+                key = session_instance_key(session)
+                viewed_at = self.store.session_viewed_at(session.session_id)
+                previous = self._process_idle_timers.get(key)
+                if previous is None:
+                    # A new idle period must not inherit an earlier task's view.
+                    previous = (monotonic_now, viewed_at)
+                elif previous[1] != viewed_at:
+                    age = max(0.0, (now - viewed_at).total_seconds()) if viewed_at else 0.0
+                    previous = (monotonic_now - age, viewed_at)
+                current[key] = previous
+            self._process_idle_timers = current
 
     def _is_duplicate_process_session(
         self,
@@ -669,22 +708,22 @@ class MonitorService:
 
     def _is_expired_retained_process_desktop_session(self, session: SessionUpdate, now: datetime) -> bool:
         viewed_at = self.store.session_viewed_at(session.session_id)
-        retention_started_at = viewed_at if viewed_at is not None and session.status == SessionStatus.IDLE else session.updated_at
+        retention_started_at = (max(viewed_at, session.updated_at)
+                                if viewed_at is not None and session.status == SessionStatus.IDLE
+                                else session.updated_at)
         return (now - retention_started_at).total_seconds() >= self.viewed_desktop_idle_visible_seconds
 
-    def _is_expired_viewed_desktop_idle_session(self, session: SessionUpdate, now: datetime) -> bool:
-        if _is_desktop_app_idle_fallback(session):
+    def _is_expired_idle_session(self, session: SessionUpdate, now: datetime) -> bool:
+        if _is_tool_idle_fallback(session) or session.status != SessionStatus.IDLE:
             return False
-        if session.source == "process" and not _is_full_process_desktop_session(session):
-            return False
-        if session.surface != SurfaceKind.DESKTOP:
-            return False
-        if session.status != SessionStatus.IDLE:
-            return False
+        if _uses_process_idle_timer(session):
+            # Process polling timestamps are heartbeats, not new user activity.
+            with self._idle_visibility_lock:
+                timer = self._process_idle_timers.get(session_instance_key(session))
+            return timer is not None and float(self.clock()) - timer[0] >= self.viewed_desktop_idle_visible_seconds
         viewed_at = self.store.session_viewed_at(session.session_id)
-        if viewed_at is None:
-            return False
-        return (now - viewed_at).total_seconds() >= self.viewed_desktop_idle_visible_seconds
+        started_at = max(viewed_at, session.updated_at) if viewed_at else session.updated_at
+        return (now - started_at).total_seconds() >= self.viewed_desktop_idle_visible_seconds
 
     def sessions_payload(self) -> List[dict]:
         sessions, used_fallback, generation = self._refresh_with_fallback()
@@ -774,12 +813,15 @@ class MonitorService:
             cwd=session.cwd,
         )
         self.store.audit_action(session_id, "focus-window", result.detail)
-        if result.ok:
+        if result.ok and not self._is_expired_idle_session(session, self.now()):
             self.store.mark_session_viewed(session_id, viewed_at=self.now())
         return result
 
     def mark_session_viewed(self, session_id: str) -> ActionResult:
-        if self.store.mark_session_viewed(session_id):
+        session = self._find_session(session_id)
+        if session is not None and self._is_expired_idle_session(session, self.now()):
+            return ActionResult(True, "viewed")
+        if self.store.mark_session_viewed(session_id, viewed_at=self.now()):
             self.store.audit_action(session_id, "view-session", "viewed")
             return ActionResult(True, "viewed")
         return ActionResult(False, "Session not found")
@@ -896,8 +938,35 @@ def _is_desktop_app_idle_fallback(session: SessionUpdate) -> bool:
         session.source == "process"
         and session.surface == SurfaceKind.DESKTOP
         and session.status == SessionStatus.IDLE
-        and session.status_source == "desktop-process"
+        and not _is_full_process_desktop_session(session)
     )
+
+
+def _uses_process_idle_timer(session: SessionUpdate) -> bool:
+    return (session.source == "process" and session.surface != SurfaceKind.DESKTOP
+            and session.status_source in {None, "process"})
+
+
+def _is_tool_idle_fallback(session: SessionUpdate) -> bool:
+    return _is_desktop_app_idle_fallback(session) or (
+        session.source == "process" and session.status == SessionStatus.IDLE
+        and session.status_source == "tool-idle"
+    )
+
+
+def _tool_identity_key(session: SessionUpdate):
+    name = "" if session.tool != ToolKind.UNKNOWN else (
+        session.tool_display_name or session.title.split(" CLI", 1)[0].split(" Desktop", 1)[0]
+    )
+    return (session.tool, name)
+
+
+def _tool_idle_fallback_for_process(session: SessionUpdate) -> SessionUpdate:
+    name = session.tool_display_name or {
+        ToolKind.CLAUDE_CODE: "Claude Code", ToolKind.CODEX: "Codex", ToolKind.CHATGPT: "ChatGPT",
+    }.get(session.tool, session.title.split(" CLI", 1)[0] or "AI")
+    return replace(session, title=f"{name} CLI", summary=f"{name} 仍在运行；空闲对话已收起。",
+                   safe_action=None, view_ack_required=False, status_source="tool-idle")
 
 
 def _desktop_app_fallback_key(session: SessionUpdate):

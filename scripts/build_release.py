@@ -532,7 +532,7 @@ def build_portable_release_bundle() -> None:
                 "  ChatGPT Desktop sessions are read from the compatible ~/.codex/sessions event directory when available.",
                 "  Qoder Desktop sessions are read from local Qoder/Qoder CN logs when available.",
                 "  WorkBuddy Desktop sessions are read from explicit local WorkBuddy session database states when available; ambiguous blank Pending sessions stay as the desktop idle entry.",
-                "  A viewed desktop conversation stays idle for 15 minutes, then leaves the bubble list; if the desktop app is still alive, the app idle entry remains.",
+                "  All desktop and CLI tools remove conversations after 15 minutes idle; one idle entry remains per running product. Polling heartbeats do not reset the timer.",
                 "  Clicking the bubble and successfully returning to the terminal marks that reply as viewed.",
                 "  Process-only detection does not display terminal content.",
                 "  For detailed prompt text and scripted integrations, use the wrapper scripts below.",

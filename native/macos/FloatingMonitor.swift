@@ -2,6 +2,37 @@ import Cocoa
 import ApplicationServices
 import WebKit
 
+// Output callbacks and app shutdown may run on different queues. Logging is
+// best-effort: a closed or unwritable diagnostic file must never abort the UI.
+final class NativeLogWriter {
+    private let lock = NSLock()
+    private var handle: FileHandle?
+
+    init(handle: FileHandle? = nil) {
+        self.handle = handle
+    }
+
+    func write(_ data: Data) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let current = handle else { return }
+        do {
+            try current.write(contentsOf: data)
+        } catch {
+            handle = nil
+            try? current.close()
+        }
+    }
+
+    func close() {
+        lock.lock()
+        defer { lock.unlock() }
+        let current = handle
+        handle = nil
+        try? current?.close()
+    }
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavigationDelegate, WKScriptMessageHandler {
     private typealias FocusResult = (ok: Bool, detail: String)
 
@@ -11,7 +42,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     private var monitorProcess: Process?
     private var stdoutPipe: Pipe?
     private var stderrPipe: Pipe?
-    private var logHandle: FileHandle?
+    private var logWriter = NativeLogWriter()
     private var monitorRestartWorkItem: DispatchWorkItem?
     private var monitorRestartAttempt = 0
     private var isTerminating = false
@@ -62,7 +93,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         monitorProcess?.terminationHandler = nil
         monitorProcess?.terminate()
         monitorProcess = nil
-        logHandle?.closeFile()
+        logWriter.close()
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -81,9 +112,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
             .appendingPathComponent("Library/Logs/AI Progress Monitor", isDirectory: true)
         try? FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
         let logURL = logs.appendingPathComponent("native-monitor.log")
-        FileManager.default.createFile(atPath: logURL.path, contents: nil)
-        logHandle = try? FileHandle(forWritingTo: logURL)
-        logHandle?.seekToEndOfFile()
+        if !FileManager.default.fileExists(atPath: logURL.path) {
+            FileManager.default.createFile(atPath: logURL.path, contents: nil)
+        }
+        if let handle = try? FileHandle(forWritingTo: logURL) {
+            do {
+                try handle.seekToEnd()
+                logWriter = NativeLogWriter(handle: handle)
+            } catch {
+                try? handle.close()
+            }
+        }
         writeLog("Starting native companion")
     }
 
@@ -1228,7 +1267,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
 
     private func writeLog(_ text: String) {
         guard let data = ("\(Date()) \(text)\n").data(using: .utf8) else { return }
-        logHandle?.write(data)
+        logWriter.write(data)
     }
 
     @objc private func showMonitor() {
