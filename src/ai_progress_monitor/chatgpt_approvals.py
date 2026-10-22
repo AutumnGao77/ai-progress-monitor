@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Callable, Dict, Optional, Tuple
 
 from .models import SessionStatus
+from .chatgpt_questions import canonical_question_id
 
 
 DEFAULT_APPROVAL_LOG_DIRECTORY = Path.home() / "Library" / "Logs" / "com.openai.codex"
@@ -47,6 +48,7 @@ class DesktopSessionSignal:
     status: SessionStatus
     updated_at: datetime
     view_ack_required: bool = False
+    turn_id: Optional[str] = None
 
 
 @dataclass
@@ -64,6 +66,7 @@ class _Event:
     kind: str
     thread: Optional[str] = None
     request: Optional[str] = None
+    turn_id: Optional[str] = None
 
 
 class DesktopApprovalLog:
@@ -75,6 +78,7 @@ class DesktopApprovalLog:
         self.process_alive = process_alive
         self._cursors: Dict[Path, _LogCursor] = {}
         self._pending: Dict[Tuple[str, str], Tuple[str, datetime]] = {}
+        self._questions: Dict[Tuple[str, str, str], datetime] = {}
         self._states: Dict[Tuple[str, str], DesktopSessionSignal] = {}
         self._tracked = set()
         self.session_signals: Dict[str, DesktopSessionSignal] = {}
@@ -114,6 +118,7 @@ class DesktopApprovalLog:
         files = [entry for entry in files if entry[2] == newest_process[entry[4]][1]]
         live = {entry[2] for entry in files}
         self._pending = {key: value for key, value in self._pending.items() if key[0] in live}
+        self._questions = {key: value for key, value in self._questions.items() if key[0] in live}
         self._states = {key: value for key, value in self._states.items() if key[0] in live}
         self._tracked = {key for key in self._tracked if key[0] in live}
         paths = {entry[1] for entry in files}
@@ -126,6 +131,7 @@ class DesktopApprovalLog:
         }
         if reset:
             self._pending = {key: value for key, value in self._pending.items() if key[0] not in reset}
+            self._questions = {key: value for key, value in self._questions.items() if key[0] not in reset}
             self._states = {key: value for key, value in self._states.items() if key[0] not in reset}
             self._tracked = {key for key in self._tracked if key[0] not in reset}
             for _, path, process, _, _ in files:
@@ -166,12 +172,18 @@ class DesktopApprovalLog:
             self._apply(event)
         if not complete:
             return None
+        return self._publish()
+
+    def _publish(self) -> Dict[str, datetime]:
         signals = {}
         for (_, thread), state in self._states.items():
             if thread not in signals or state.updated_at >= signals[thread].updated_at:
                 signals[thread] = state
         pending: Dict[str, datetime] = {}
         for thread, timestamp in self._pending.values():
+            if thread not in pending or timestamp > pending[thread]:
+                pending[thread] = timestamp
+        for (_, thread, _), timestamp in self._questions.items():
             if thread not in pending or timestamp > pending[thread]:
                 pending[thread] = timestamp
         for thread, timestamp in pending.items():
@@ -198,7 +210,11 @@ class DesktopApprovalLog:
                 cursor.skipping_line = False
 
     def _apply(self, event: _Event) -> None:
-        if event.kind == "request":
+        if event.kind == "question":
+            self._questions.setdefault((event.process, event.thread, event.request),
+                                       self._signal_time(event.process, event.thread, event.timestamp))
+            self._tracked.add((event.process, event.thread))
+        elif event.kind == "request":
             key = (event.process, event.request)
             self._pending[key] = (event.thread, self._signal_time(event.process, event.thread, event.timestamp))
             self._tracked.add((event.process, event.thread))
@@ -220,8 +236,11 @@ class DesktopApprovalLog:
                     pending_key: value for pending_key, value in self._pending.items()
                     if pending_key[0] != event.process or value[0] != event.thread
                 }
+                self._questions = {question: value for question, value in self._questions.items()
+                                   if question[:2] != key}
                 self._states[key] = DesktopSessionSignal(
                     SessionStatus.NEEDS_ACTION, timestamp, view_ack_required=True,
+                    turn_id=event.turn_id,
                 )
 
     def _signal_time(self, process: str, thread: str, timestamp: datetime) -> datetime:
@@ -229,9 +248,24 @@ class DesktopApprovalLog:
         times = [timestamp] + ([state.updated_at] if state is not None else [])
         times.extend(value[1] for key, value in self._pending.items()
                      if key[0] == process and value[0] == thread)
+        times.extend(value for key, value in self._questions.items() if key[:2] == (process, thread))
         return max(times)
 
+    def resolve_questions(self, thread: str, answers: Dict[str, datetime]) -> None:
+        for key, requested_at in list(self._questions.items()):
+            process, question_thread, question = key
+            if question_thread == thread and question in answers:
+                timestamp = self._signal_time(process, thread, max(requested_at, answers[question]))
+                del self._questions[key]
+                self._states[(process, thread)] = DesktopSessionSignal(SessionStatus.RUNNING, timestamp)
+        self._publish()
+
+    def has_questions(self, thread: str) -> bool:
+        return any(key[1] == thread for key in self._questions)
+
     def dismiss_through(self, thread: str, timestamp: datetime) -> None:
+        self._questions = {key: value for key, value in self._questions.items()
+                           if key[1] != thread or value > timestamp}
         self._pending = {
             key: value for key, value in self._pending.items()
             if value[0] != thread or value[1] > timestamp
@@ -243,13 +277,29 @@ class DesktopApprovalLog:
 
     @staticmethod
     def _event(line: str, process: str) -> Optional[_Event]:
-        header = re.match(r"^\S+ \w+ \[electron-message-handler\] (.*)$", line)
+        header = re.match(r"^\S+ \w+ \[(electron-message-handler|notifications-service)\] (.*)$", line)
         if header is None:
             return None
-        message = header[1]
+        message = header[2]
         thread = None
         request = None
-        if message.startswith("[desktop-notifications] received approval "):
+        turn_id = None
+        if header[1] == "notifications-service":
+            prefix = "[desktop-notifications] forward show kind=question notificationId=async-question-"
+            if not message.startswith(prefix):
+                return None
+            try:
+                identity = json.loads(message[len(prefix):])
+            except ValueError:
+                return None
+            if (not isinstance(identity, list) or len(identity) != 6 or identity[2] != "local"
+                    or not isinstance(identity[3], str) or not re.fullmatch(r"[\w-]+", identity[3])):
+                return None
+            thread, request = identity[3], canonical_question_id(identity[5])
+            if request is None:
+                return None
+            kind = "question"
+        elif message.startswith("[desktop-notifications] received approval "):
             conversation = re.search(r"\bconversationId=([\w-]+)\b", message)
             request_match = re.search(r"\brequestId=([\w-]+)\b", message)
             if conversation is None or request_match is None:
@@ -275,6 +325,8 @@ class DesktopApprovalLog:
             if conversation is None:
                 return None
             thread, kind = conversation[1], "complete"
+            turn_match = re.search(r"\bturnId=([\w-]+)\b", message)
+            turn_id = turn_match[1] if turn_match is not None else None
         else:
             return None
         try:
@@ -283,4 +335,4 @@ class DesktopApprovalLog:
                 return None
         except ValueError:
             return None
-        return _Event(timestamp, process, kind, thread, request)
+        return _Event(timestamp, process, kind, thread, request, turn_id)

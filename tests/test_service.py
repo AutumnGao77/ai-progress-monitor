@@ -60,6 +60,23 @@ class MonitorServiceTests(unittest.TestCase):
         self.assertNotIn("observation_clock_adjusted", payload[0])
         self.assertNotIn("observation_wall_at", payload[0])
 
+    def test_qoder_new_desktop_store_has_full_monitoring_and_view_ack(self):
+        now = datetime(2026, 10, 22, tzinfo=timezone.utc)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = SessionStore(audit_dir=Path(temp_dir))
+            store.apply_updates([SessionUpdate(
+                "qoder-desktop-synthetic", "Qoder CN Desktop - Synthetic test", ToolKind.UNKNOWN,
+                SurfaceKind.DESKTOP, SessionStatus.NEEDS_ACTION, "Completed", now,
+                source="process", process_id=123, focus_process_id=123,
+                focus_app_name="Qoder CN", tool_display_name="Qoder CN",
+                status_source="qoder-desktop", view_ack_required=True,
+            )])
+            service = MonitorService([], store, ActionExecutor(), now=lambda: now,
+                focus_manager=WindowFocusManager(sender=lambda target: FocusResult(True, "focused")))
+            self.assertEqual(service.sessions_payload()[0]["monitoring_level"], "full")
+            self.assertTrue(service.focus_session("qoder-desktop-synthetic").ok)
+            self.assertEqual(service.sessions_payload()[0]["status"], "idle")
+
     def test_qoder_log_desktop_session_payload_is_full_and_view_acknowledged_after_focus(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             store = SessionStore(audit_dir=Path(temp_dir))

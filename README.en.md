@@ -14,9 +14,9 @@ The current stable delivery focus is the local Web Companion plus the validated 
 |---|---|
 | Stable release | [Latest published release and downloads](https://github.com/AutumnGao77/ai-progress-monitor/releases/latest); see that page for the version, source commit, and SHA-256 hashes |
 | macOS package | Download `AI-Progress-Monitor-v<version>-macOS-arm64.zip` from the latest release; macOS 13+ on Apple silicon and Python 3.9+ required |
-| macOS guide | [macOS installation and usage guide](docs/ai-progress-monitor-v0.3.1-user-guide.md); v0.3.2 retains these installation and interaction steps |
+| macOS guide | [macOS installation and usage guide](docs/ai-progress-monitor-v0.3.1-user-guide.md); later versions retain these installation and interaction steps |
 | Portable package | Download `ai-progress-monitor-v<version>-portable.zip` from the latest release for Web/CLI integrations, diagnostics, and the Windows preview |
-| v0.3.2 fixes | Supports newer ChatGPT Desktop events and approval lifecycles: needs-action while waiting, running after approval, and review on completion; recovers unanswered approvals after Pet restarts and handles rotated logs, large appends, and clock rollback |
+| v0.3.3 source changes | Corrects ChatGPT asynchronous questions, long-session replay, and completion states; supports Qoder CN 0.4.8 session storage; reduces process scanning overhead and preserves viewed results across temporary source gaps; see the [release notes](docs/releases/v0.3.3.md) |
 | Historical release evidence | [v0.3.1 package acceptance record](docs/qa/2026-08-24-v0.3.1-release-packaging-validation.md); this evidence applies only to v0.3.1 |
 | Withdrawn v0.3.0 candidate | Its GitHub Release remains a draft. Retained attachments are historical evidence only and must not be published or presented as supported downloads; see `docs/qa/2026-07-30-v0.3.0-release-packaging-validation.md` |
 
@@ -35,7 +35,7 @@ The current stable delivery focus is the local Web Companion plus the validated 
 | Click to focus | Clicking a bubble returns to the matching AI tool window when possible; project editors share one project-window validation and exact-focus policy rather than a Zed-specific path |
 | Direct CLI detection | Detects configured AI CLI sessions conservatively, including Claude Code, Codex, Qoder, WorkBuddy, and `codebuddy` |
 | ChatGPT Desktop session detection | Reads explicitly identified ChatGPT/Codex Desktop-originated events from the compatible local `~/.codex/sessions` store; macOS app logs supplement explicit approval lifecycles and recover unanswered approvals after Pet restarts; Codex CLI remains separate |
-| Qoder desktop status detection | Reads local Qoder/Qoder CN logs and cache metadata; ordinary results can be acknowledged after viewing, while explicit quota, plan, or model-configuration blockers remain needs-action until the source state changes |
+| Qoder desktop status detection | Reads legacy Qoder/Qoder CN logs and cache metadata, plus the Qoder CN 0.4.8 session database and SDK logs; ordinary results can be acknowledged after viewing, while explicit quota, plan, or model-configuration blockers remain needs-action until the source state changes |
 | WorkBuddy desktop status detection | Reads explicit local WorkBuddy session database and runtime-log states, and falls back to a desktop idle entry when only the app is running |
 | JSON event source | Supported for reliable integrations |
 | Local notifications | User-controllable system notifications with a persistent Pet menu toggle |

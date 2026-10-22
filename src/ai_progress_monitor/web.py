@@ -23,6 +23,7 @@ from .preferences import MonitorPreferences, normalize_pet_appearance
 from .service import MonitorService
 from .sources import ChatGPTSessionSource, JsonSessionSource, OsWindowSource, ProcessSource
 from .store import SessionStore
+from .state_trace import configure_state_logging
 
 
 DEFAULT_MONITOR_HOME = Path.home() / ".ai-progress-monitor"
@@ -572,6 +573,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="Remove old idle/unknown/stuck session files after this many seconds; 0 disables cleanup",
     )
     args = parser.parse_args(argv)
+    configure_state_logging()
 
     preferences = MonitorPreferences()
     notifier = NotificationManager(state_path=preferences.path.parent / "notification-state.json")

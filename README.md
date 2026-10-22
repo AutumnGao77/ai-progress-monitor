@@ -14,9 +14,9 @@
 |---|---|
 | 当前稳定版 | [查看最新正式发布及附件](https://github.com/AutumnGao77/ai-progress-monitor/releases/latest)；版本、源码提交及 SHA-256 以该发布页为准 |
 | macOS 用户包 | 在最新发布页下载 `AI-Progress-Monitor-v<版本>-macOS-arm64.zip`；支持 macOS 13+ Apple Silicon，需要 Python 3.9+ |
-| 新手使用说明 | [查看 macOS 基础使用说明](docs/ai-progress-monitor-v0.3.1-user-guide.md)；v0.3.2 沿用安装与操作方式 |
+| 新手使用说明 | [查看 macOS 基础使用说明](docs/ai-progress-monitor-v0.3.1-user-guide.md)；后续版本沿用安装与操作方式 |
 | 便携/集成包 | 在最新发布页下载 `ai-progress-monitor-v<版本>-portable.zip`；用于 Web/CLI 集成、诊断和 Windows 轻量预览 |
-| v0.3.2 修复 | 兼容新版 ChatGPT 桌面会话事件；等待审批显示待处理，批准后恢复进行中，完成后提示查看；恢复未处理审批并处理日志轮转、大量追加与时钟回拨 |
+| v0.3.3 源码修复 | 修复 ChatGPT 异步提问、长会话和完成状态误报；支持 Qoder CN 0.4.8 新会话数据；减少进程扫描开销，防止已查看结果因数据源短暂中断而重复提醒；详见 [版本说明](docs/releases/v0.3.3.md) |
 | 历史验收记录 | [v0.3.1 最终包验收记录](docs/qa/2026-08-24-v0.3.1-release-packaging-validation.md)；该记录仅对应 v0.3.1 |
 | v0.3.0 撤回候选 | GitHub Release 保持 Draft；旧附件仅保留为历史证据，不得发布或作为用户下载包；详见 `docs/qa/2026-07-30-v0.3.0-release-packaging-validation.md` |
 
