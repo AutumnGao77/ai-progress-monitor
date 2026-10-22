@@ -16,6 +16,7 @@ from typing import Callable, Iterable, List, Optional, Tuple
 from .cleanup import cleanup_session_files
 from .classifier import classify_session_text
 from .chatgpt_approvals import DesktopApprovalLog
+from .chatgpt_stream import DesktopRequestStream
 from .chatgpt_history import LifecycleHistory, has_visible_content
 from .chatgpt_questions import async_question_ids, answered_question_ids, rejected_async_call
 from .models import ActionKind, SafeAction, SessionStatus, SessionUpdate, SurfaceKind, ToolKind
@@ -291,6 +292,7 @@ class ChatGPTSessionSource:
         completed_visible_seconds: float = CODEX_SESSION_COMPLETED_VISIBLE_SECONDS,
         source_started_at: Optional[datetime] = None,
         approval_log: Optional[DesktopApprovalLog] = None,
+        request_stream: Optional[DesktopRequestStream] = None,
     ):
         self.directory = directory or DEFAULT_CHATGPT_SESSIONS_DIR
         self.now = now or (lambda: datetime.now(timezone.utc))
@@ -299,6 +301,11 @@ class ChatGPTSessionSource:
         self.source_started_at = source_started_at
         # Explicit test/custom session directories must not read host app logs.
         self.approval_log = approval_log or (DesktopApprovalLog() if directory is None else None)
+        self.request_stream = request_stream or (
+            DesktopRequestStream() if directory is None and platform.system() == "Darwin" else None)
+        self._stream_attention = {}
+        self._stream_resumed = {}
+        self._stream_processes = frozenset()
         self._session_histories: dict[Path, LifecycleHistory] = {}
 
     def poll(self) -> Optional[List[SessionUpdate]]:
@@ -324,18 +331,50 @@ class ChatGPTSessionSource:
                 continue
         paths = [path for _mtime, path in sorted(paths_with_mtime, key=lambda item: item[0], reverse=True)]
         selected = paths[:80]
+        try:
+            initial_stats = {path: path.stat() for path in selected}
+        except OSError:
+            return None
+        initial_evidence = {path: _read_chatgpt_session_evidence(path) for path in selected}
+        stream_pending = {}
+        if self.request_stream is not None and self.approval_log is not None:
+            observed_threads = [item.update.session_id.removeprefix("chatgpt-session-")
+                                for item in initial_evidence.values() if item is not None]
+            processes = frozenset(self.approval_log.live_processes)
+            if processes != self._stream_processes:
+                # An app restart is not evidence that a user answered a request.
+                self._stream_attention.clear()
+                self._stream_resumed.clear()
+                self._stream_processes = processes
+            stream_pending = self.request_stream.poll(observed_threads, processes)
+            for thread in self._stream_attention.keys() - stream_pending.keys():
+                self._stream_resumed[thread] = current
+            self._stream_attention = {thread: self._stream_attention.get(thread, current)
+                                      for thread in stream_pending}
+            if not self.approval_log.live_processes:
+                self._stream_attention.clear()
+                self._stream_resumed.clear()
+            self._stream_resumed = {thread: timestamp for thread, timestamp in self._stream_resumed.items()
+                                    if (current - timestamp).total_seconds() < self.running_stale_seconds}
         # Outstanding desktop approvals may refer to an old, no-longer-written rollout.
-        selected.extend(path for path in paths[80:] if _codex_session_id_from_path(path) in signals)
+        selected.extend(path for path in paths[80:]
+                        if _codex_session_id_from_path(path) in signals
+                        or _codex_session_id_from_path(path) in stream_pending)
         self._session_histories = {path: history for path, history in self._session_histories.items() if path in selected}
         history_budget = CHATGPT_HISTORY_POLL_BYTE_BUDGET
         history_deadline = time.monotonic() + CHATGPT_HISTORY_POLL_TIME_BUDGET
         candidates = {}
         for path in selected:
             try:
-                initial_stat = path.stat()
+                current_stat = path.stat()
             except OSError:
                 return None
-            evidence = _read_chatgpt_session_evidence(path)
+            initial_stat = initial_stats.get(path, current_stat)
+            if (initial_stat.st_ino, initial_stat.st_size, initial_stat.st_mtime_ns) != (
+                    current_stat.st_ino, current_stat.st_size, current_stat.st_mtime_ns):
+                return None
+            evidence = (initial_evidence[path] if path in initial_evidence
+                        else _read_chatgpt_session_evidence(path))
             if evidence is None:
                 continue
             update = evidence.update
@@ -343,6 +382,7 @@ class ChatGPTSessionSource:
             # A file untouched since startup cannot contain new activity. Live
             # desktop log signals can still require replay of that older file.
             if (self.source_started_at is not None and thread_id not in signals
+                    and thread_id not in stream_pending and thread_id not in self._stream_resumed
                     and initial_stat.st_mtime < self.source_started_at.timestamp()
                     and evidence.update.updated_at < self.source_started_at):
                 continue
@@ -402,6 +442,22 @@ class ChatGPTSessionSource:
                                                  if signal.status == SessionStatus.RUNNING else signal.updated_at),
                                      view_ack_required=signal.view_ack_required)
                     pending_approval = log_pending
+            observed_at = self._stream_attention.get(thread_id)
+            pending_turns = stream_pending.get(thread_id, ())
+            stream_waiting = bool(pending_turns) and any(
+                (turn is None or evidence.active_turn_id is None or turn == evidence.active_turn_id)
+                and (turn is None or turn != evidence.completed_turn_id)
+                for turn in pending_turns
+            )
+            if (stream_waiting and observed_at is not None and evidence.boundary_at is not None
+                    and evidence.boundary_at > observed_at and update.status != SessionStatus.RUNNING):
+                stream_waiting = False
+            if stream_waiting:
+                update = replace(update, status=SessionStatus.NEEDS_ACTION,
+                                 view_ack_required=False, updated_at=observed_at)
+                pending_approval = True
+            elif thread_id in self._stream_resumed and update.status == SessionStatus.RUNNING:
+                update = replace(update, updated_at=max(update.updated_at, self._stream_resumed[thread_id]))
             if self._visible(update, current, pending_approval):
                 updates.append(update)
         for thread_id, signal in signals.items():
@@ -2643,6 +2699,7 @@ class _ChatGPTSessionEvidence:
     pending_async_input: bool
     answered_async_questions: dict[str, datetime]
     completed_turn_id: Optional[str]
+    active_turn_id: Optional[str]
 
 
 def _read_chatgpt_session_evidence(path: Path, middle_records: Optional[List[dict]] = None) -> Optional[_ChatGPTSessionEvidence]:
@@ -2821,7 +2878,9 @@ def _read_chatgpt_session_evidence(path: Path, middle_records: Optional[List[dic
             completed_turn_id = _optional_str(completed_payload.get("turn_id"))
     return _ChatGPTSessionEvidence(update, boundary_at, status_at,
                                   bool(pending_async_indices), answered_async_questions,
-                                  completed_turn_id)
+                                  completed_turn_id,
+                                  _optional_str(_codex_payload(records[last_started_index]).get("turn_id"))
+                                  if last_started_index >= 0 else None)
 
 
 def _chatgpt_session_status(

@@ -82,6 +82,7 @@ class DesktopApprovalLog:
         self._states: Dict[Tuple[str, str], DesktopSessionSignal] = {}
         self._tracked = set()
         self.session_signals: Dict[str, DesktopSessionSignal] = {}
+        self.live_processes = frozenset()
 
     def poll(self) -> Optional[Dict[str, datetime]]:
         """Return pending requests, or None while catching up/unable to read.
@@ -172,6 +173,7 @@ class DesktopApprovalLog:
             self._apply(event)
         if not complete:
             return None
+        self.live_processes = frozenset(live)
         return self._publish()
 
     def _publish(self) -> Dict[str, datetime]:
