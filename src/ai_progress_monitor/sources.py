@@ -640,6 +640,7 @@ AI_TOOL_DEFINITIONS: Tuple[AiToolDefinition, ...] = (
             "/main/daemon-app-server-entry.js",
             "/main/sidecar-entry.js",
             "/cli/bin/codebuddy --serve",
+            "/cli/bin/codebuddy --prewarm",
             "mcp-app-bootstrap.cjs",
         ),
     ),
@@ -652,6 +653,13 @@ AI_TOOL_DEFINITIONS: Tuple[AiToolDefinition, ...] = (
             "/qoder.app/contents/macos/electron",
             "/qoder cn.app/contents/macos/qoder cn",
             "/qoder cn.app/contents/macos/electron",
+        ),
+        # These services reuse the desktop executable, but are not app windows.
+        ignored_desktop_command_tokens=(
+            "/qoder-worker-runtime.obf.mjs",
+            "/qoder-search.bundle.mjs",
+            "/qoder-qmind-mcp-server.cjs",
+            "/runtime/server.cjs",
         ),
         desktop_session_databases=((
             "/qoder cn.app/contents/macos/qoder cn",

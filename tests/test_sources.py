@@ -2075,6 +2075,22 @@ class SourceTests(unittest.TestCase):
         self.assertEqual(updates[0].focus_process_id, 60489)
         self.assertEqual(updates[0].focus_app_name, "Qoder")
 
+    def test_qoder_shell_services_do_not_create_startup_conversations(self):
+        for name in ("Qoder", "Qoder CN"):
+            with self.subTest(name=name):
+                binary = "/Applications/" + name + ".app/Contents/MacOS/" + name
+                scripts = ("/resources/qoder-worker-runtime.obf.mjs",
+                           "/resources/qoder-search.bundle.mjs",
+                           "/dist/qoder-qmind-mcp-server.cjs",
+                           "/plugins/runtime/server.cjs")
+                commands = [binary] + [binary + " " + path for path in scripts]
+                rows = ["process_id={}\tprocess_name={}\tcommand={}\tcpu_percent=0.0\tstat=S".format(
+                    60000 + index, binary, command) for index, command in enumerate(commands)]
+                with mock.patch("ai_progress_monitor.sources.QoderDesktopReader.read", return_value=[]):
+                    updates = list(_classify_process_rows(rows, qoder_logs_dirs=(), workbuddy_db_paths=()))
+                self.assertEqual([(u.session_id, u.status_source) for u in updates],
+                                 [("process-60000", "desktop-process")])
+
     def test_shell_process_mentioning_configured_desktop_app_is_not_classified_as_app(self):
         rows = [
             "process_id=51006\tprocess_name=sh\tcommand=sh -c echo /Applications/Qoder CN.app/Contents/MacOS/Electron\tcpu_percent=0.0\tstat=S+"
@@ -2094,6 +2110,16 @@ class SourceTests(unittest.TestCase):
         updates = list(_classify_process_rows(rows, workbuddy_db_paths=()))
 
         self.assertEqual(updates, [])
+
+    def test_workbuddy_prewarm_worker_is_not_a_desktop_entry(self):
+        binary = "/Applications/WorkBuddy.app/Contents/MacOS/Electron"
+        rows = [
+            "process_id=52000\tprocess_name={}\tcommand={}\tcpu_percent=0.0\tstat=S".format(binary, binary),
+            "process_id=52001\tprocess_name={}\tcommand={} /Applications/WorkBuddy.app/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy --prewarm --prewarm-id test-pool\tcpu_percent=0.0\tstat=S".format(binary, binary),
+        ]
+        updates = list(_classify_process_rows(rows, workbuddy_db_paths=(), qoder_logs_dirs=()))
+        self.assertEqual([(u.session_id, u.status_source) for u in updates],
+                         [("process-52000", "desktop-process")])
 
     def test_workbuddy_db_sessions_create_full_desktop_conversation_entries(self):
         with tempfile.TemporaryDirectory() as temp_dir:

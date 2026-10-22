@@ -152,3 +152,10 @@ python3 scripts/validate_release.py
 | 诊断工具 | `scripts/doctor.py` 可用于定位权限、目录和平台适配问题 |
 | Pet 偏好配置 | `~/.ai-progress-monitor/preferences.json` 支持 `pet_appearance`、布尔值 `notifications_enabled` 和 `pet_assets.*` 本地路径；通知值缺失或非法时默认开启，资源无效时回退内置资源 |
 | 通知运行基线 | `~/.ai-progress-monitor/notification-state.json` 只包含哈希会话键、状态和通知时间，权限为 `600`；不得出现原始会话 ID、标题、项目名或摘要；历史/非活跃条目最多 512 条，当前活跃会话优先保留；损坏和写入失败安全降级 |
+
+## v0.3.4 新增验收边界
+
+- 所有已注册工具的桌面和 CLI 空闲对话在 15 分钟边界收口；同产品只保留一个存活入口。运行中和真正待操作状态保留，进程退出清理，重新活动恢复具体对话。
+- CLI 扫描心跳、墙钟回拨不延长连续空闲计时；同 PID 的新进程独立计时；查看收起后的工具入口不重新展开旧对话。
+- Qoder / Qoder CN 的搜索、知识库、插件服务，以及 WorkBuddy 预热进程，不生成额外桌面气泡。
+- macOS 日志写入失败、日志关闭后迟到回调和并发关闭不能导致原生 App 异常退出。验证原生窗口与后端均存活，不能只凭 HTTP 响应认定启动成功。
