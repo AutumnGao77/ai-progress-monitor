@@ -5,6 +5,7 @@ import os
 import platform
 import re
 import signal
+from contextlib import closing
 import sqlite3
 import subprocess
 import time
@@ -29,7 +30,9 @@ SOURCE_COMMAND_TIMEOUT_SECONDS = 4.0
 DEFAULT_CLAUDE_SESSIONS_DIR = Path.home() / ".claude" / "sessions"
 # ChatGPT Desktop 继续沿用 Codex 会话事件目录；这里只迁移产品身份，不复制数据。
 DEFAULT_CHATGPT_SESSIONS_DIR = Path.home() / ".codex" / "sessions"
+QODER_DESKTOP_PRODUCTS = ("com.qoder.app.stable", "com.qodercn.app.stable")
 DEFAULT_QODER_LOGS_DIRS: Tuple[Path, ...] = (
+    *(Path.home() / "Library" / "Application Support" / product / "logs" for product in QODER_DESKTOP_PRODUCTS),
     Path.home() / "Library" / "Application Support" / "QoderCN" / "logs",
     Path.home() / "Library" / "Application Support" / "QoderCN" / "SharedClientCache" / "logs",
     Path.home() / "Library" / "Application Support" / "Qoder" / "logs",
@@ -251,6 +254,7 @@ class ProcessSource:
         source_started_at: Optional[datetime] = None,
         now: Optional[Callable[[], datetime]] = None,
     ):
+        self._workbuddy_main_rows = {}
         self.claude_sessions_dir = claude_sessions_dir or DEFAULT_CLAUDE_SESSIONS_DIR
         self.qoder_logs_dirs = tuple(qoder_logs_dirs) if qoder_logs_dirs is not None else DEFAULT_QODER_LOGS_DIRS
         self.workbuddy_db_paths = (
@@ -268,6 +272,8 @@ class ProcessSource:
             rows = _run_command(_posix_process_command())
         if rows is None:
             return None
+        if system == "darwin":
+            rows = self._stable_desktop_rows(rows)
         return list(
             _classify_process_rows(
                 rows,
@@ -279,6 +285,48 @@ class ProcessSource:
                 qoder_desktop_reader=self._qoder_desktop_reader,
             )
         )
+
+
+    def _stable_desktop_rows(self, rows: List[str]) -> List[str]:
+        # Electron/Node helpers can use the main binary as their executable.
+        parsed = [_parse_window_row(row) for row in rows]
+        owners = {}
+        for item in parsed:
+            app = _detect_desktop_app(item.get("process_name", ""), item.get("command", ""))
+            if app and app.key in {"qoder", "workbuddy"}:
+                name = _tool_display_name_for_process(app, item.get("process_name", ""), item.get("command", ""))
+                owners[item.get("process_id")] = name
+        result = []
+        current = {}
+        for row, item in zip(rows, parsed):
+            pid = item.get("process_id")
+            if pid in owners and owners.get(item.get("parent_pid")) == owners[pid]:
+                continue
+            result.append(row)
+            if owners.get(pid) == "WorkBuddy" and item.get("process_started_at"):
+                current[pid] = (item["process_started_at"], row)
+        observed = {item.get("process_id") for item in parsed}
+        for pid, (started, row) in self._workbuddy_main_rows.items():
+            if pid not in observed and _same_workbuddy_process(pid, started):
+                result.append(row)
+        # Recovered rows are used once. A confirmed exit never receives a grace poll.
+        self._workbuddy_main_rows = current
+        return result
+
+
+def _same_workbuddy_process(pid: str, started: str) -> bool:
+    if not pid or not pid.isdecimal():
+        return False
+    try:
+        result = subprocess.run(["ps", "-p", pid, "-o", "lstart=,comm="],
+                                capture_output=True, text=True, timeout=0.3,
+                                env={**os.environ, "TZ": "UTC", "LC_ALL": "C"})
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    fields = result.stdout.split(None, 5)
+    return (len(fields) == 6 and " ".join(fields[:5]) == " ".join(started.split())
+            and fields[5].strip().lower().endswith(("/workbuddy.app/contents/macos/electron",
+                                                   "/workbuddy.app/contents/macos/workbuddy")))
 
 
 class ChatGPTSessionSource:
@@ -543,6 +591,7 @@ class _QoderTaskState:
     persistent_user_blocker_at: Optional[datetime] = None
     last_running_at: Optional[datetime] = None
     short_run_visibility_allowed: bool = True
+    desktop_unread_result: bool = False
 
 
 @dataclass(frozen=True)
@@ -661,15 +710,16 @@ AI_TOOL_DEFINITIONS: Tuple[AiToolDefinition, ...] = (
             "/qoder-qmind-mcp-server.cjs",
             "/runtime/server.cjs",
         ),
-        desktop_session_databases=((
-            "/qoder cn.app/contents/macos/qoder cn",
-            Path.home() / "Library" / "Application Support" / "com.qodercn.app.stable" / "main.sqlite",
-        ),),
+        desktop_session_databases=(
+            ("/qoder cn.app/contents/macos/qoder cn", DEFAULT_QODER_LOGS_DIRS[1].parent / "main.sqlite"),
+            ("/qoder.app/contents/macos/qoder", DEFAULT_QODER_LOGS_DIRS[0].parent / "main.sqlite"),
+        ),
         generated_conversation_path_patterns=(
             r"(^|/|\\)Documents(/|\\)QoderCN(/|\\)\d{4}-\d{2}-\d{2}(/|\\)[^/\\]+$",
             r"(^|/|\\)Documents(/|\\)Qoder(/|\\)\d{4}-\d{2}-\d{2}(/|\\)[^/\\]+$",
         ),
         ignored_command_tokens=(
+            "/qoder ide.app/contents/macos/qoder",
             "/qoder.app/contents/resources/app/resources/bin/",
             "/qoder cn.app/contents/resources/app/resources/bin/",
         ),
@@ -728,14 +778,19 @@ def _classify_process_rows(
             title = f"{tool_display_name} Desktop"
             modern_db = next((path for binary, path in tool_definition.desktop_session_databases
                               if _looks_like_invoked_desktop_binary(process_name, command, binary)), None)
+            # The regular product reused its executable name for the older IDE.
+            if (modern_db is not None and modern_db.parent.name == "com.qoder.app.stable"
+                    and (modern_db.parent / "logs" not in qoder_log_dirs or not modern_db.is_file())):
+                modern_db = None
             if modern_db is not None:
                 reader = qoder_desktop_reader or QoderDesktopReader()
-                modern_states = reader.read(modern_db, now=current, source_started_at=source_started_at)
+                modern_states = reader.read(modern_db, now=current, source_started_at=source_started_at,
+                                            process_started_at=process_started_at)
                 if modern_states:
                     for state in modern_states:
                         yield SessionUpdate(
                             session_id=f"qoder-desktop-{state.session_id}",
-                            title=f"{tool_display_name} Desktop - {state.title or '对话'}",
+                            title=f"{tool_display_name} Desktop - {_qoder_readable_title(state.title, state.cwd) or '对话'}",
                             tool=tool, surface=surface, status=state.status,
                             summary=_qoder_task_summary(state.status), updated_at=state.updated_at,
                             source="process", process_id=process_id, process_name=process_name or title,
@@ -792,6 +847,7 @@ def _classify_process_rows(
                         workbuddy_db_paths,
                         current,
                         source_started_at,
+                        process_started_at,
                     )
                 if workbuddy_states:
                     focus_process_id = focus_process_id or process_id
@@ -914,8 +970,8 @@ def _filter_qoder_log_dirs(log_dirs: Tuple[Path, ...], product: str) -> Tuple[Pa
     filtered: List[Path] = []
     for path in log_dirs:
         parts = {part.lower() for part in path.parts}
-        has_cn = "qodercn" in parts or "qoder cn" in parts
-        has_regular = "qoder" in parts
+        has_cn = "qodercn" in parts or "qoder cn" in parts or "com.qodercn.app.stable" in parts
+        has_regular = "qoder" in parts or "com.qoder.app.stable" in parts
         if product == "qodercn" and has_cn:
             filtered.append(path)
         elif product == "qoder" and has_regular and not has_cn:
@@ -928,6 +984,43 @@ def _read_qoder_task_state(logs_dirs: Iterable[Path], now: datetime) -> Optional
     return states[0] if states else None
 
 
+def _read_qoder_desktop_states(logs_dir: Path) -> List[_QoderTaskState]:
+    try:
+        path = max(logs_dir.glob("*/main.log"), key=lambda item: item.parent.name)
+    except (OSError, ValueError):
+        return []
+    latest = {}
+    for line in _read_text_tail(path, QODER_LOG_TAIL_BYTES).splitlines():
+        if "] Main ChatSession control state committed {" not in line:
+            continue
+        data = _qoder_log_json_payload(line)
+        if not data or not isinstance(data.get("sessionId"), str):
+            continue
+        timestamp = _parse_codex_timestamp(line.partition("]")[0].lstrip("["))
+        if timestamp is None:
+            continue
+        turn = data.get("activeTurnState") or data.get("terminalStatus") or data.get("runtimeState")
+        status = {"starting": SessionStatus.RUNNING, "running": SessionStatus.RUNNING,
+                  "waiting-user": SessionStatus.NEEDS_ACTION, "completed": SessionStatus.NEEDS_ACTION,
+                  "failed": SessionStatus.NEEDS_ACTION, "interrupted": SessionStatus.IDLE,
+                  "canceled": SessionStatus.IDLE, "cold": SessionStatus.IDLE, "ready": SessionStatus.IDLE}.get(turn)
+        if status is not None:
+            key = data["sessionId"]
+            latest[key] = _QoderTaskState(status, timestamp, key, user_attention_signal=turn == "waiting-user")
+    db = logs_dir.parent / "main.sqlite"
+    if latest and db.is_file():
+        try:
+            with closing(sqlite3.connect(db.as_uri() + "?mode=ro", uri=True, timeout=0.1)) as conn:
+                for key in latest:
+                    row = conn.execute("SELECT title,cwd,unread FROM chat_sessions WHERE session_id=?", (key,)).fetchone()
+                    if row:
+                        latest[key] = replace(latest[key], title=_qoder_readable_title(row[0], row[1]), cwd=row[1],
+                                              desktop_unread_result=row[2] == 1 and latest[key].status == SessionStatus.NEEDS_ACTION)
+        except sqlite3.Error:
+            pass
+    return list(latest.values())
+
+
 def _read_qoder_active_task_states(
     logs_dirs: Iterable[Path],
     now: datetime,
@@ -936,7 +1029,11 @@ def _read_qoder_active_task_states(
     states_by_task: dict[str, _QoderTaskState] = {}
     anonymous_states: List[_QoderTaskState] = []
     metadata_by_task: dict[str, _QoderTaskMetadata] = {}
-    for path in _qoder_quest_log_paths(logs_dirs):
+    desktop_dirs = [d for d in logs_dirs if d.parent.name in QODER_DESKTOP_PRODUCTS]
+    for directory in desktop_dirs:
+        for state in _read_qoder_desktop_states(directory):
+            states_by_task[state.task_id] = state
+    for path in _qoder_quest_log_paths(d for d in logs_dirs if d not in desktop_dirs):
         for task_id, metadata in _read_qoder_task_metadata_from_log(path).items():
             existing_metadata = metadata_by_task.get(task_id)
             if existing_metadata is None or metadata.updated_at >= existing_metadata.updated_at:
@@ -990,6 +1087,7 @@ def _read_qoder_active_task_states(
             and state.updated_at < source_started_at
             and state.status != SessionStatus.RUNNING
             and not state.user_attention_signal
+            and not state.desktop_unread_result
         ):
             continue
         if state.status == SessionStatus.RUNNING and age_seconds > QODER_TASK_RUNNING_STALE_SECONDS:
@@ -2124,6 +2222,7 @@ def _read_workbuddy_active_session_states(
     db_paths: Iterable[Path],
     now: datetime,
     source_started_at: Optional[datetime] = None,
+    process_started_at: Optional[datetime] = None,
 ) -> List[_WorkBuddySessionState]:
     states_by_session: dict[str, _WorkBuddySessionState] = {}
     for db_path in db_paths:
@@ -2152,7 +2251,8 @@ def _read_workbuddy_active_session_states(
             and not state.user_attention_signal
         ):
             continue
-        if state.status == SessionStatus.RUNNING and age_seconds > WORKBUDDY_SESSION_RUNNING_STALE_SECONDS:
+        if (state.status == SessionStatus.RUNNING and age_seconds > WORKBUDDY_SESSION_RUNNING_STALE_SECONDS
+                and (process_started_at is None or state.updated_at < process_started_at)):
             continue
         if state.status == SessionStatus.IDLE:
             continue
@@ -2168,7 +2268,9 @@ def _workbuddy_state_with_runtime_state(
     if runtime_state.updated_at < min_runtime_at:
         return state
     if state.status == SessionStatus.NEEDS_ACTION:
-        if state.user_attention_signal or runtime_state.status == SessionStatus.IDLE:
+        if runtime_state.status == SessionStatus.IDLE:
+            return state
+        if state.user_attention_signal and runtime_state.updated_at <= state.updated_at:
             return state
     user_attention_signal = runtime_state.status == SessionStatus.NEEDS_ACTION
     return replace(
@@ -2337,6 +2439,13 @@ def _read_workbuddy_session_states_from_db(db_path: Path) -> List[_WorkBuddySess
             continue
         if status == SessionStatus.NEEDS_ACTION and _workbuddy_completed_session_has_incomplete_final_event(db_path, row["status"], session_id, cwd):
             status = SessionStatus.IDLE
+        quota_blocker = False
+        if _normalize_status_token(row["status"]) in {"failed", "error", "cancelled", "canceled"}:
+            path = _workbuddy_session_event_path(db_path, session_id, cwd)
+            if path:
+                quota_blocker = _workbuddy_turn_has_quota_error(path)
+            if quota_blocker:
+                status = SessionStatus.NEEDS_ACTION
         updated_at = _workbuddy_session_updated_at(row, status)
         if updated_at is None:
             continue
@@ -2348,7 +2457,7 @@ def _read_workbuddy_session_states_from_db(db_path: Path) -> List[_WorkBuddySess
                 session_id=session_id,
                 title=title,
                 cwd=cwd,
-                user_attention_signal=_workbuddy_session_has_user_attention_signal(
+                user_attention_signal=quota_blocker or _workbuddy_session_has_user_attention_signal(
                     row["status"],
                     has_activity=has_activity,
                 )
@@ -2361,7 +2470,12 @@ def _read_workbuddy_session_states_from_db(db_path: Path) -> List[_WorkBuddySess
 def _workbuddy_session_updated_at(row: sqlite3.Row, status: SessionStatus) -> Optional[datetime]:
     updated_at = _parse_epoch_datetime(row["updated_at"])
     activity_at = _parse_epoch_datetime(row["last_activity_at"])
-    if status == SessionStatus.RUNNING:
+    # A native approval changes the DB row after TOOL_STARTED without
+    # advancing last_activity_at. Completed rows can also be touched by viewing.
+    if status == SessionStatus.RUNNING or (
+        status == SessionStatus.NEEDS_ACTION
+        and _workbuddy_session_has_user_attention_signal(row["status"], activity_at is not None)
+    ):
         candidates = [parsed for parsed in (updated_at, activity_at) if parsed is not None]
         if not candidates:
             return None
@@ -2419,7 +2533,7 @@ def _workbuddy_project_dir_name(cwd: str) -> str:
     return "-".join(part.replace(":", "") for part in parts)
 
 
-def _workbuddy_final_relevant_event(path: Path) -> Optional[dict]:
+def _workbuddy_recent_events(path: Path) -> List[dict]:
     try:
         with path.open("rb") as handle:
             handle.seek(0, 2)
@@ -2428,11 +2542,11 @@ def _workbuddy_final_relevant_event(path: Path) -> Optional[dict]:
             handle.seek(start)
             text = handle.read().decode("utf-8", errors="replace")
     except OSError:
-        return None
+        return []
     lines = text.splitlines()
     if start > 0 and lines:
         lines = lines[1:]
-    final_event: Optional[dict] = None
+    events = []
     for line in lines:
         try:
             event = json.loads(line)
@@ -2440,9 +2554,27 @@ def _workbuddy_final_relevant_event(path: Path) -> Optional[dict]:
             continue
         if not isinstance(event, dict):
             continue
-        if _workbuddy_event_is_relevant_for_completion(event):
-            final_event = event
-    return final_event
+        events.append(event)
+    return events
+
+
+def _workbuddy_final_relevant_event(path: Path) -> Optional[dict]:
+    return next((event for event in reversed(_workbuddy_recent_events(path))
+                 if _workbuddy_event_is_relevant_for_completion(event)), None)
+
+
+def _workbuddy_turn_has_quota_error(path: Path) -> bool:
+    for event in reversed(_workbuddy_recent_events(path)):
+        if event.get("role") == "user":
+            break
+        if event.get("role") != "assistant" or event.get("type") != "message":
+            continue
+        if _normalize_status_token(event.get("status")) in {"cancelled", "canceled", "interrupted"}:
+            continue
+        code = str(event.get("errorCode") or event.get("appErrorCode") or "").lower()
+        return code in {"insufficient_quota", "quota_exceeded", "insufficient_credits",
+                        "credit_exhausted", "credits_exhausted", "plan_required"}
+    return False
 
 
 def _workbuddy_event_is_relevant_for_completion(event: dict) -> bool:
@@ -3353,7 +3485,7 @@ def _posix_process_command() -> List[str]:
         "fi; "
         ";; esac; "
         "if [ \"$desktop_process\" = \"1\" ]; then "
-        "printf 'process_id=%s\\tprocess_name=%s\\tcommand=%s\\tcwd=\\tcpu_percent=%s\\tstat=%s\\tprocess_started_at=%s %s %s %s %s\\tactive_child_count=0\\tfocus_process_id=%s\\tfocus_app_name=\\n' \"$pid\" \"$comm\" \"$args\" \"$cpu\" \"$stat\" \"$start_weekday\" \"$start_month\" \"$start_day\" \"$start_time\" \"$start_year\" \"$pid\"; "
+        "printf 'process_id=%s\\tparent_pid=%s\\tprocess_name=%s\\tcommand=%s\\tcwd=\\tcpu_percent=%s\\tstat=%s\\tprocess_started_at=%s %s %s %s %s\\tactive_child_count=0\\tfocus_process_id=%s\\tfocus_app_name=\\n' \"$pid\" \"$ppid\" \"$comm\" \"$args\" \"$cpu\" \"$stat\" \"$start_weekday\" \"$start_month\" \"$start_day\" \"$start_time\" \"$start_year\" \"$pid\"; "
         "continue; "
         "fi; "
         "case \"$args\" in "

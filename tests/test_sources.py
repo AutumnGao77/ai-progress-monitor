@@ -57,6 +57,71 @@ def write_codex_jsonl(path: Path, events: list) -> None:
 
 
 class SourceTests(unittest.TestCase):
+    def test_qoder_ide_process_is_not_a_running_qoder_cli(self):
+        binary = "/Applications/Qoder IDE.app/Contents/MacOS/Qoder"
+        row = f"process_id=50001\tprocess_name={binary}\tcommand={binary}"
+        self.assertEqual(list(_classify_process_rows([row])), [])
+
+    def test_workbuddy_pending_approval_after_tool_start_remains_pending(self):
+        from ai_progress_monitor.sources import _read_workbuddy_active_session_states
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "workbuddy.db"
+            t = datetime(2026, 11, 3, 16, 15, 56, 83000).astimezone(timezone.utc)
+            self._write_workbuddy_session_db(db, [dict(id="approval", cwd="/tmp/qa", title="QA",
+                status="pending", updated_at=int(t.timestamp() * 1000),
+                last_activity_at=int(t.timestamp() * 1000) - 3276)])
+            log = db.parent / "logs/2026-11-03/workspace.log"
+            log.parent.mkdir(parents=True)
+            log.write_text("[11/3/2026, 4:15:56 PM.026] [Info] [SessionRunStateMachine] transition | "
+                           "sessionId=approval | event=TOOL_STARTED | to=tool_executing | lifecycle=running | busy=true")
+            state, = _read_workbuddy_active_session_states([db], t)
+            self.assertEqual(state.status, SessionStatus.NEEDS_ACTION)
+            self.assertTrue(state.user_attention_signal)
+
+    def test_workbuddy_quota_is_not_a_viewable_failure(self):
+        from ai_progress_monitor.sources import _read_workbuddy_active_session_states
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "workbuddy.db"
+            now = datetime.now(timezone.utc)
+            self._write_workbuddy_session_db(db, [dict(id="quota", cwd="/tmp/qa", title="Test",
+                status="failed", updated_at=int(now.timestamp()*1000),
+                last_activity_at=int(now.timestamp()*1000))])
+            path = Path(tmp) / "projects/tmp-qa/quota.jsonl"
+            path.parent.mkdir(parents=True)
+            for code, expected in [("insufficient_quota", True), ("request_timeout", False)]:
+                path.write_text(json.dumps(dict(type="message", role="assistant", status="failed",
+                                                errorCode=code)) + "\n")
+                state, = _read_workbuddy_active_session_states([db], now)
+                self.assertEqual(state.user_attention_signal, expected)
+
+    def test_workbuddy_helper_and_one_missing_main_process_scan(self):
+        from ai_progress_monitor.sources import ProcessSource
+        source = ProcessSource()
+        exe = "/Applications/WorkBuddy.app/Contents/MacOS/Electron"
+        main = f"process_id=12\tparent_pid=1\tprocess_name={exe}\tcommand={exe}\tprocess_started_at=Tue Nov 3 10:00:00 2026"
+        child = main.replace("process_id=12", "process_id=14").replace("parent_pid=1", "parent_pid=12")
+        self.assertEqual(source._stable_desktop_rows([main, child]), [main])
+        with mock.patch("ai_progress_monitor.sources._same_workbuddy_process", return_value=True):
+            self.assertEqual(source._stable_desktop_rows([]), [main])
+            self.assertEqual(source._stable_desktop_rows([]), [])
+        source._stable_desktop_rows([main])
+        with mock.patch("ai_progress_monitor.sources._same_workbuddy_process", return_value=False):
+            self.assertEqual(source._stable_desktop_rows([]), [])
+
+    def test_quiet_workbuddy_task_survives_only_its_app_lifetime(self):
+        from ai_progress_monitor.sources import _read_workbuddy_active_session_states
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "workbuddy.db"
+            now = datetime.now(timezone.utc)
+            started = now - timedelta(minutes=20)
+            self._write_workbuddy_session_db(db, [dict(id="quiet", cwd="/tmp/qa", title="Test",
+                status="working", updated_at=int(started.timestamp()*1000),
+                last_activity_at=int(started.timestamp()*1000))])
+            states = _read_workbuddy_active_session_states([db], now, process_started_at=started-timedelta(seconds=1))
+            self.assertEqual([s.status for s in states], [SessionStatus.RUNNING])
+            self.assertFalse(_read_workbuddy_active_session_states([db], now, process_started_at=now))
+
     def test_reads_valid_json_session_files(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "session.json"

@@ -42,6 +42,7 @@ class QoderDesktopState:
     title: Optional[str] = None
     cwd: Optional[str] = None
     user_attention_signal: bool = False
+    unread: bool = False
 
 
 @dataclass
@@ -52,6 +53,7 @@ class _LogSignal:
     status: Optional[SessionStatus] = None
     visible_reply: bool = False
     pending: Set[str] = field(default_factory=set)
+    controls: Dict[str, Tuple[datetime, str, Optional[str]]] = field(default_factory=dict)
 
 
 @dataclass
@@ -74,6 +76,7 @@ class QoderDesktopReader:
 
     def read(
         self, db_path: Path, now: datetime, source_started_at: Optional[datetime] = None,
+        process_started_at: Optional[datetime] = None,
     ) -> Optional[List[QoderDesktopState]]:
         """Return a complete snapshot, preserving the previous one on uncertainty."""
         db_path = Path(db_path)
@@ -85,12 +88,14 @@ class QoderDesktopReader:
         filtered = []
         for state in states:
             age = (now - state.updated_at).total_seconds()
-            if state.status == SessionStatus.RUNNING and age > RUNNING_STALE_SECONDS:
+            if (state.status == SessionStatus.RUNNING and age > RUNNING_STALE_SECONDS
+                    and (process_started_at is None or state.updated_at < process_started_at)):
                 continue
             if state.status == SessionStatus.IDLE and age > IDLE_VISIBLE_SECONDS:
                 continue
             if (source_started_at is not None and state.updated_at < source_started_at
-                    and state.status != SessionStatus.RUNNING and not state.user_attention_signal):
+                    and state.status != SessionStatus.RUNNING and not state.user_attention_signal
+                    and not (state.unread and state.status == SessionStatus.NEEDS_ACTION)):
                 continue
             filtered.append(state)
         self._snapshots[db_path] = filtered
@@ -108,15 +113,27 @@ class QoderDesktopReader:
         incomplete = False
         try:
             connection.execute("BEGIN")
-            sessions = connection.execute("""
-                SELECT session_id, title, cwd FROM chat_sessions
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(chat_sessions)")}
+            unread_expr = "unread" if "unread" in columns else "0"
+            sessions = connection.execute(f"""
+                SELECT session_id, title, cwd, {unread_expr} AS unread FROM chat_sessions
                 WHERE deleted_at IS NULL AND COALESCE(archived, 0) = 0
                     AND COALESCE(execution_kind, 'local') = 'local'
                 ORDER BY updated_at DESC LIMIT ?
             """, (SESSION_LIMIT,)).fetchall()
+            controls = {}
+            launches = (db_path.parent / "logs").glob("*/main.log")
+            main_log = max(launches, key=lambda p: p.parent.name, default=None)
+            if main_log is not None:
+                used_log_paths.add(main_log)
+                replay, consumed = self._read_log(main_log, remaining_log)
+                remaining_log -= consumed
+                if replay is None:
+                    raise _IncompleteSnapshot()
+                controls = replay.controls
             for session in sessions:
                 rows = connection.execute("""
-                    SELECT sequence, role, status, runtime_input_state, has_visible_content,
+                    SELECT sequence, turn_id, role, status, runtime_input_state, has_visible_content,
                         created_at, updated_at, turn_started_at,
                         CASE WHEN length(payload_json) <= ? THEN payload_json END AS payload_json
                     FROM chat_session_messages WHERE session_id = ?
@@ -137,6 +154,7 @@ class QoderDesktopReader:
                 if state is None:
                     continue
                 user_at = next((_timestamp(row["created_at"]) for row in rows if row["role"] == "user"), None)
+                signal = None
                 log_path = _session_log_path(db_path.parent, str(session["session_id"]))
                 if log_path is not None:
                     used_log_paths.add(log_path)
@@ -146,7 +164,19 @@ class QoderDesktopReader:
                         incomplete = True
                     else:
                         state = _merge_signal(state, signal, user_at)
-                states.append(state)
+                blocker = _same_turn_blocker(connection, state.session_id, latest, payload)
+                newer_sdk_turn = signal and signal.started_at and signal.started_at > (_timestamp(latest["updated_at"]) or now)
+                control = controls.get(state.session_id)
+                newer_control_turn = (control and control[0] >= state.updated_at and control[1] in {"starting", "running"}
+                                      and control[2] and latest["turn_id"] and control[2] != latest["turn_id"])
+                if blocker and not (newer_sdk_turn or newer_control_turn):
+                    state = replace(state, status=SessionStatus.NEEDS_ACTION, user_attention_signal=True)
+                elif control and control[0] >= state.updated_at:
+                    status = _CONTROL_STATES.get(control[1])
+                    if status is not None:
+                        state = replace(state, status=status, user_attention_signal=control[1] == "waiting-user",
+                                        updated_at=control[0])
+                states.append(replace(state, unread=session["unread"] == 1))
         finally:
             connection.close()
         if incomplete:
@@ -180,13 +210,76 @@ class QoderDesktopReader:
                     # than a poll's budget cannot stall all future replay attempts.
                     replay.skipping_oversized_record = True
                 else:
-                    _apply_log_line(replay.signal, line.decode("utf-8", errors="replace"))
+                    decoded = line.decode("utf-8", errors="replace")
+                    if path.name == "main.log":
+                        _apply_control(replay.signal.controls, decoded)
+                    else:
+                        _apply_log_line(replay.signal, decoded)
                 replay.offset = handle.tell()
         after = path.stat()
         if (replay.skipping_oversized_record or replay.offset < stat.st_size or after.st_size != stat.st_size
                 or after.st_mtime_ns != stat.st_mtime_ns or (after.st_dev, after.st_ino) != identity):
             return None, consumed
         return deepcopy(replay.signal), consumed
+
+
+_CONTROL_STATES = {
+    "starting": SessionStatus.RUNNING,
+    "running": SessionStatus.RUNNING,
+    "waiting-user": SessionStatus.NEEDS_ACTION,
+    "completed": SessionStatus.NEEDS_ACTION,
+    "failed": SessionStatus.NEEDS_ACTION,
+    "canceled": SessionStatus.IDLE,
+    "cancelled": SessionStatus.IDLE,
+    "interrupted": SessionStatus.IDLE,
+}
+
+
+def _same_turn_blocker(connection, session_id, row, payload) -> bool:
+    status = str(row["status"]).lower()
+    if status in _FAILED:
+        return _account_blocker(payload)
+    if status not in _STOPPED or not row["turn_id"]:
+        return False
+    # A cancellation written during cleanup does not resolve a quota error.
+    prior = connection.execute("""
+        SELECT status, CASE WHEN length(payload_json) <= ? THEN payload_json END AS payload
+        FROM chat_session_messages WHERE session_id=? AND turn_id=? AND sequence < ?
+          AND role IN ('user','assistant') AND COALESCE(subtype,'')=''
+          AND lower(status) NOT IN ('cancelled','canceled','aborted','stopped','interrupted')
+        ORDER BY sequence DESC LIMIT 1
+    """, (PAYLOAD_LIMIT, session_id, row["turn_id"], row["sequence"])).fetchone()
+    return bool(prior and str(prior["status"]).lower() in _FAILED and _account_blocker(json.loads(prior["payload"] or "{}")))
+
+
+def _apply_control(controls: dict, line: str) -> None:
+    marker = "] [main] [ChatSession] Main ChatSession control state committed "
+    prefix, found, raw = line.partition(marker)
+    if not found:
+        return
+    at = _timestamp(prefix.partition("]")[0].lstrip("["))
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return
+    if not at or not isinstance(data, dict):
+        return
+    key = data.get("sessionId")
+    phase = data.get("activeTurnState") or data.get("terminalStatus") or data.get("runtimeState")
+    if data.get("runtimeState") == "waiting-user" or (data.get("pendingInteractionCount") or 0) > 0:
+        phase = "waiting-user"
+    if isinstance(key, str) and isinstance(phase, str):
+        controls.pop(key, None)
+        controls[key] = (at, phase, data.get("activeTurnId"))
+        if len(controls) > SESSION_LIMIT * 2:
+            del controls[next(iter(controls))]
+
+
+def _account_blocker(payload: dict) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    code = str(payload.get("appErrorCode") or payload.get("errorCode") or "").lower()
+    return any(token in code for token in ("quota", "credit", "subscription", "plan_required", "unauthorized", "auth_required"))
 
 
 def _timestamp(value) -> Optional[datetime]:
@@ -220,8 +313,7 @@ def _message_state(session, row, payload: dict) -> Optional[QoderDesktopState]:
         normalized = SessionStatus.IDLE
     elif status in _FAILED:
         normalized = SessionStatus.NEEDS_ACTION
-        code = str(payload.get("appErrorCode") or payload.get("errorCode") or "").lower()
-        attention = any(token in code for token in ("quota", "credit", "subscription", "plan_required", "unauthorized", "auth_required"))
+        attention = _account_blocker(payload)
     elif status in _COMPLETED:
         normalized = SessionStatus.NEEDS_ACTION if _visible_reply(payload, row) else SessionStatus.IDLE
         updated_at = _timestamp(payload.get("completedAt")) or updated_at
