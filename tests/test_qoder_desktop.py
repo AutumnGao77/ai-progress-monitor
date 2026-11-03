@@ -70,6 +70,31 @@ class QoderDesktopTests(unittest.TestCase):
                 handle.write((self.now + timedelta(seconds=seconds)).isoformat() + " [QueryRunner] " + message + "\n")
         return path
 
+    def test_control_wait_resume_and_silent_execution(self):
+        path = self.root / "logs" / "launch" / "main.log"
+        path.parent.mkdir(parents=True)
+        for turn, seconds, expected in [("waiting-user", 0, SessionStatus.NEEDS_ACTION),
+                                        ("running", 1, SessionStatus.RUNNING)]:
+            payload = {"sessionId": "test-session", "activeTurnState": turn}
+            stamp = (self.now + timedelta(seconds=seconds)).isoformat()
+            with path.open("a") as output:
+                output.write(f"[{stamp}] [INFO] [main] [ChatSession] Main ChatSession control state committed {json.dumps(payload)}\n")
+            state, = self.reader.read(self.db, self.now + timedelta(minutes=17),
+                                      process_started_at=self.now - timedelta(minutes=1))
+            self.assertEqual(state.status, expected)
+            self.assertEqual(state.user_attention_signal, turn == "waiting-user")
+        self.assertEqual(self.reader.read(self.db, self.now + timedelta(minutes=17),
+                                          process_started_at=self.now + timedelta(minutes=1)), [])
+
+    def test_quota_survives_same_turn_cleanup_but_not_new_user_turn(self):
+        self.message("assistant", "error", 2, payload={"appErrorCode": "insufficient_quota"})
+        self.message("assistant", "cancelled", 3, 1)
+        state, = self.read()
+        self.assertEqual(state.status, SessionStatus.NEEDS_ACTION)
+        self.assertTrue(state.user_attention_signal)
+        self.message("user", "completed", 4, 2, turn_id="next", started=2)
+        self.assertEqual(self.read()[0].status, SessionStatus.RUNNING)
+
     def test_new_user_and_streaming_assistant_are_running(self):
         self.assertEqual(self.read()[0].status, SessionStatus.RUNNING)
         self.message("assistant", "streaming", 2, -1)
